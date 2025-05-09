@@ -1,6 +1,5 @@
 from app.services.base import BaseService
-import os
-from dotenv import load_dotenv
+from app.core.config import get_settings
 from bs4 import BeautifulSoup
 import requests
 import asyncio
@@ -17,9 +16,8 @@ class FetchCarDataService(BaseService):
         """
         super().__init__()
         self.websocket_manager = websocket_manager
-        load_dotenv('.env')
-        self.BASE_URL=os.getenv('BASE_URL')
-
+        settings = get_settings()
+        self.BASE_URL = settings.BASE_URL
 
     def notify_websocket(self, message):
         """

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 class UserBase(BaseModel):
@@ -12,6 +12,7 @@ class UserBase(BaseModel):
     confirmed_at: Optional[datetime] = None
     last_sign_in_at: Optional[datetime] = None
     role: Optional[str] = None
+    cars: Optional[List[str]] = None  # List of car IDs added by the user
 
     class Config:
         orm_mode = True

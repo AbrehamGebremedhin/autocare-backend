@@ -1,12 +1,10 @@
-import os
-from dotenv import load_dotenv
+from app.core.config import get_settings
 from fastapi import WebSocket
 from typing import List
 
-# Load environment variables from .env file
-load_dotenv()
-
-WEBSOCKET_URL = os.getenv("WEBSOCKET_URL", "ws://localhost:8080")
+# Load settings from config
+settings = get_settings()
+WEBSOCKET_URL = settings.WEBSOCKET_URL
 
 class ConnectionManager:
     def __init__(self):

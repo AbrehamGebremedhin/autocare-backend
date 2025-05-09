@@ -1,5 +1,5 @@
 from supabase import create_client, Client
-import os
+from app.core.config import get_settings
 
 class SupabaseDBHandler:
     _instance = None
@@ -12,8 +12,9 @@ class SupabaseDBHandler:
         return cls._instance
 
     def _initialize_client(self):
-        SUPABASE_URL = os.getenv("SUPABASE_URL")
-        SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+        settings = get_settings()
+        SUPABASE_URL = settings.SUPABASE_URL
+        SUPABASE_KEY = settings.SUPABASE_KEY
         if not SUPABASE_URL or not SUPABASE_KEY:
             raise ValueError("Supabase URL and Key must be set in environment variables")
         self._client = create_client(SUPABASE_URL, SUPABASE_KEY)

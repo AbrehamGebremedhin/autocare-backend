@@ -1,7 +1,8 @@
-from app.services.base import BaseService
+from app.services.base_service import BaseService
 from typing import List, Dict, Any, Optional, Union
 import os
 import io
+import asyncio
 
 try:
     from pypdf import PdfReader
@@ -18,7 +19,7 @@ class ParserService(BaseService):
         if PdfReader is None:
             raise ImportError("pypdf is required for PDF parsing. Please install with 'pip install pypdf'.")
 
-    def parse_pdf(self, file_path: str, chunk_size: int = 1000) -> List[str]:
+    async def parse_pdf(self, file_path: str, chunk_size: int = 1000) -> List[str]:
         """
         Parse a PDF file and split its text into chunks.
         Args:
@@ -31,9 +32,9 @@ class ParserService(BaseService):
         full_text = ""
         for page in reader.pages:
             full_text += page.extract_text() or ""
-        return self.chunk_text(full_text, chunk_size)
+        return await self.chunk_text(full_text, chunk_size)
 
-    def parse_string(self, text: str, chunk_size: int = 1000) -> List[str]:
+    async def parse_string(self, text: str, chunk_size: int = 1000) -> List[str]:
         """
         Split a large string into chunks.
         Args:
@@ -42,9 +43,9 @@ class ParserService(BaseService):
         Returns:
             List[str]: List of text chunks.
         """
-        return self.chunk_text(text, chunk_size)
+        return await self.chunk_text(text, chunk_size)
 
-    def chunk_text(self, text: str, chunk_size: int = 1000) -> List[str]:
+    async def chunk_text(self, text: str, chunk_size: int = 1000) -> List[str]:
         """
         Split text into chunks of a given size, respecting sentence boundaries if possible.
         Args:
@@ -68,7 +69,7 @@ class ParserService(BaseService):
             chunks.append(current_chunk.strip())
         return chunks
 
-    def perform_action(self, source: Union[str, bytes], source_type: str = "pdf", chunk_size: int = 1000) -> List[str]:
+    async def perform_action(self, source: Union[str, bytes], source_type: str = "pdf", chunk_size: int = 1000) -> List[str]:
         """
         Parse a document (PDF, string, or other) and return text chunks.
         Args:
@@ -85,10 +86,10 @@ class ParserService(BaseService):
                 full_text = ""
                 for page in reader.pages:
                     full_text += page.extract_text() or ""
-                return self.chunk_text(full_text, chunk_size)
+                return await self.chunk_text(full_text, chunk_size)
             else:
-                return self.parse_pdf(source, chunk_size)
+                return await self.parse_pdf(source, chunk_size)
         elif source_type == "string":
-            return self.parse_string(source, chunk_size)
+            return await self.parse_string(source, chunk_size)
         else:
             raise ValueError(f"Unsupported source_type: {source_type}")

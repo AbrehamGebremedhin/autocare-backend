@@ -1,10 +1,11 @@
-from app.services.base import BaseService
+from app.services.base_service import BaseService
 from googlesearch import search
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from app.core.config import get_settings
-from app.services.query_builder import QueryBuilderService
+from app.services.query_builder_service import QueryBuilderService
 from typing import List, Dict, Any
+import asyncio
 
 class SearchEngineService(BaseService):
     """
@@ -20,7 +21,7 @@ class SearchEngineService(BaseService):
         self.query_builder = QueryBuilderService()
         self.youtube = build('youtube', 'v3', developerKey=settings.YOUTUBE_API_KEY)
 
-    def vector_search(self, query: str):
+    async def vector_search(self, query: str):
         """
         Placeholder for vector search implementation.
         Args:
@@ -30,7 +31,7 @@ class SearchEngineService(BaseService):
         """
         pass
 
-    def web_search(self, query: str, num_results: int = 10) -> List[Dict[str, Any]]:
+    async def web_search(self, query: str, num_results: int = 10) -> List[Dict[str, Any]]:
         """
         Perform a web search using the googlesearch-python package.
         Args:
@@ -42,7 +43,10 @@ class SearchEngineService(BaseService):
         print(f"Performing web search for query: {query}")
         results = []
         try:
-            for result in search(query, num_results=num_results, advanced=True):
+            loop = asyncio.get_running_loop()
+            # googlesearch is not async, so run in executor
+            search_results = await loop.run_in_executor(None, lambda: list(search(query, num_results=num_results, advanced=True)))
+            for result in search_results:
                 results.append({
                     'title': result.title,
                     'link': result.url,
@@ -52,7 +56,7 @@ class SearchEngineService(BaseService):
             print(f"Error during Google search: {e}")
         return results
     
-    def youtube_search(self, query: str, max_results: int = 5, **kwargs) -> List[Dict[str, Any]]:
+    async def youtube_search(self, query: str, max_results: int = 5, **kwargs) -> List[Dict[str, Any]]:
         """
         Search for videos using YouTube Data API with duration and quality filters.
         Args:
@@ -62,44 +66,47 @@ class SearchEngineService(BaseService):
             List[Dict[str, Any]]: List of video information dictionaries.
         """
         try:
-            # Search for videos
-            search_response = self.youtube.search().list(
-                q=query,
-                part='id,snippet',
-                maxResults=max_results,
-                type='video',
-                videoDefinition='high',  # Only HD videos
-                videoEmbeddable='true',
-                videoLicense='youtube',
-                videoType='any'
-            ).execute()
-            video_ids = [item['id']['videoId'] for item in search_response.get('items', [])]
-            if not video_ids:
-                return []
-            # Get video details
-            video_response = self.youtube.videos().list(
-                id=','.join(video_ids),
-                part='contentDetails,statistics,snippet,status,player'
-            ).execute()
-            videos = []
-            for item in video_response.get('items', []):
-                duration_str = item['contentDetails']['duration']
-                duration_seconds = self._parse_duration(duration_str)
-                videos.append({
-                    'video_id': item['id'],
-                    'url': f'https://www.youtube.com/watch?v={item["id"]}',
-                    'title': item['snippet']['title'],
-                    'description': item['snippet'].get('description', ''),
-                    'duration': duration_seconds,
-                    'thumbnail': item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
-                    'view_count': int(item['statistics'].get('viewCount', 0)),
-                    'like_count': int(item['statistics'].get('likeCount', 0)),
-                    'channel_title': item['snippet'].get('channelTitle', ''),
-                    'published_at': item['snippet'].get('publishedAt', ''),
-                    'category_id': item['snippet'].get('categoryId', ''),
-                    'definition': item['contentDetails'].get('definition', '')
-                })
-            return videos
+            loop = asyncio.get_running_loop()
+            # googleapiclient is not async, so run in executor
+            def _search():
+                search_response = self.youtube.search().list(
+                    q=query,
+                    part='id,snippet',
+                    maxResults=max_results,
+                    type='video',
+                    videoDefinition='high',  # Only HD videos
+                    videoEmbeddable='true',
+                    videoLicense='youtube',
+                    videoType='any'
+                ).execute()
+                video_ids = [item['id']['videoId'] for item in search_response.get('items', [])]
+                if not video_ids:
+                    return []
+                # Get video details
+                video_response = self.youtube.videos().list(
+                    id=','.join(video_ids),
+                    part='contentDetails,statistics,snippet,status,player'
+                ).execute()
+                videos = []
+                for item in video_response.get('items', []):
+                    duration_str = item['contentDetails']['duration']
+                    duration_seconds = self._parse_duration(duration_str)
+                    videos.append({
+                        'video_id': item['id'],
+                        'url': f'https://www.youtube.com/watch?v={item["id"]}',
+                        'title': item['snippet']['title'],
+                        'description': item['snippet'].get('description', ''),
+                        'duration': duration_seconds,
+                        'thumbnail': item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
+                        'view_count': int(item['statistics'].get('viewCount', 0)),
+                        'like_count': int(item['statistics'].get('likeCount', 0)),
+                        'channel_title': item['snippet'].get('channelTitle', ''),
+                        'published_at': item['snippet'].get('publishedAt', ''),
+                        'category_id': item['snippet'].get('categoryId', ''),
+                        'definition': item['contentDetails'].get('definition', '')
+                    })
+                return videos
+            return await loop.run_in_executor(None, _search)
         except HttpError as e:
             print(f"YouTube API error: {e}")
             return []
@@ -125,7 +132,7 @@ class SearchEngineService(BaseService):
         seconds = int(match.group(3)) if match.group(3) else 0
         return hours * 3600 + minutes * 60 + seconds
 
-    def perform_action(self, user_query: str, query_type: str = None):
+    async def perform_action(self, user_query: str, query_type: str = None):
         """
         Perform a search action based on the query type.
         Args:
@@ -134,25 +141,26 @@ class SearchEngineService(BaseService):
         Returns:
             List of search results from the selected search method.
         """
-        query = self.query_builder.perform_action(user_query, query_type)
+        query = await self.query_builder.perform_action(user_query, query_type)
         query = query.get('query', user_query)
         if not query:
             print("No optimized query generated.")
             return []
         print(f"Optimized query: {query}")
         if not query_type:
-            return self.web_search(query)
+            return await self.web_search(query)
         query_type = query_type.lower()
         if query_type == "search_engine":
-            return self.web_search(query)
+            return await self.web_search(query)
         elif query_type == "youtube":
-            return self.youtube_search(query)
+            return await self.youtube_search(query)
         elif query_type == "vector":
-            return self.vector_search(query)
+            return await self.vector_search(query)
         else:
-            return self.web_search(user_query)
+            return await self.web_search(user_query)
+
 from pprint import pprint
 # Usage example:
-search_service = SearchEngineService()
-results = search_service.perform_action("how to fix engine overheating in toyota echo 2001", "search_engine")
-pprint(results)
+# search_service = SearchEngineService()
+# results = await search_service.perform_action("how to fix engine overheating in toyota echo 2001", "search_engine")
+# pprint(results)

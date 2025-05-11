@@ -1,4 +1,4 @@
-from app.services.base import BaseService
+from app.services.base_service import BaseService
 from app.core.config import get_settings
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
@@ -15,7 +15,7 @@ class EmbeddingService(BaseService):
             google_api_key=google_api_key,
         )
 
-    def embed_text(self, text: str):
+    async def embed_text(self, text: str):
         """
         Generate an embedding for a single text string.
         Args:
@@ -23,9 +23,9 @@ class EmbeddingService(BaseService):
         Returns:
             List[float]: The embedding vector.
         """
-        return self.embedder.embed_query(text)
+        return await self.embedder.embed_query(text)
 
-    def embed_texts(self, texts: list):
+    async def embed_texts(self, texts: list):
         """
         Generate embeddings for a list of text strings.
         Args:
@@ -33,16 +33,16 @@ class EmbeddingService(BaseService):
         Returns:
             List[List[float]]: List of embedding vectors.
         """
-        return self.embedder.embed_documents(texts)
+        return await self.embedder.embed_documents(texts)
 
-    def perform_action(self, *args, **kwargs):
+    async def perform_action(self, *args, **kwargs):
         """
         Example perform_action implementation for compatibility.
         """
         text = kwargs.get('text')
         if text:
-            return self.embed_text(text)
+            return await self.embed_text(text)
         texts = kwargs.get('texts')
         if texts:
-            return self.embed_texts(texts)
+            return await self.embed_texts(texts)
         raise ValueError("No text or texts provided for embedding.")

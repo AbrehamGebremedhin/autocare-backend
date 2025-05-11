@@ -9,8 +9,8 @@ class BaseService(ABC):
         self.websocket_manager = manager
 
     @abstractmethod
-    def perform_action(self, *args, **kwargs):
+    async def perform_action(self, *args, **kwargs):
         """
-        Abstract method to be implemented by all services.
+        Abstract async method to be implemented by all services.
         """
         pass

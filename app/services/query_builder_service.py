@@ -1,4 +1,4 @@
-from app.services.base import BaseService
+from app.services.base_service import BaseService
 from app.core.config import get_settings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -68,7 +68,7 @@ class QueryBuilderService(BaseService):
             )
         }
 
-    def perform_action(self, user_query: str, query_type: str = None):
+    async def perform_action(self, user_query: str, query_type: str = None):
         """
         Build optimized queries from a user query, optionally for a specific search type.
         
@@ -80,12 +80,12 @@ class QueryBuilderService(BaseService):
         
         if query_type and query_type in self.prompts:
             chain = self.prompts[query_type] | self.llm
-            result = chain.invoke({"query": user_query})
+            result = await chain.ainvoke({"query": user_query})
             results[query_type] = result.content if hasattr(result, 'content') else str(result)
         else:
             for key, prompt in self.prompts.items():
                 chain = prompt | self.llm
-                result = chain.invoke({"query": user_query})
+                result = await chain.ainvoke({"query": user_query})
                 results[key] = result.content if hasattr(result, 'content') else str(result)
                 
         return results

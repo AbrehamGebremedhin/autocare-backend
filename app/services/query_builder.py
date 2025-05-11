@@ -1,5 +1,5 @@
 from app.services.base import BaseService
-import os
+from app.core.config import get_settings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -9,9 +9,11 @@ class QueryBuilderService(BaseService):
     """
     def __init__(self):
         super().__init__()
-        self.gemini_api_key = os.getenv("GEMINI_KEY")
+        settings = get_settings()
+        self.gemini_api_key = settings.GEMINI_KEY
+        self.gemini_model = settings.GEMINI_MODEL_1
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-pro",
+            model=self.gemini_model,
             google_api_key=self.gemini_api_key
         )
         self.prompts = {

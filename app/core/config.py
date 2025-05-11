@@ -1,4 +1,4 @@
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 from functools import lru_cache
 import os
 
@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # Supabase settings
     SUPABASE_URL: str
     SUPABASE_KEY: str
+    SUPABASE_PASSWORD: str
 
     # WebSocket settings
     WEBSOCKET_URL: str = "ws://localhost:8080"
@@ -20,6 +21,11 @@ class Settings(BaseSettings):
 
     # Gemini API key
     GEMINI_KEY: str
+    GEMINI_MODEL_1: str
+    GEMINI_MODEL_2: str
+
+    # YouTube API key
+    YOUTUBE_API_KEY: str
 
     class Config:
         env_file = ".env"

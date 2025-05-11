@@ -12,24 +12,130 @@ class SearchEngineService(BaseService):
     Service to perform searches using optimized queries for vector search, YouTube, and search engines.
     Provides unified access to web, YouTube, and vector search functionalities.
     """
-    def __init__(self):
+    def __init__(self, 
+                 query_builder: QueryBuilderService = None,
+                 youtube_client=None,
+                 embedding_service=None,
+                 parser_service=None,
+                 scraper_service=None,
+                 bucket_manager=None,
+                 fetch_car_data_service=None,
+                 db_handler=None):
         """
         Initialize the SearchEngineService with required dependencies and API clients.
+        Allows dependency injection for easier testing and flexibility.
         """
         super().__init__()
         settings = get_settings()
-        self.query_builder = QueryBuilderService()
-        self.youtube = build('youtube', 'v3', developerKey=settings.YOUTUBE_API_KEY)
+        self.query_builder = query_builder or QueryBuilderService()
+        self.youtube = youtube_client or build('youtube', 'v3', developerKey=settings.YOUTUBE_API_KEY)
+        from app.services.embedding_service import EmbeddingService
+        from app.services.parser_service import ParserService
+        from app.services.scraper_service import ScraperService
+        from app.db.bucket_operations import SupabaseBucketManager
+        from app.services.fetch_car_data_service import FetchCarDataService
+        from app.db.base import SupabaseDBHandler
+        self.embedding_service = embedding_service or EmbeddingService()
+        self.parser_service = parser_service or ParserService()
+        self.scraper_service = scraper_service or ScraperService()
+        self.bucket_manager = bucket_manager or SupabaseBucketManager()
+        self.fetch_car_data_service = fetch_car_data_service or FetchCarDataService()
+        self.db_handler = db_handler or SupabaseDBHandler()
 
-    async def vector_search(self, query: str):
+    async def _get_ground_knowledge_chunks(self, limit=50):
+        db = self.db_handler._client
+        ground_knowledge = db.table("Ground_Knowledge").select("*").limit(limit).execute()
+        ground_docs = ground_knowledge.data if hasattr(ground_knowledge, 'data') else ground_knowledge["data"]
+        return [
+            {
+                "id": doc.get("id"),
+                "source": "ground_knowledge",
+                "content": doc.get("content_chunk"),
+                "vector": doc.get("vector"),
+                "metadata": doc.get("metadata", {}),
+            }
+            for doc in ground_docs
+        ]
+
+    async def _get_owner_manual_chunks(self, make, model, year, limit=50):
+        pdf_name = f"{make}-{model}_{year}_EN_US.pdf"
+        bucket_name = "manuals"
+        pdf_bytes = await self.bucket_manager.download_file(bucket_name, pdf_name)
+        owner_chunks_list = await self.parser_service.perform_action(pdf_bytes, source_type="pdf", chunk_size=1000)
+        return [
+            {"id": f"owner_{i}", "source": "owner_manual", "content": chunk, "vector": None, "metadata": {}}
+            for i, chunk in enumerate(owner_chunks_list[:limit])
+        ]
+
+    async def _get_web_chunks(self, make, model, year, limit_links=10, limit_chunks=100):
+        links = await self.fetch_car_data_service.perform_action(make, model, year)
+        scraped = await self.scraper_service.perform_action(links, limit=limit_links)
+        web_chunks = []
+        for i, page in enumerate(scraped):
+            if 'text' in page and page['text']:
+                chunks = await self.parser_service.perform_action(page['text'], source_type="string", chunk_size=1000)
+                for j, chunk in enumerate(chunks):
+                    if len(web_chunks) < limit_chunks:
+                        web_chunks.append({
+                            "id": f"web_{i}_{j}", "source": "web", "content": chunk, "vector": None, "metadata": {"url": page.get("url")}
+                        })
+                    else:
+                        break
+            if len(web_chunks) >= limit_chunks:
+                break
+        return web_chunks
+
+    @staticmethod
+    def _cosine_sim(a, b):
+        import numpy as np
+        a = np.array(a)
+        b = np.array(b)
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+    async def _embed_and_score(self, query, chunks):
+        query_vec = await self.embedding_service.embed_text(query)
+        to_embed = [c["content"] for c in chunks if c["vector"] is None]
+        if to_embed:
+            vectors = await self.embedding_service.embed_texts(to_embed)
+            vi = 0
+            for c in chunks:
+                if c["vector"] is None:
+                    c["vector"] = vectors[vi]
+                    vi += 1
+        for c in chunks:
+            c["score"] = self._cosine_sim(query_vec, c["vector"])
+        return chunks
+
+    async def vector_search(self, query: str, query_type: str = None, make: str = None, model: str = None, year: int = None) -> list:
         """
-        Placeholder for vector search implementation.
+        Perform a vector search across ground knowledge DB, owner manual PDF, and scraped web links.
         Args:
             query (str): The search query.
+            query_type (str): 'generation' or 'validation'.
+            make, model, year: Car info for owner manual and guides.
         Returns:
-            List of search results (to be implemented).
+            List of ranked search results.
         """
-        pass
+        if query_type == "generation":
+            owner_chunks = await self._get_owner_manual_chunks(make, model, year) if (make and model and year) else []
+            web_chunks = await self._get_web_chunks(make, model, year) if (make and model and year) else []
+            all_chunks = owner_chunks + web_chunks
+            all_chunks = await self._embed_and_score(query, all_chunks)
+            all_chunks.sort(key=lambda x: x["score"], reverse=True)
+            return all_chunks[:72]
+        elif query_type == "validation":
+            ground_chunks = await self._get_ground_knowledge_chunks()
+            ground_chunks = await self._embed_and_score(query, ground_chunks)
+            ground_chunks.sort(key=lambda x: x["score"], reverse=True)
+            return ground_chunks
+        else:
+            ground_chunks = await self._get_ground_knowledge_chunks()
+            owner_chunks = await self._get_owner_manual_chunks(make, model, year) if (make and model and year) else []
+            web_chunks = await self._get_web_chunks(make, model, year) if (make and model and year) else []
+            all_chunks = ground_chunks + owner_chunks + web_chunks
+            all_chunks = await self._embed_and_score(query, all_chunks)
+            all_chunks.sort(key=lambda x: x["score"], reverse=True)
+            return all_chunks
 
     async def web_search(self, query: str, num_results: int = 10) -> List[Dict[str, Any]]:
         """

@@ -1,6 +1,7 @@
 import os
 import importlib.util
 import inspect
+import asyncio
 from app.db.base import SupabaseDBHandler
 from pydantic import BaseModel
 from typing import get_args, get_origin, List, Dict
@@ -33,8 +34,9 @@ def python_type_to_pg(py_type, field_name=None):
         return 'timestamp'
     return PY_TO_PG.get(py_type, 'text')
 
-def get_schema_models(schemas_path):
+async def get_schema_models(schemas_path):
     models = []
+    loop = asyncio.get_running_loop()
     for fname in os.listdir(schemas_path):
         if fname.endswith('.py') and fname != '__init__.py':
             module_name = f'app.schemas.{fname[:-3]}'
@@ -42,7 +44,7 @@ def get_schema_models(schemas_path):
             if not spec:
                 continue
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            await loop.run_in_executor(None, spec.loader.exec_module, module)
             for name, obj in inspect.getmembers(module):
                 if inspect.isclass(obj) and issubclass(obj, BaseModel) and obj is not BaseModel:
                     models.append(obj)
@@ -58,19 +60,20 @@ def generate_create_table_sql(model):
     fields_sql = ', '.join(fields)
     return f'CREATE TABLE IF NOT EXISTS "{table_name}" ({fields_sql});'
 
-def migrate_all_schemas():
+async def migrate_all_schemas():
     schemas_path = os.path.join(os.path.dirname(__file__), '../schemas')
-    models = get_schema_models(schemas_path)
+    models = await get_schema_models(schemas_path)
     db = SupabaseDBHandler().client
     for model in models:
         sql = generate_create_table_sql(model)
-        logger.info(f"Executing SQL for {model.__name__}:\n{sql}\n")
-        response = db.rpc('execute_sql', { 'sql': sql }).execute()
-        logger.info(f"Response: {response}\n")
+        await logger.info(f"Executing SQL for {model.__name__}:\n{sql}\n")
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, lambda: db.rpc('execute_sql', { 'sql': sql }).execute())
+        await logger.info(f"Response: {response}\n")
         if response and isinstance(response, dict) and response.get('error'):
-            logger.error(f"Error migrating {model.__name__}: {response['error']}")
+            await logger.error(f"Error migrating {model.__name__}: {response['error']}")
             raise Exception(f"Error migrating {model.__name__}: {response['error']}")
-        logger.info(f'Migrated: {model.__name__}')
+        await logger.info(f'Migrated: {model.__name__}')
 
-# Usage: migrate_all_schemas()
-migrate_all_schemas()
+if __name__ == "__main__":
+    asyncio.run(migrate_all_schemas())

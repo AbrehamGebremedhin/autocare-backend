@@ -158,9 +158,3 @@ class SearchEngineService(BaseService):
             return await self.vector_search(query)
         else:
             return await self.web_search(user_query)
-
-from pprint import pprint
-# Usage example:
-# search_service = SearchEngineService()
-# results = await search_service.perform_action("how to fix engine overheating in toyota echo 2001", "search_engine")
-# pprint(results)

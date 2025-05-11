@@ -7,7 +7,7 @@ app = FastAPI()
 app.include_router(v1_router, prefix="/api/v1")
 
 @app.get("/")
-def read_root():
+async def read_root():
     return {"message": "Welcome to AutoCare API"}
 
 @app.websocket("/ws")
@@ -18,4 +18,4 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             await manager.send_personal_message(f"You wrote: {data}", websocket)
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        await manager.disconnect(websocket)

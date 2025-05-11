@@ -20,7 +20,7 @@ class SupabaseDBHandler:
         self._client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     @property
-    def client(self) -> Client:
+    async def client(self) -> Client:
         if self._client is None:
             raise ValueError("Supabase client is not initialized")
         return self._client

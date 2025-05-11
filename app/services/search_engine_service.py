@@ -153,11 +153,7 @@ class SearchEngineService(BaseService):
             # googlesearch is not async, so run in executor
             search_results = await loop.run_in_executor(None, lambda: list(search(query, num_results=num_results, advanced=True)))
             for result in search_results:
-                results.append({
-                    'title': result.title,
-                    'link': result.url,
-                    'description': result.description
-                })
+                results.append(result.url)
         except Exception as e:
             print(f"Error during Google search: {e}")
         return results
@@ -198,18 +194,10 @@ class SearchEngineService(BaseService):
                     duration_str = item['contentDetails']['duration']
                     duration_seconds = self._parse_duration(duration_str)
                     videos.append({
-                        'video_id': item['id'],
                         'url': f'https://www.youtube.com/watch?v={item["id"]}',
                         'title': item['snippet']['title'],
                         'description': item['snippet'].get('description', ''),
-                        'duration': duration_seconds,
                         'thumbnail': item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
-                        'view_count': int(item['statistics'].get('viewCount', 0)),
-                        'like_count': int(item['statistics'].get('likeCount', 0)),
-                        'channel_title': item['snippet'].get('channelTitle', ''),
-                        'published_at': item['snippet'].get('publishedAt', ''),
-                        'category_id': item['snippet'].get('categoryId', ''),
-                        'definition': item['contentDetails'].get('definition', '')
                     })
                 return videos
             return await loop.run_in_executor(None, _search)

@@ -2,6 +2,7 @@ from app.services.base_service import BaseService
 from app.core.config import get_settings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
+import asyncio
 
 class QueryBuilderService(BaseService):
     """
@@ -77,6 +78,7 @@ class QueryBuilderService(BaseService):
             query_type: Optional type of query to generate ('search_engine', 'youtube', 'vector_search', or None for all)
         """
         results = {}
+        loop = asyncio.get_running_loop()
         
         if query_type and query_type in self.prompts:
             chain = self.prompts[query_type] | self.llm

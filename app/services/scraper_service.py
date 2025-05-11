@@ -5,6 +5,7 @@ from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException
 import random
 import time
+import asyncio
 
 class ScraperService(BaseService):
     """
@@ -46,7 +47,7 @@ class ScraperService(BaseService):
         driver = webdriver.Chrome(options=options)
         return driver
 
-    def extract_page_info(self, url: str) -> dict:
+    async def extract_page_info(self, url: str) -> dict:
         """
         Fetches a page and extracts its title, text content, and meta description using Selenium.
         Args:
@@ -54,6 +55,10 @@ class ScraperService(BaseService):
         Returns:
             dict: Extracted information.
         """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: self._extract_page_info_sync(url))
+
+    def _extract_page_info_sync(self, url: str) -> dict:
         driver = self._get_driver()
         try:
             driver.get(url)
@@ -83,7 +88,7 @@ class ScraperService(BaseService):
         finally:
             driver.quit()
 
-    def perform_action(self, links: list, limit: int = 10) -> list:
+    async def perform_action(self, links: list, limit: int = 10) -> list:
         """
         Scrape a list of links and extract page information.
         Args:
@@ -95,7 +100,7 @@ class ScraperService(BaseService):
         results = []
         for url in links[:limit]:
             delay = random.uniform(1, 3)
-            time.sleep(delay)
-            info = self.extract_page_info(url)
+            await asyncio.sleep(delay)
+            info = await self.extract_page_info(url)
             results.append(info)
         return results

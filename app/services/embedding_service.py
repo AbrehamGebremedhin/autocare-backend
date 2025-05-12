@@ -23,7 +23,7 @@ class EmbeddingService(BaseService):
         Returns:
             List[float]: The embedding vector.
         """
-        return await self.embedder.embed_query(text)
+        return self.embedder.embed_query(text)
 
     async def embed_texts(self, texts: list):
         """
@@ -33,7 +33,7 @@ class EmbeddingService(BaseService):
         Returns:
             List[List[float]]: List of embedding vectors.
         """
-        return await self.embedder.embed_documents(texts)
+        return self.embedder.embed_documents(texts)
 
     async def perform_action(self, *args, **kwargs):
         """

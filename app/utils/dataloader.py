@@ -1,12 +1,14 @@
 import os
 import asyncio
+import inspect
+import traceback
 from app.services.parser_service import ParserService
 from app.services.embedding_service import EmbeddingService
 from app.db.base import SupabaseDBHandler
 from app.utils.logger import Logger
 
 CAR_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'car_data')
-TABLE_NAME = "Ground_Knowledge"
+TABLE_NAME = "Groundknowledge"
 
 async def process_pdf(pdf_path, parser_service, embedding_service, supabase_client, logger):
     book_title = os.path.splitext(os.path.basename(pdf_path))[0]
@@ -16,7 +18,12 @@ async def process_pdf(pdf_path, parser_service, embedding_service, supabase_clie
         if not chunks:
             await logger.warning(f"No text extracted from {pdf_path}")
             return
-        embeddings = await embedding_service.embed_texts(chunks)
+        # Handle both async and sync embed_texts
+        embeddings_result = embedding_service.embed_texts(chunks)
+        if inspect.isawaitable(embeddings_result):
+            embeddings = await embeddings_result
+        else:
+            embeddings = embeddings_result
         for idx, (chunk, vector) in enumerate(zip(chunks, embeddings)):
             data = {
                 "book_title": book_title,
@@ -25,11 +32,13 @@ async def process_pdf(pdf_path, parser_service, embedding_service, supabase_clie
                 "page_number": None,  # Optional: can be improved if page info is available
                 "metadata": {"source_file": pdf_path, "chunk_index": idx}
             }
+            await logger.info(f"Inserting into table '{TABLE_NAME}': {data}")
             # Insert into Supabase
             supabase_client.table(TABLE_NAME).insert(data).execute()
         await logger.info(f"Finished processing {pdf_path}")
     except Exception as e:
-        await logger.error(f"Error processing {pdf_path}: {e}")
+        tb = traceback.format_exc()
+        await logger.error(f"Error processing {pdf_path}: {repr(e)}\n{tb}")
 
 async def main():
     logger = Logger("dataloader")

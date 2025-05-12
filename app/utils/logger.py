@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import functools
 
 class Logger:
     def __init__(self, name: str = "autocare"):
@@ -17,22 +18,34 @@ class Logger:
     async def info(self, message: str):
         loop = asyncio.get_running_loop()
         async with self._lock:
-            await loop.run_in_executor(None, self.logger.info, message, {"log_type": "info"})
+            await loop.run_in_executor(
+                None,
+                functools.partial(self.logger.info, message, extra={"log_type": "info"})
+            )
 
     async def warning(self, message: str):
         loop = asyncio.get_running_loop()
         async with self._lock:
-            await loop.run_in_executor(None, self.logger.warning, message, {"log_type": "warning"})
+            await loop.run_in_executor(
+                None,
+                functools.partial(self.logger.warning, message, extra={"log_type": "warning"})
+            )
 
     async def error(self, message: str):
         loop = asyncio.get_running_loop()
         async with self._lock:
-            await loop.run_in_executor(None, self.logger.error, message, {"log_type": "error"})
+            await loop.run_in_executor(
+                None,
+                functools.partial(self.logger.error, message, extra={"log_type": "error"})
+            )
 
     async def debug(self, message: str):
         loop = asyncio.get_running_loop()
         async with self._lock:
-            await loop.run_in_executor(None, self.logger.debug, message, {"log_type": "debug"})
+            await loop.run_in_executor(
+                None,
+                functools.partial(self.logger.debug, message, extra={"log_type": "debug"})
+            )
 
     async def get_logger(self):
         return self.logger

@@ -63,7 +63,7 @@ def generate_create_table_sql(model):
 async def migrate_all_schemas():
     schemas_path = os.path.join(os.path.dirname(__file__), '../schemas')
     models = await get_schema_models(schemas_path)
-    db = SupabaseDBHandler().client
+    db = await SupabaseDBHandler().client  # Await the coroutine to get the client instance
     for model in models:
         sql = generate_create_table_sql(model)
         await logger.info(f"Executing SQL for {model.__name__}:\n{sql}\n")

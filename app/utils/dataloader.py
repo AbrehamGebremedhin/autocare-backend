@@ -2,6 +2,7 @@ import os
 import asyncio
 import inspect
 import traceback
+import uuid
 from app.services.parser_service import ParserService
 from app.services.embedding_service import EmbeddingService
 from app.db.base import SupabaseDBHandler
@@ -26,10 +27,11 @@ async def process_pdf(pdf_path, parser_service, embedding_service, supabase_clie
             embeddings = embeddings_result
         for idx, (chunk, vector) in enumerate(zip(chunks, embeddings)):
             data = {
+                "id": str(uuid.uuid4()),
                 "book_title": book_title,
                 "content_chunk": chunk,
                 "vector": vector,
-                "page_number": None,  # Optional: can be improved if page info is available
+                "page_number": -1,  # Use -1 if page number is unknown
                 "metadata": {"source_file": pdf_path, "chunk_index": idx}
             }
             await logger.info(f"Inserting into table '{TABLE_NAME}': {data}")

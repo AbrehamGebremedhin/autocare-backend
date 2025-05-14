@@ -3,6 +3,7 @@ import asyncio
 import inspect
 import traceback
 import uuid
+import time
 from app.services.parser_service import ParserService
 from app.services.embedding_service import EmbeddingService
 from app.db.base import SupabaseDBHandler
@@ -10,6 +11,10 @@ from app.utils.logger import Logger
 
 CAR_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'car_data')
 TABLE_NAME = "Groundknowledge"
+
+MAX_EMBEDDING_RETRIES = 3
+MAX_INSERT_RETRIES = 3
+RETRY_BASE_DELAY = 2  # seconds
 
 async def process_pdf(pdf_path, parser_service, embedding_service, supabase_client, logger):
     book_title = os.path.splitext(os.path.basename(pdf_path))[0]
@@ -19,12 +24,23 @@ async def process_pdf(pdf_path, parser_service, embedding_service, supabase_clie
         if not chunks:
             await logger.warning(f"No text extracted from {pdf_path}")
             return
-        # Handle both async and sync embed_texts
-        embeddings_result = embedding_service.embed_texts(chunks)
-        if inspect.isawaitable(embeddings_result):
-            embeddings = await embeddings_result
-        else:
-            embeddings = embeddings_result
+        # Retry embedding with exponential backoff
+        for attempt in range(MAX_EMBEDDING_RETRIES):
+            try:
+                embeddings_result = embedding_service.embed_texts(chunks)
+                if inspect.isawaitable(embeddings_result):
+                    embeddings = await embeddings_result
+                else:
+                    embeddings = embeddings_result
+                break  # Success
+            except Exception as e:
+                if attempt < MAX_EMBEDDING_RETRIES - 1:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    await logger.warning(f"Embedding failed (attempt {attempt+1}/{MAX_EMBEDDING_RETRIES}): {e}. Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                else:
+                    await logger.error(f"Embedding failed after {MAX_EMBEDDING_RETRIES} attempts: {e}")
+                    return
         for idx, (chunk, vector) in enumerate(zip(chunks, embeddings)):
             data = {
                 "id": str(uuid.uuid4()),
@@ -34,9 +50,19 @@ async def process_pdf(pdf_path, parser_service, embedding_service, supabase_clie
                 "page_number": -1,  # Use -1 if page number is unknown
                 "metadata": {"source_file": pdf_path, "chunk_index": idx}
             }
-            await logger.info(f"Inserting into table '{TABLE_NAME}': {data}")
-            # Insert into Supabase
-            supabase_client.table(TABLE_NAME).insert(data).execute()
+            # Retry insert with exponential backoff
+            for attempt in range(MAX_INSERT_RETRIES):
+                try:
+                    await logger.info(f"Inserting into table '{TABLE_NAME}': {data}")
+                    supabase_client.table(TABLE_NAME).insert(data).execute()
+                    break  # Success
+                except Exception as e:
+                    if attempt < MAX_INSERT_RETRIES - 1:
+                        delay = RETRY_BASE_DELAY * (2 ** attempt)
+                        await logger.warning(f"Insert failed (attempt {attempt+1}/{MAX_INSERT_RETRIES}): {e}. Retrying in {delay}s...")
+                        await asyncio.sleep(delay)
+                    else:
+                        await logger.error(f"Insert failed after {MAX_INSERT_RETRIES} attempts: {e}")
         await logger.info(f"Finished processing {pdf_path}")
     except Exception as e:
         tb = traceback.format_exc()

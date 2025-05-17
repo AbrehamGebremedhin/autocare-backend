@@ -1,8 +1,18 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from app.api.v1.routes import router as v1_router
 from app.utils.websocket import manager
+from app.utils.logger import Logger
 
 app = FastAPI()
+logger = Logger()
+
+@app.on_event("startup")
+async def startup_event():
+    await logger.info("WebSocket manager is ready.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await logger.info("WebSocket manager is shutting down.")
 
 app.include_router(v1_router, prefix="/api/v1")
 

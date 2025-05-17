@@ -6,18 +6,29 @@ from selenium.common.exceptions import WebDriverException
 import random
 import time
 import asyncio
+from typing import Optional
+from app.utils.logger import Logger
 
 class ScraperService(BaseService):
     """
     Service to scrape a list of URLs and extract page information (title, text, meta description) using Selenium.
     """
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, logger: Optional[Logger] = None):
+        """
+        Initialize the ScraperService.
+        Args:
+            headless (bool): Whether to run the browser in headless mode.
+            logger (Logger): Optional logger instance.
+        """
         super().__init__()
         self.headless = headless
+        self.logger = logger or Logger("ScraperService")
 
     def _get_headers(self) -> dict:
         """
         Generate headers to mimic a real browser and avoid detection.
+        Returns:
+            dict: HTTP headers for requests.
         """
         user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -34,6 +45,11 @@ class ScraperService(BaseService):
         }
 
     def _get_driver(self):
+        """
+        Create and configure a Selenium Chrome WebDriver instance.
+        Returns:
+            WebDriver: Configured Chrome WebDriver.
+        """
         options = Options()
         if self.headless:
             options.add_argument('--headless')
@@ -49,16 +65,27 @@ class ScraperService(BaseService):
 
     async def extract_page_info(self, url: str) -> dict:
         """
-        Fetches a page and extracts its title, text content, and meta description using Selenium.
+        Fetch a page and extract its title, text content, and meta description using Selenium.
         Args:
             url (str): The URL to scrape.
         Returns:
             dict: Extracted information.
         """
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self._extract_page_info_sync(url))
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, lambda: self._extract_page_info_sync(url))
+        except Exception as e:
+            await self.logger.error(f"extract_page_info error: {e}")
+            return {'url': url, 'error': str(e)}
 
     def _extract_page_info_sync(self, url: str) -> dict:
+        """
+        Synchronous helper to extract page info using Selenium.
+        Args:
+            url (str): The URL to scrape.
+        Returns:
+            dict: Extracted information.
+        """
         driver = self._get_driver()
         try:
             driver.get(url)
@@ -84,6 +111,12 @@ class ScraperService(BaseService):
                 'text': text
             }
         except WebDriverException as e:
+            if hasattr(self, 'logger'):
+                asyncio.run(self.logger.error(f"_extract_page_info_sync WebDriverException: {e}"))
+            return {'url': url, 'error': str(e)}
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                asyncio.run(self.logger.error(f"_extract_page_info_sync error: {e}"))
             return {'url': url, 'error': str(e)}
         finally:
             driver.quit()

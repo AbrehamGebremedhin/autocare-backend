@@ -3,13 +3,21 @@ from app.core.config import get_settings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 import asyncio
+from typing import Optional
+from app.utils.logger import Logger
 
 class QueryBuilderService(BaseService):
     """
     Service to build optimized queries for search engines, YouTube, and vector search using Gemini API via LangChain.
     """
-    def __init__(self):
+    def __init__(self, logger: Optional[Logger] = None):
+        """
+        Initialize the QueryBuilderService.
+        Args:
+            logger (Logger): Optional logger instance.
+        """
         super().__init__()
+        self.logger = logger or Logger("QueryBuilderService")
         settings = get_settings()
         self.gemini_api_key = settings.GEMINI_KEY
         self.gemini_model = settings.GEMINI_MODEL_1
@@ -72,22 +80,27 @@ class QueryBuilderService(BaseService):
     async def perform_action(self, user_query: str, query_type: str = None):
         """
         Build optimized queries from a user query, optionally for a specific search type.
-        
         Args:
-            user_query: The original user query
-            query_type: Optional type of query to generate ('search_engine', 'youtube', 'vector_search', or None for all)
+            user_query: The original user query.
+            query_type: Optional type of query to generate ('search_engine', 'youtube', 'vector_search', or None for all).
+        Returns:
+            dict: Optimized queries for the requested type(s).
+        Raises:
+            Exception: If query building fails.
         """
-        results = {}
-        loop = asyncio.get_running_loop()
-        
-        if query_type and query_type in self.prompts:
-            chain = self.prompts[query_type] | self.llm
-            result = await chain.ainvoke({"query": user_query})
-            results[query_type] = result.content if hasattr(result, 'content') else str(result)
-        else:
-            for key, prompt in self.prompts.items():
-                chain = prompt | self.llm
+        try:
+            results = {}
+            loop = asyncio.get_running_loop()
+            if query_type and query_type in self.prompts:
+                chain = self.prompts[query_type] | self.llm
                 result = await chain.ainvoke({"query": user_query})
-                results[key] = result.content if hasattr(result, 'content') else str(result)
-                
-        return results
+                results[query_type] = result.content if hasattr(result, 'content') else str(result)
+            else:
+                for key, prompt in self.prompts.items():
+                    chain = prompt | self.llm
+                    result = await chain.ainvoke({"query": user_query})
+                    results[key] = result.content if hasattr(result, 'content') else str(result)
+            return results
+        except Exception as e:
+            await self.logger.error(f"perform_action error: {e}")
+            raise

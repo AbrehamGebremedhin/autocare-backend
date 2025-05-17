@@ -3,19 +3,23 @@ from app.core.config import get_settings
 from bs4 import BeautifulSoup
 import httpx
 import asyncio
+from typing import Optional
+from app.utils.logger import Logger
 
 class FetchCarDataService(BaseService):
     """
     Service to download a PDF file from a given URL and optionally notify via websocket.
     """
-    def __init__(self, websocket_manager=None):
+    def __init__(self, websocket_manager=None, logger: Optional[Logger] = None):
         """
-        Initializes the FetchCarDataService with an optional websocket manager.
+        Initialize the FetchCarDataService.
         Args:
-            websocket_manager (WebSocketManager, optional): An instance of WebSocketManager for sending notifications.
+            websocket_manager: Optional WebSocketManager for notifications.
+            logger: Optional logger instance.
         """
         super().__init__()
         self.websocket_manager = websocket_manager
+        self.logger = logger or Logger("FetchCarDataService")
         settings = get_settings()
         self.BASE_URL = settings.BASE_URL
 
@@ -33,6 +37,8 @@ class FetchCarDataService(BaseService):
             loop.create_task(self.websocket_manager.broadcast(message))
         except RuntimeError:
             await self.websocket_manager.broadcast(message)
+        except Exception as e:
+            await self.logger.error(f"notify_websocket error: {e}")
 
     def build_url(self, make: str, model:str, year: int) -> str:
         """
@@ -42,7 +48,9 @@ class FetchCarDataService(BaseService):
             model (str): The car's model.
             year (int): The car's year.
         Returns:
-            str: The constructed URL.
+            dict: The constructed URLs for manuals and guides.
+        Raises:
+            ValueError: If any argument is missing.
         """
         if not make or not model or not year:
             raise ValueError("Make, model, and year must be provided.")
@@ -59,12 +67,13 @@ class FetchCarDataService(BaseService):
     async def scrape_links(self, url: str, req_type: str) -> list:
         """
         Scrapes all links from a given URL using BeautifulSoup.
-        
         Args:
             url (str): The URL to scrape for links.
-            
+            req_type (str): The type of request ('owner_manual' or 'car_guide_link').
         Returns:
-            list: A list of dictionaries containing link information.
+            list: A list of scraped links or file paths.
+        Raises:
+            Exception: If scraping fails.
         """
         async with httpx.AsyncClient() as client:
             try:
@@ -107,7 +116,8 @@ class FetchCarDataService(BaseService):
                     return links
             except Exception as e:
                 await self.notify_websocket(f"Error scraping links from {url}: {str(e)}")
-                raise Exception(f"Error scraping links: {str(e)}")
+                await self.logger.error(f"scrape_links error: {e}")
+                raise
 
     async def download_pdf(self, url: str, output_path: str) -> None:
         """
@@ -116,8 +126,6 @@ class FetchCarDataService(BaseService):
         Args:
             url (str): The URL of the PDF file to download.
             output_path (str): The local file path to save the downloaded PDF.
-        Raises:
-            Exception: If the download fails or the response is not a PDF.
         """
         async def _download():
             async with httpx.AsyncClient() as client:
@@ -131,28 +139,33 @@ class FetchCarDataService(BaseService):
                         await self.notify_websocket(f"Failed to download PDF from {url}")
                 except Exception as e:
                     await self.notify_websocket(f"Error downloading PDF from {url}: {str(e)}")
-        # Run the download in the background
-        asyncio.create_task(_download())
+                    await self.logger.error(f"download_pdf error: {e}")
+        try:
+            asyncio.create_task(_download())
+        except Exception as e:
+            await self.logger.error(f"download_pdf scheduling error: {e}")
 
     async def perform_action(self, make: str, model: str, year: int):
         """
         Performs the complete car data fetching action: building URLs, scraping links, and downloading PDFs.
-        
         Args:
             make (str): The car's make.
             model (str): The car's model.
             year (int): The car's year.
-            output_path (str, optional): Path to save downloaded files.
-            req_type (str, optional): Type of request ("owner_manual" or "Car_guide_link").
-            
         Returns:
             list: A list of scraped links or file paths.
+        Raises:
+            Exception: If any step fails.
         """
-        links = self.build_url(make, model, year)
-        
-        await self.notify_websocket(f"Fetching data for {make} {model} {year}")
+        try:
+            links = self.build_url(make, model, year)
+            
+            await self.notify_websocket(f"Fetching data for {make} {model} {year}")
 
-        manual_link = await self.scrape_links(links['Owner_Manual'], req_type="owner_manual")
-        self.download_pdf(manual_link, output_path=f"{make}-{model}_{year}_EN_US.pdf")
+            manual_link = await self.scrape_links(links['Owner_Manual'], req_type="owner_manual")
+            self.download_pdf(manual_link, output_path=f"{make}-{model}_{year}_EN_US.pdf")
 
-        return await self.scrape_links(links['Car_guide_link'], req_type="car_guide_link")
+            return await self.scrape_links(links['Car_guide_link'], req_type="car_guide_link")
+        except Exception as e:
+            await self.logger.error(f"perform_action error: {e}")
+            raise

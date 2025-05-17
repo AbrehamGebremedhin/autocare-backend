@@ -4,8 +4,9 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from app.core.config import get_settings
 from app.services.query_builder_service import QueryBuilderService
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import asyncio
+from app.utils.logger import Logger
 
 class SearchEngineService(BaseService):
     """
@@ -20,12 +21,24 @@ class SearchEngineService(BaseService):
                  scraper_service=None,
                  bucket_manager=None,
                  fetch_car_data_service=None,
-                 db_handler=None):
+                 db_handler=None,
+                 logger: Optional[Logger] = None):
         """
         Initialize the SearchEngineService with required dependencies and API clients.
         Allows dependency injection for easier testing and flexibility.
+        Args:
+            query_builder: QueryBuilderService instance.
+            youtube_client: YouTube API client.
+            embedding_service: EmbeddingService instance.
+            parser_service: ParserService instance.
+            scraper_service: ScraperService instance.
+            bucket_manager: SupabaseBucketManager instance.
+            fetch_car_data_service: FetchCarDataService instance.
+            db_handler: SupabaseDBHandler instance.
+            logger: Logger instance.
         """
         super().__init__()
+        self.logger = logger or Logger("SearchEngineService")
         settings = get_settings()
         self.query_builder = query_builder or QueryBuilderService()
         self.youtube = youtube_client or build('youtube', 'v3', developerKey=settings.YOUTUBE_API_KEY)
@@ -43,68 +56,136 @@ class SearchEngineService(BaseService):
         self.db_handler = db_handler or SupabaseDBHandler()
 
     async def _get_ground_knowledge_chunks(self, limit=50):
-        db = self.db_handler._client
-        ground_knowledge = db.table("Ground_Knowledge").select("*").limit(limit).execute()
-        ground_docs = ground_knowledge.data if hasattr(ground_knowledge, 'data') else ground_knowledge["data"]
-        return [
-            {
-                "id": doc.get("id"),
-                "source": "ground_knowledge",
-                "content": doc.get("content_chunk"),
-                "vector": doc.get("vector"),
-                "metadata": doc.get("metadata", {}),
-            }
-            for doc in ground_docs
-        ]
+        """
+        Retrieve ground knowledge chunks from the database.
+        Args:
+            limit (int): Maximum number of chunks to retrieve.
+        Returns:
+            List[dict]: List of ground knowledge chunks.
+        Raises:
+            Exception: If retrieval fails.
+        """
+        try:
+            db = self.db_handler._client
+            ground_knowledge = db.table("Ground_Knowledge").select("*").limit(limit).execute()
+            ground_docs = ground_knowledge.data if hasattr(ground_knowledge, 'data') else ground_knowledge["data"]
+            return [
+                {
+                    "id": doc.get("id"),
+                    "source": "ground_knowledge",
+                    "content": doc.get("content_chunk"),
+                    "vector": doc.get("vector"),
+                    "metadata": doc.get("metadata", {}),
+                }
+                for doc in ground_docs
+            ]
+        except Exception as e:
+            await self.logger.error(f"_get_ground_knowledge_chunks error: {e}")
+            raise
 
     async def _get_owner_manual_chunks(self, make, model, year, limit=50):
-        pdf_name = f"{make}-{model}_{year}_EN_US.pdf"
-        bucket_name = "manuals"
-        pdf_bytes = await self.bucket_manager.download_file(bucket_name, pdf_name)
-        owner_chunks_list = await self.parser_service.perform_action(pdf_bytes, source_type="pdf", chunk_size=1000)
-        return [
-            {"id": f"owner_{i}", "source": "owner_manual", "content": chunk, "vector": None, "metadata": {}}
-            for i, chunk in enumerate(owner_chunks_list[:limit])
-        ]
+        """
+        Retrieve owner manual chunks for a specific car.
+        Args:
+            make (str): Car make.
+            model (str): Car model.
+            year (int): Car year.
+            limit (int): Maximum number of chunks.
+        Returns:
+            List[dict]: List of owner manual chunks.
+        Raises:
+            Exception: If retrieval fails.
+        """
+        try:
+            pdf_name = f"{make}-{model}_{year}_EN_US.pdf"
+            bucket_name = "manuals"
+            pdf_bytes = await self.bucket_manager.download_file(bucket_name, pdf_name)
+            owner_chunks_list = await self.parser_service.perform_action(pdf_bytes, source_type="pdf", chunk_size=1000)
+            return [
+                {"id": f"owner_{i}", "source": "owner_manual", "content": chunk, "vector": None, "metadata": {}}
+                for i, chunk in enumerate(owner_chunks_list[:limit])
+            ]
+        except Exception as e:
+            await self.logger.error(f"_get_owner_manual_chunks error: {e}")
+            raise
 
     async def _get_web_chunks(self, make, model, year, limit_links=10, limit_chunks=100):
-        links = await self.fetch_car_data_service.perform_action(make, model, year)
-        scraped = await self.scraper_service.perform_action(links, limit=limit_links)
-        web_chunks = []
-        for i, page in enumerate(scraped):
-            if 'text' in page and page['text']:
-                chunks = await self.parser_service.perform_action(page['text'], source_type="string", chunk_size=1000)
-                for j, chunk in enumerate(chunks):
-                    if len(web_chunks) < limit_chunks:
-                        web_chunks.append({
-                            "id": f"web_{i}_{j}", "source": "web", "content": chunk, "vector": None, "metadata": {"url": page.get("url")}
-                        })
-                    else:
-                        break
-            if len(web_chunks) >= limit_chunks:
-                break
-        return web_chunks
+        """
+        Retrieve web chunks for a specific car.
+        Args:
+            make (str): Car make.
+            model (str): Car model.
+            year (int): Car year.
+            limit_links (int): Max number of links to scrape.
+            limit_chunks (int): Max number of chunks.
+        Returns:
+            List[dict]: List of web chunks.
+        Raises:
+            Exception: If retrieval fails.
+        """
+        try:
+            links = await self.fetch_car_data_service.perform_action(make, model, year)
+            scraped = await self.scraper_service.perform_action(links, limit=limit_links)
+            web_chunks = []
+            for i, page in enumerate(scraped):
+                if 'text' in page and page['text']:
+                    chunks = await self.parser_service.perform_action(page['text'], source_type="string", chunk_size=1000)
+                    for j, chunk in enumerate(chunks):
+                        if len(web_chunks) < limit_chunks:
+                            web_chunks.append({
+                                "id": f"web_{i}_{j}", "source": "web", "content": chunk, "vector": None, "metadata": {"url": page.get("url")}
+                            })
+                        else:
+                            break
+                if len(web_chunks) >= limit_chunks:
+                    break
+            return web_chunks
+        except Exception as e:
+            await self.logger.error(f"_get_web_chunks error: {e}")
+            raise
 
     @staticmethod
     def _cosine_sim(a, b):
+        """
+        Compute cosine similarity between two vectors.
+        Args:
+            a (list): First vector.
+            b (list): Second vector.
+        Returns:
+            float: Cosine similarity score.
+        """
         import numpy as np
         a = np.array(a)
         b = np.array(b)
         return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
     async def _embed_and_score(self, query, chunks):
-        query_vec = await self.embedding_service.embed_text(query)
-        to_embed = [c["content"] for c in chunks if c["vector"] is None]
-        if to_embed:
-            vectors = await self.embedding_service.embed_texts(to_embed)
-            vi = 0
+        """
+        Embed the query and chunks, then score them by similarity.
+        Args:
+            query (str): The search query.
+            chunks (list): List of chunks to score.
+        Returns:
+            list: Chunks with similarity scores.
+        Raises:
+            Exception: If embedding or scoring fails.
+        """
+        try:
+            query_vec = await self.embedding_service.embed_text(query)
+            to_embed = [c["content"] for c in chunks if c["vector"] is None]
+            if to_embed:
+                vectors = await self.embedding_service.embed_texts(to_embed)
+                vi = 0
+                for c in chunks:
+                    if c["vector"] is None:
+                        c["vector"] = vectors[vi]
+                        vi += 1
             for c in chunks:
-                if c["vector"] is None:
-                    c["vector"] = vectors[vi]
-                    vi += 1
-        for c in chunks:
-            c["score"] = self._cosine_sim(query_vec, c["vector"])
-        return chunks
+                c["score"] = self._cosine_sim(query_vec, c["vector"])
+            return chunks
+        except Exception as e:
+            await self.logger.error(f"_embed_and_score error: {e}")
+            raise
 
     async def vector_search(self, query: str, query_type: str = None, make: str = None, model: str = None, year: int = None) -> list:
         """
@@ -115,27 +196,33 @@ class SearchEngineService(BaseService):
             make, model, year: Car info for owner manual and guides.
         Returns:
             List of ranked search results.
+        Raises:
+            Exception: If search fails.
         """
-        if query_type == "generation":
-            owner_chunks = await self._get_owner_manual_chunks(make, model, year) if (make and model and year) else []
-            web_chunks = await self._get_web_chunks(make, model, year) if (make and model and year) else []
-            all_chunks = owner_chunks + web_chunks
-            all_chunks = await self._embed_and_score(query, all_chunks)
-            all_chunks.sort(key=lambda x: x["score"], reverse=True)
-            return all_chunks[:72]
-        elif query_type == "validation":
-            ground_chunks = await self._get_ground_knowledge_chunks()
-            ground_chunks = await self._embed_and_score(query, ground_chunks)
-            ground_chunks.sort(key=lambda x: x["score"], reverse=True)
-            return ground_chunks
-        else:
-            ground_chunks = await self._get_ground_knowledge_chunks()
-            owner_chunks = await self._get_owner_manual_chunks(make, model, year) if (make and model and year) else []
-            web_chunks = await self._get_web_chunks(make, model, year) if (make and model and year) else []
-            all_chunks = ground_chunks + owner_chunks + web_chunks
-            all_chunks = await self._embed_and_score(query, all_chunks)
-            all_chunks.sort(key=lambda x: x["score"], reverse=True)
-            return all_chunks
+        try:
+            if query_type == "generation":
+                owner_chunks = await self._get_owner_manual_chunks(make, model, year) if (make and model and year) else []
+                web_chunks = await self._get_web_chunks(make, model, year) if (make and model and year) else []
+                all_chunks = owner_chunks + web_chunks
+                all_chunks = await self._embed_and_score(query, all_chunks)
+                all_chunks.sort(key=lambda x: x["score"], reverse=True)
+                return all_chunks[:72]
+            elif query_type == "validation":
+                ground_chunks = await self._get_ground_knowledge_chunks()
+                ground_chunks = await self._embed_and_score(query, ground_chunks)
+                ground_chunks.sort(key=lambda x: x["score"], reverse=True)
+                return ground_chunks
+            else:
+                ground_chunks = await self._get_ground_knowledge_chunks()
+                owner_chunks = await self._get_owner_manual_chunks(make, model, year) if (make and model and year) else []
+                web_chunks = await self._get_web_chunks(make, model, year) if (make and model and year) else []
+                all_chunks = ground_chunks + owner_chunks + web_chunks
+                all_chunks = await self._embed_and_score(query, all_chunks)
+                all_chunks.sort(key=lambda x: x["score"], reverse=True)
+                return all_chunks
+        except Exception as e:
+            await self.logger.error(f"vector_search error: {e}")
+            raise
 
     async def web_search(self, query: str, num_results: int = 10) -> List[Dict[str, Any]]:
         """
@@ -144,19 +231,21 @@ class SearchEngineService(BaseService):
             query (str): The search query.
             num_results (int): Number of results to return.
         Returns:
-            List[Dict[str, Any]]: List of search result dictionaries with 'title', 'link', and 'description'.
+            List[Dict[str, Any]]: List of search result URLs.
+        Raises:
+            Exception: If search fails.
         """
-        print(f"Performing web search for query: {query}")
-        results = []
         try:
+            print(f"Performing web search for query: {query}")
+            results = []
             loop = asyncio.get_running_loop()
-            # googlesearch is not async, so run in executor
             search_results = await loop.run_in_executor(None, lambda: list(search(query, num_results=num_results, advanced=True)))
             for result in search_results:
                 results.append(result.url)
+            return results
         except Exception as e:
-            print(f"Error during Google search: {e}")
-        return results
+            await self.logger.error(f"web_search error: {e}")
+            return []
     
     async def youtube_search(self, query: str, max_results: int = 5, **kwargs) -> List[Dict[str, Any]]:
         """
@@ -166,10 +255,11 @@ class SearchEngineService(BaseService):
             max_results (int): Maximum number of results to return.
         Returns:
             List[Dict[str, Any]]: List of video information dictionaries.
+        Raises:
+            Exception: If search fails.
         """
         try:
             loop = asyncio.get_running_loop()
-            # googleapiclient is not async, so run in executor
             def _search():
                 search_response = self.youtube.search().list(
                     q=query,
@@ -184,7 +274,6 @@ class SearchEngineService(BaseService):
                 video_ids = [item['id']['videoId'] for item in search_response.get('items', [])]
                 if not video_ids:
                     return []
-                # Get video details
                 video_response = self.youtube.videos().list(
                     id=','.join(video_ids),
                     part='contentDetails,statistics,snippet,status,player'
@@ -202,10 +291,10 @@ class SearchEngineService(BaseService):
                 return videos
             return await loop.run_in_executor(None, _search)
         except HttpError as e:
-            print(f"YouTube API error: {e}")
+            await self.logger.error(f"YouTube API error: {e}")
             return []
         except Exception as e:
-            print(f"Error searching YouTube content: {e}")
+            await self.logger.error(f"youtube_search error: {e}")
             return []
 
     def _parse_duration(self, duration_str: str) -> int:
@@ -234,21 +323,27 @@ class SearchEngineService(BaseService):
             query_type (str, optional): The type of search ('search_engine', 'youtube', 'vector').
         Returns:
             List of search results from the selected search method.
+        Raises:
+            Exception: If search fails.
         """
-        query = await self.query_builder.perform_action(user_query, query_type)
-        query = query.get('query', user_query)
-        if not query:
-            print("No optimized query generated.")
-            return []
-        print(f"Optimized query: {query}")
-        if not query_type:
-            return await self.web_search(query)
-        query_type = query_type.lower()
-        if query_type == "search_engine":
-            return await self.web_search(query)
-        elif query_type == "youtube":
-            return await self.youtube_search(query)
-        elif query_type == "vector":
-            return await self.vector_search(query)
-        else:
-            return await self.web_search(user_query)
+        try:
+            query = await self.query_builder.perform_action(user_query, query_type)
+            query = query.get('query', user_query)
+            if not query:
+                await self.logger.warning("No optimized query generated.")
+                return []
+            print(f"Optimized query: {query}")
+            if not query_type:
+                return await self.web_search(query)
+            query_type = query_type.lower()
+            if query_type == "search_engine":
+                return await self.web_search(query)
+            elif query_type == "youtube":
+                return await self.youtube_search(query)
+            elif query_type == "vector":
+                return await self.vector_search(query)
+            else:
+                return await self.web_search(user_query)
+        except Exception as e:
+            await self.logger.error(f"perform_action error: {e}")
+            raise

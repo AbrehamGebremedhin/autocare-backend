@@ -1,9 +1,9 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from datetime import datetime
 
 class UserBase(BaseModel):
-    id: str
+    id: Optional[str] = Field(default=None, primary_key=True, unique=True)
     email: EmailStr
     created_at: Optional[datetime] = None
     phone: Optional[str] = None

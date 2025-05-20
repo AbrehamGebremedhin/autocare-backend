@@ -75,7 +75,7 @@ class FetchCarDataService(BaseService):
         Raises:
             Exception: If scraping fails.
         """
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             try:
                 if req_type == "owner_manual":
                     response = await client.get(url)
@@ -121,29 +121,24 @@ class FetchCarDataService(BaseService):
 
     async def download_pdf(self, url: str, output_path: str) -> None:
         """
-        Downloads a PDF file from the given URL and saves it to the specified output path in the background.
+        Downloads a PDF file from the given URL and saves it to the specified output path.
         Optionally sends a websocket message on success or failure.
         Args:
             url (str): The URL of the PDF file to download.
             output_path (str): The local file path to save the downloaded PDF.
         """
-        async def _download():
-            async with httpx.AsyncClient() as client:
-                try:
-                    response = await client.get(url)
-                    if response.status_code == 200 and 'application/pdf' in response.headers.get('Content-Type', ''):
-                        with open(output_path, 'wb') as f:
-                            f.write(response.content)
-                        await self.notify_websocket(f"PDF downloaded successfully: {output_path}")
-                    else:
-                        await self.notify_websocket(f"Failed to download PDF from {url}")
-                except Exception as e:
-                    await self.notify_websocket(f"Error downloading PDF from {url}: {str(e)}")
-                    await self.logger.error(f"download_pdf error: {e}")
-        try:
-            asyncio.create_task(_download())
-        except Exception as e:
-            await self.logger.error(f"download_pdf scheduling error: {e}")
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            try:
+                response = await client.get(url)
+                if response.status_code == 200 and 'application/pdf' in response.headers.get('Content-Type', ''):
+                    with open(output_path, 'wb') as f:
+                        f.write(response.content)
+                    await self.notify_websocket(f"PDF downloaded successfully: {output_path}")
+                else:
+                    await self.notify_websocket(f"Failed to download PDF from {url}")
+            except Exception as e:
+                await self.notify_websocket(f"Error downloading PDF from {url}: {str(e)}")
+                await self.logger.error(f"download_pdf error: {e}")
 
     async def perform_action(self, make: str, model: str, year: int):
         """
@@ -163,7 +158,7 @@ class FetchCarDataService(BaseService):
             await self.notify_websocket(f"Fetching data for {make} {model} {year}")
 
             manual_link = await self.scrape_links(links['Owner_Manual'], req_type="owner_manual")
-            self.download_pdf(manual_link, output_path=f"{make}-{model}_{year}_EN_US.pdf")
+            await self.download_pdf(manual_link, output_path=f"{make}-{model}_{year}_EN_US.pdf")
 
             return await self.scrape_links(links['Car_guide_link'], req_type="car_guide_link")
         except Exception as e:

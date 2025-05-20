@@ -1,8 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
 class CarBase(BaseModel):
-    id: Optional[str] = None
+    id: Optional[str] = Field(default=None, primary_key=True, unique=True)
     make: str
     model: str
     year: int
@@ -12,3 +12,7 @@ class CarBase(BaseModel):
 
     class Config:
         orm_mode = True
+
+        @staticmethod
+        def table_args():
+            return {'primary_key': 'id'}

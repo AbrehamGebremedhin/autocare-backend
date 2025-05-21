@@ -1,11 +1,35 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi.responses import JSONResponse
 from app.api.v1.routes import router as v1_router
 from app.utils.websocket import manager as websocket_manager
 from app.utils.logger import Logger
 from typing import Any
+from pydantic import BaseModel
 
 app = FastAPI()
 logger = Logger()
+
+class ErrorResponse(BaseModel):
+    detail: str
+    code: int
+
+# Unified error handler for HTTPException
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    await logger.error(f"HTTPException: {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ErrorResponse(detail=exc.detail, code=exc.status_code).dict(),
+    )
+
+# Unified error handler for generic Exception
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    await logger.error(f"Unhandled Exception: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content=ErrorResponse(detail="Internal server error", code=500).dict(),
+    )
 
 def get_logger() -> Logger:
     return logger
@@ -30,6 +54,10 @@ class WebSocketHandler:
         except WebSocketDisconnect:
             await self.manager.disconnect(websocket)
             await self.logger.info("WebSocket disconnected.")
+        except Exception as exc:
+            await self.logger.error(f"WebSocket error: {str(exc)}")
+            await self.manager.disconnect(websocket)
+            await websocket.close(code=1011)
 
 @app.on_event("startup")
 async def startup_event():

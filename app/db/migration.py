@@ -53,11 +53,18 @@ async def get_schema_models(schemas_path):
 def generate_create_table_sql(model):
     table_name = model.__name__.replace('Base', '').capitalize()
     fields = []
+    primary_key = None
+
     for field, info in model.model_fields.items():
         pg_type = python_type_to_pg(info.annotation, field_name=field)
         nullable = 'NULL' if info.is_required is False else 'NOT NULL'
         fields.append(f'"{field}" {pg_type} {nullable}')
+        if field == "id":
+            primary_key = field
+
     fields_sql = ', '.join(fields)
+    if primary_key:
+        fields_sql += f', PRIMARY KEY ("{primary_key}")'
     return f'CREATE TABLE IF NOT EXISTS "{table_name}" ({fields_sql});'
 
 async def migrate_all_schemas():

@@ -1,6 +1,10 @@
 from app.db.crud import BaseCRUD
 from app.services.fetch_car_data_service import FetchCarDataService
 from app.db.bucket_operations import SupabaseBucketManager
+from app.utils.logger import Logger
+from app.services.parser_service import ParserService
+from app.services.embedding_service import EmbeddingService
+from app.utils.redis_cache import get_redis_cache, RedisCache
 import os
 import uuid
 import json
@@ -12,6 +16,9 @@ class CarCRUD(BaseCRUD):
         self.fetch_car_data_service = FetchCarDataService()
         # Always use SupabaseBucketManager, never override from parent
         self.bucket_manager = SupabaseBucketManager()
+        self.logger = Logger()
+        self.parser_service = ParserService()
+        self.embedding_service = EmbeddingService()
 
     def unique_logic(self, make, model, year):
         """Generate a unique car id using make, model, and year."""
@@ -38,7 +45,7 @@ class CarCRUD(BaseCRUD):
         car_id = car_obj.get('id')
         pdf_filename = f"{make}-{model}_{year}_EN_US.pdf"
         bucket_name = "manuals"
-        logger = getattr(getattr(self, 'fetch_car_data_service', None), 'logger', None)
+        logger = self.logger
         try:
             # Check if bucket exists
             buckets = await self.bucket_manager.list_buckets()
@@ -55,40 +62,67 @@ class CarCRUD(BaseCRUD):
                     manual_exists = pdf_filename in file_names
                 except Exception as e:
                     manual_exists = False
-                    if logger:
-                        await logger.error(f"Error listing files in bucket: {e}")
+                    await logger.error(f"Error listing files in bucket: {e}")
             else:
                 try:
                     await self.bucket_manager.create_bucket(bucket_name)
                 except Exception as e:
-                    if logger:
-                        await logger.error(f"Error creating bucket: {e}")
+                    await logger.error(f"Error creating bucket: {e}")
                     return [car_obj]
+            vector = None
             if not manual_exists and manual_link:
                 try:
                     await self.fetch_car_data_service.download_pdf(manual_link, pdf_filename)
+                    # Vectorize the PDF before uploading
+                    try:
+                        chunks = await self.parser_service.parse_pdf(pdf_filename)
+                        if chunks:
+                            vectors = await self.embedding_service.embed_texts(chunks)
+                            # Use the average vector for the car (or first vector if only one chunk)
+                            if vectors:
+                                import numpy as np
+                                if len(vectors) == 1:
+                                    vector = vectors[0]
+                                else:
+                                    vector = np.mean(np.array(vectors), axis=0).tolist()
+                                car_obj['vector'] = vector
+                    except Exception as e:
+                        await logger.error(f"Error vectorizing PDF: {e}")
                     await self.bucket_manager.upload_file(bucket_name, pdf_filename, pdf_filename)
                     if os.path.exists(pdf_filename):
                         os.remove(pdf_filename)
                 except Exception as e:
-                    if logger:
-                        await logger.error(f"Error downloading/uploading manual: {e}")
+                    await logger.error(f"Error downloading/uploading manual: {e}")
+            # If manual already exists, try to vectorize if not already present
+            elif manual_exists and os.path.exists(pdf_filename):
+                try:
+                    chunks = await self.parser_service.parse_pdf(pdf_filename)
+                    if chunks:
+                        vectors = await self.embedding_service.embed_texts(chunks)
+                        if vectors:
+                            import numpy as np
+                            if len(vectors) == 1:
+                                vector = vectors[0]
+                            else:
+                                vector = np.mean(np.array(vectors), axis=0).tolist()
+                            car_obj['vector'] = vector
+                except Exception as e:
+                    await logger.error(f"Error vectorizing existing PDF: {e}")
             # Update car record
             update_data = {
                 'owner_manual_url': f"{bucket_name}/{pdf_filename}" if manual_link else "",
-                'car_guide_links': self.ensure_list(guide_links) if guide_links else []
+                'car_guide_links': self.ensure_list(guide_links) if guide_links else [],
+                'vector': car_obj.get('vector')
             }
             try:
                 await self.update({'id': car_id}, update_data)
                 car_obj.update(update_data)
                 car_obj['car_guide_links'] = self.ensure_list(car_obj.get('car_guide_links'))
             except Exception as e:
-                if logger:
-                    await logger.error(f"Error updating car record: {e}")
+                await logger.error(f"Error updating car record: {e}")
             return [car_obj]
         except Exception as e:
-            if logger:
-                await logger.error(f"update_car_with_links unexpected error: {e}")
+            await logger.error(f"update_car_with_links unexpected error: {e}")
             return [car_obj]
 
     async def create(self, data):
@@ -107,7 +141,6 @@ class CarCRUD(BaseCRUD):
         data['owner_manual_url'] = data.get('owner_manual_url') or ""
         data['service_manual_url'] = data.get('service_manual_url') or ""
         data['car_guide_links'] = self.ensure_list(data.get('car_guide_links'))
-        print('DEBUG: Data to insert into Car table:', data)
         # 1. Create the car record first
         car = await super().create(data)
         if not car or not isinstance(car, list) or not car[0]:
@@ -131,7 +164,29 @@ class CarCRUD(BaseCRUD):
             return await self.update_car_with_links(car_obj, manual_link, guide_links)
         except Exception as e:
             # Log error, but return car as created
-            logger = getattr(getattr(self, 'fetch_car_data_service', None), 'logger', None)
-            if logger:
-                await logger.error(f"Car post-create logic error: {e}")
+            logger = self.logger
+            await logger.error(f"Car post-create logic error: {e}")
             return car
+
+    async def get_car_by_make_model_year(self, make: str, model: str, year: int):
+        """Retrieve a car by make, model, and year."""
+        car_id = self.unique_logic(make, model, year)
+        cars = await self.read({'id': car_id})
+        if cars and isinstance(cars, list) and cars:
+            return cars[0]
+        return None
+
+    async def get_car_by_id(self, car_id: str, cache: RedisCache = None):
+        """Retrieve a car by its unique id, with optional Redis caching."""
+        cache_key = f"car:{car_id}"
+        if cache:
+            cached = await cache.get(cache_key)
+            if cached:
+                return cached
+        cars = await self.read({'id': car_id})
+        if cars and isinstance(cars, list) and cars:
+            car = cars[0]
+            if cache:
+                await cache.set(cache_key, car)
+            return car
+        return None

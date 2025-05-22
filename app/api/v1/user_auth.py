@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, EmailStr
-from app.db.base import SupabaseDBHandler
+from app.db.base import SupabaseDBHandler, get_db_handler
 from app.schemas.User import UserBase
 from app.core.config import get_settings
 from fastapi.security import OAuth2PasswordRequestForm
@@ -17,8 +17,8 @@ class UserLogin(BaseModel):
     password: str
 
 @router.post('/auth/register', response_model=UserBase)
-async def register_user(user: UserCreate):
-    db = await SupabaseDBHandler().client
+async def register_user(user: UserCreate, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+    db = await db_handler.client
     try:
         response = db.auth.sign_up({
             "email": user.email,
@@ -36,8 +36,8 @@ async def register_user(user: UserCreate):
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post('/auth/login')
-async def login_user(form_data: OAuth2PasswordRequestForm = Depends()):
-    db = await SupabaseDBHandler().client
+async def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+    db = await db_handler.client
     try:
         response = db.auth.sign_in_with_password({
             "email": form_data.username,
@@ -53,8 +53,8 @@ async def login_user(form_data: OAuth2PasswordRequestForm = Depends()):
         raise HTTPException(status_code=401, detail=str(e))
 
 @router.post('/auth/logout')
-async def logout_user(token: str):
-    db = await SupabaseDBHandler().client
+async def logout_user(token: str, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+    db = await db_handler.client
     try:
         response = db.auth.sign_out(token)
         return {"message": "Logged out successfully."}

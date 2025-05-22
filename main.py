@@ -1,8 +1,9 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from app.api.v1.routes import router as v1_router
 from app.utils.websocket import manager as websocket_manager
 from app.utils.logger import Logger
+from app.utils.redis_cache import get_redis_cache, RedisCache
 from typing import Any
 from pydantic import BaseModel
 
@@ -30,6 +31,14 @@ async def generic_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content=ErrorResponse(detail="Internal server error", code=500).dict(),
     )
+
+# Dependency for logger
+async def get_logger_dep() -> Logger:
+    return logger
+
+# Dependency for websocket manager
+async def get_websocket_manager_dep() -> Any:
+    return websocket_manager
 
 def get_logger() -> Logger:
     return logger
@@ -61,11 +70,11 @@ class WebSocketHandler:
 
 @app.on_event("startup")
 async def startup_event():
-    await get_logger().info("WebSocket manager is ready.")
+    await logger.info("WebSocket manager is ready.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await get_logger().info("WebSocket manager is shutting down.")
+    await logger.info("WebSocket manager is shutting down.")
 
 app.include_router(v1_router, prefix="/api/v1")
 
@@ -74,6 +83,10 @@ async def read_root():
     return {"message": "Welcome to AutoCare API"}
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    handler = WebSocketHandler(get_websocket_manager(), get_logger())
+async def websocket_endpoint(
+    websocket: WebSocket,
+    websocket_manager: Any = Depends(get_websocket_manager_dep),
+    logger: Logger = Depends(get_logger_dep),
+):
+    handler = WebSocketHandler(websocket_manager, logger)
     await handler.handle(websocket)

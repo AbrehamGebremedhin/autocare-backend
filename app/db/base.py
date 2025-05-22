@@ -1,5 +1,6 @@
 from supabase import create_client, Client
 from app.core.config import get_settings
+from fastapi import Depends
 
 class SupabaseDBHandler:
     _instance = None
@@ -24,3 +25,7 @@ class SupabaseDBHandler:
         if self._client is None:
             raise ValueError("Supabase client is not initialized")
         return self._client
+
+# Dependency for SupabaseDBHandler
+async def get_db_handler() -> SupabaseDBHandler:
+    return SupabaseDBHandler()

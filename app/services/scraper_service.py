@@ -121,19 +121,25 @@ class ScraperService(BaseService):
         finally:
             driver.quit()
 
-    async def perform_action(self, links: list, limit: int = 10) -> list:
+    async def perform_action(self, links: list, limit: int = 10, concurrency: int = 20) -> list:
         """
-        Scrape a list of links and extract page information.
+        Scrape a list of links and extract page information in parallel.
         Args:
             links (list): List of URLs to scrape.
             limit (int): Max number of links to process.
+            concurrency (int): Max number of concurrent scrapes.
         Returns:
             list: List of extracted page info dicts.
         """
+        sem = asyncio.Semaphore(concurrency)
         results = []
-        for url in links[:limit]:
-            delay = random.uniform(1, 3)
-            await asyncio.sleep(delay)
-            info = await self.extract_page_info(url)
-            results.append(info)
+
+        async def scrape(url):
+            async with sem:
+                delay = random.uniform(0.1, 0.5)  # Reduced delay for faster scraping
+                await asyncio.sleep(delay)
+                return await self.extract_page_info(url)
+
+        tasks = [scrape(url) for url in links[:limit]]
+        results = await asyncio.gather(*tasks)
         return results

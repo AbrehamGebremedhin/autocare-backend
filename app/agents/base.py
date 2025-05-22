@@ -5,15 +5,6 @@ class AgentBase(ABC):
     """
     Abstract base class for all agents.
     """
-
-    def __init__(self, services: Dict[str, Any], config: Dict[str, Any] = None):
-        """
-        :param services: Dictionary of service instances (e.g., embedding, parser).
-        :param config: Optional configuration dictionary.
-        """
-        self.services = services
-        self.config = config or {}
-
     @abstractmethod
     async def pre_process(self, task: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """

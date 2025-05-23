@@ -1,229 +1,314 @@
-from app.CRUD.car_crud import CarCRUD
-from .base import AgentBase
-from typing import Any, Dict, List, Optional
-from app.core.config import get_settings
-from langchain.prompts import PromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.output_parsers import JsonOutputParser
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.schema import Document
 import asyncio
-from functools import partial
-from app.services.embedding_service import EmbeddingService
-from app.services.scraper_service import ScraperService
-import numpy as np
-import time
-from app.utils.logger import Logger
+from typing import Any, List, Optional, Dict
+from langchain_core.language_models.base import BaseLanguageModel
+from langchain.prompts import PromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from langchain.chains.llm import LLMChain
 
-class SymptomExtractorAgent(AgentBase):
+class DiagnosisTreeAgent:
     """
-    Agent for extracting symptoms from input text.
+    Unified LangChain agent for managing a diagnosis tree with optional LLM-based expansion.
+    - Maintains a tree of issues, each with a name, likelihood, and associated data.
+    - Supports batch updates: incorporate new issues and update existing ones, inferring parent-child relationships.
+    - Prunes low-likelihood issues and sorts children by likelihood.
+    - Can expand any node (or the entire tree) using an LLMChain based on context and symptom text.
+    - Thread-safe operations using an asyncio lock for concurrent usage.
     """
-
-    @staticmethod
-    def get_prompt_template() -> PromptTemplate:
-        return PromptTemplate.from_template("""
-            You are an expert automotive mechanic and diagnostic specialist with extensive experience in automotive systems and failure diagnostics. 
-            Using the user's reported symptoms and any provided context (such as previous diagnostics, vehicle data, or sensor readings), along with your comprehensive automotive knowledge, identify all plausible underlying issues that could cause the described symptoms.
-            Carefully analyze the symptoms and context using your diagnostic expertise and automotive knowledge base. Include:
-            - Common causes that match these symptoms
-            - Less likely but critical failures that should not be overlooked
-            - Any issue that could contribute indirectly or as a downstream effect
-
-            Think broadly and reason through how multiple issues may be connected. Output a complete, well-structured JSON array.
-            Context:
-            {context}
-
-            For each possible issue, output a detailed JSON object with the following fields:
-            - **issue_name**: A concise name for the issue (e.g., "Engine Knock")
-            - **likelihood**: Your estimated likelihood (0–100) that this issue is causing the symptom
-            - **issue_type**: The general type of the issue (e.g., "mechanical", "electrical", "software")
-            - **issue_category**: The broad category of the issue (e.g., "engine", "transmission", "fuel system")
-            - **issue_subcategory**: A specific subcategory if applicable (e.g., "ignition system", "fuel injection")
-            - **issue_description**: A clear, detailed explanation of the issue and how it relates to the symptom
-            - **severity**: The severity level of the issue, one of ["low", "medium", "high"]
-            - **additional_info**: Any other relevant details (common causes, conditions, diagnostic tips, etc.)
-
-            Important instructions:
-            - Return **ONLY** a valid JSON array of issue objects. Do **NOT** include any extra text or explanations.
-            - Ensure the JSON is well-formed and parseable.
-            - Use appropriate data types: strings for text fields, numbers for likelihood, arrays for lists.
-            - If a field is unknown or not applicable, use `null` or an empty list.
-            - If no possible issues are found, return an empty array.
-
-            Input text:
-            \"\"\"
-            {input_text}
-            \"\"\"
-
-            Carefully analyze the symptoms and context, leveraging your expertise, and list all plausible issues as described above.
-        """)
-
-
-    def __init__(self, car_id: str, **kwargs: Any):
-        """
-        Initialize the SymptomExtractorAgent with a language model and car_id.
-        Args:
-            car_id (str): The unique identifier for the car.
-        """
-        super().__init__()
-        settings = get_settings()
-        self.gemini_api_key = settings.GEMINI_KEY
-        self.gemini_model = settings.GEMINI_MODEL_1
-        self.llm = ChatGoogleGenerativeAI(
-            model=self.gemini_model,
-            google_api_key=self.gemini_api_key
-        )
-
-        self.prompt = self.get_prompt_template()
+    def __init__(self, llm: BaseLanguageModel, prompt: PromptTemplate,
+                 root_issue_name: str = "root", root_likelihood: float = 1.0,
+                 root: Optional['DiagnosisTreeAgent.TreeNode'] = None):
+        self.lock = asyncio.Lock()
+        if root is not None:
+            self.root = root
+            # Build node_map from the provided root's subtree
+            self.node_map: Dict[str, DiagnosisTreeAgent.TreeNode] = {n.issue_name: n for n in root.traverse()}
+        else:
+            # Create the root node of the tree
+            self.root = self._create_root(root_issue_name, root_likelihood)
+            self.node_map: Dict[str, DiagnosisTreeAgent.TreeNode] = {self.root.issue_name: self.root}
+        # LLM chain for expansions
+        self.llm = llm
+        self.prompt = prompt
         self.output_parser = JsonOutputParser()
-        self.car_id = car_id
-        self.car_crud = CarCRUD()
-        self.logger = Logger("SymptomExtractorAgent")
+        self.chain = LLMChain(llm=self.llm, prompt=self.prompt)
 
-    async def pre_process(self, task: str) -> Dict[str, Any]:
+    class TreeNode:
         """
-        Pre-process the input task by fetching car data and relevant context.
-        Args:
-            task (str): The input text describing symptoms/issues.
-        Returns:
-            Dict[str, Any]: Context dictionary including manuals and scraped data.
+        Internal class representing a node in the diagnosis tree.
         """
-        context: Dict[str, Any] = {}
-        timings = {}
-        t0 = time.perf_counter()
-        car = await self.car_crud.get_car_by_id(self.car_id)
-        timings['car_fetch'] = time.perf_counter() - t0
-        if not car:
-            await self.logger.error(f"Car with id {self.car_id} not found.")
-            raise ValueError(f"Car with id {self.car_id} not found.")
+        def __init__(self, issue_name: str, likelihood: float, data: Any = None,
+                     parent: Optional['DiagnosisTreeAgent.TreeNode'] = None):
+            self.issue_name = issue_name
+            self.likelihood = likelihood
+            self.data = data
+            self.children: List['DiagnosisTreeAgent.TreeNode'] = []
+            self.parent: Optional['DiagnosisTreeAgent.TreeNode'] = parent
 
-        input_text = task
-        if not input_text:
-            raise ValueError("No input text provided for symptom extraction.")
+        def add_child(self, child: 'DiagnosisTreeAgent.TreeNode'):
+            """
+            Add a child node to this node.
+            """
+            child.parent = self
+            self.children.append(child)
 
-        guide_links: List[str] = car.get("car_guide_links") or []
-        if not guide_links:
-            # No guide links available, return empty context
-            return {}
+        def remove_child(self, child: 'DiagnosisTreeAgent.TreeNode'):
+            """
+            Remove a child node from this node.
+            """
+            self.children.remove(child)
+            child.parent = None
 
-        embedding_service = EmbeddingService()
+        def find(self, issue_name: str) -> Optional['DiagnosisTreeAgent.TreeNode']:
+            """
+            Find a node by issue name in the subtree rooted at this node.
+            """
+            if self.issue_name == issue_name:
+                return self
+            for child in self.children:
+                result = child.find(issue_name)
+                if result:
+                    return result
+            return None
 
-        # Start embedding and scraping in parallel (pipeline parallelism)
-        async def get_embeddings():
-            input_vec, link_vecs = await asyncio.gather(
-                embedding_service.embed_text(input_text),
-                embedding_service.embed_texts(guide_links)
-            )
-            return input_vec, link_vecs
+        def traverse(self) -> List['DiagnosisTreeAgent.TreeNode']:
+            """
+            Traverse the tree (pre-order) and return all nodes in a list.
+            """
+            nodes = [self]
+            for child in self.children:
+                nodes.extend(child.traverse())
+            return nodes
 
-        async def get_scraped_text(top_links):
-            scraper = ScraperService(headless=True)
+        def update_data(self, data: Any):
+            """
+            Update the data associated with this node.
+            """
+            self.data = data
+
+        def prune(self, threshold: float = 0.3):
+            """
+            Prune children whose likelihood is below the threshold (e.g., 0.3 for 30%).
+            """
+            pruned_children = []
+            for child in self.children:
+                if child.likelihood < threshold:
+                    pruned_children.append(child)
+                else:
+                    child.prune(threshold)
+            for child in pruned_children:
+                self.children.remove(child)
+
+        def sort_children_by_likelihood(self, reverse: bool = True):
+            """
+            Sort children nodes by their likelihood (descending by default).
+            """
+            self.children.sort(key=lambda x: x.likelihood, reverse=reverse)
+
+        def process(self):
+            """
+            Placeholder method; override with processing logic if needed.
+            """
+            pass
+
+    def _create_root(self, issue_name: str, likelihood: float) -> 'DiagnosisTreeAgent.TreeNode':
+        """
+        Create a root node (subclass of TreeNode) with the given name and likelihood.
+        """
+        root = DiagnosisTreeAgent.TreeNode(issue_name, likelihood)
+        return root
+
+    async def get_tree(self) -> TreeNode:
+        """
+        Get the root of the diagnosis tree.
+        """
+        async with self.lock:
+            return self.root
+
+    async def find_issue(self, issue_name: str) -> Optional[TreeNode]:
+        """
+        Find and return the node with the given issue_name, or None if not found.
+        """
+        async with self.lock:
+            return self.node_map.get(issue_name)
+
+    async def update_tree_from_nodes(self, nodes: List[TreeNode], prune_threshold: float = 0.3):
+        """
+        Batch update the tree with a list of nodes:
+        - If a node exists, update its data and likelihood.
+        - Otherwise, attach the new node to the tree (using parent reference if available, or as child of root).
+        - After insertion, prune low-likelihood nodes and sort children by likelihood.
+        """
+        async with self.lock:
+            for node in nodes:
+                existing = self.node_map.get(node.issue_name)
+                if existing:
+                    # Update existing node's likelihood and data
+                    existing.likelihood = node.likelihood
+                    existing.update_data(node.data)
+                    # If a new parent is provided and is different, re-attach node
+                    if node.parent:
+                        parent_name = node.parent.issue_name
+                        parent = self.node_map.get(parent_name)
+                        if parent and parent != existing.parent:
+                            # Remove from old parent, add to new parent
+                            if existing.parent:
+                                existing.parent.remove_child(existing)
+                            parent.add_child(existing)
+                            existing.parent = parent
+                else:
+                    # Node does not exist; determine parent
+                    parent = None
+                    if node.parent:
+                        # Check if parent already in current tree
+                        parent = self.node_map.get(node.parent.issue_name)
+                        if not parent:
+                            # Parent is also new in this batch? Find the actual node object for parent
+                            parent = next((n for n in nodes if n.issue_name == node.parent.issue_name), None)
+                    if parent:
+                        parent.add_child(node)
+                        node.parent = parent
+                    else:
+                        # No parent specified or not found; attach to root
+                        self.root.add_child(node)
+                        node.parent = self.root
+                    # Add this new node to the map
+                    self.node_map[node.issue_name] = node
+            # Prune low-likelihood nodes from the tree
+            self.root.prune(prune_threshold)
+            # Sort children by likelihood at each node
+            for n in self.root.traverse():
+                n.sort_children_by_likelihood()
+            # Rebuild the node map to ensure it's consistent with the pruned tree
+            self.node_map = {n.issue_name: n for n in self.root.traverse()}
+
+    async def update_issue(self, issue_name: str, data: Any):
+        """
+        Update the data of a single issue in the tree.
+        """
+        async with self.lock:
+            node = self.node_map.get(issue_name)
+            if not node:
+                raise ValueError(f"Issue '{issue_name}' not found.")
+            node.update_data(data)
+
+    async def prune_tree(self, threshold: float = 0.3):
+        """
+        Prune the tree by removing all nodes (and subtrees) below the likelihood threshold.
+        """
+        async with self.lock:
+            self.root.prune(threshold)
+            self.node_map = {n.issue_name: n for n in self.root.traverse()}
+
+    async def sort_children(self, issue_name: str, reverse: bool = True):
+        """
+        Sort the children of the given node by likelihood.
+        """
+        async with self.lock:
+            node = self.node_map.get(issue_name)
+            if node:
+                node.sort_children_by_likelihood(reverse=reverse)
+
+    async def reset(self):
+        """
+        Reset the entire tree to just the root node, clearing all other issues.
+        """
+        async with self.lock:
+            root_name = self.root.issue_name
+            root_likelihood = self.root.likelihood
+            self.root = self._create_root(root_name, root_likelihood)
+            self.node_map = {self.root.issue_name: self.root}
+
+    async def expand_node_with_llm(self, node_name: str, context: str, symptom_text: str) -> List[TreeNode]:
+        """
+        Expand a single node using the LLM chain:
+        - Generates potential child issues based on context and symptom text.
+        - Updates existing children or adds new ones, updating likelihood and data.
+        - Sorts new children by likelihood before returning them.
+        """
+        async with self.lock:
+            parent = self.node_map.get(node_name)
+            if not parent:
+                raise ValueError(f"Node '{node_name}' not found.")
+            llm_input = {
+                "parent_issue": node_name,
+                "context": context,
+                "symptom_text": symptom_text
+            }
+            # Invoke LLM chain and parse JSON output
+            output = self.chain.invoke(llm_input)
             try:
-                scraped = await scraper.perform_action(top_links, limit=len(top_links))
-                return [item.get("text", "") for item in scraped if item.get("text")]
+                parsed_issues = self.output_parser.parse(output)
             except Exception:
-                return []
+                parsed_issues = []
+            new_children = []
+            for issue in parsed_issues:
+                name = issue.get("issue_name")
+                likelihood = issue.get("likelihood", 0)
+                data = issue.get("data", None)
+                node = self.node_map.get(name)
+                if node:
+                    # Update existing child's likelihood and data
+                    node.likelihood = likelihood
+                    node.update_data(data)
+                    # If the parent has changed, re-attach node to the new parent
+                    if node.parent != parent:
+                        if node.parent:
+                            node.parent.remove_child(node)
+                        parent.add_child(node)
+                        node.parent = parent
+                else:
+                    # Create a new child node and attach it to the parent
+                    new_node = DiagnosisTreeAgent.TreeNode(name, likelihood, data)
+                    parent.add_child(new_node)
+                    new_node.parent = parent
+                    self.node_map[name] = new_node
+                    new_children.append(new_node)
+            # Sort the parent's children by likelihood (descending)
+            parent.sort_children_by_likelihood()
+            # Return the list of (new or updated) child nodes for the given parent
+            return [self.node_map.get(issue.get("issue_name")) for issue in parsed_issues if issue.get("issue_name") in self.node_map]
 
-        # Get embeddings first to determine top_links
-        t1 = time.perf_counter()
-        input_vec, link_vecs = await get_embeddings()
-        timings['embedding'] = time.perf_counter() - t1
-        def cosine_sim(a: List[float], b: List[float]) -> float:
-            a = np.array(a)
-            b = np.array(b)
-            return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
-        scored_links = [
-            (link, cosine_sim(input_vec, link_vec))
-            for link, link_vec in zip(guide_links, link_vecs)
-        ]
-        scored_links.sort(key=lambda x: x[1], reverse=True)
-        top_links = [link for link, score in scored_links[:3] if score > 0.3]
-        context["owner_manual"] = car.get("vector", "")
-
-        # Start scraping in parallel with other work (if any)
-        t2 = time.perf_counter()
-        if top_links:
-            guide_links_text_task = asyncio.create_task(get_scraped_text(top_links))
-            guide_links_text = await guide_links_text_task
-        else:
-            guide_links_text = []
-        timings['scraping'] = time.perf_counter() - t2
-        context["guide_links_text"] = guide_links_text
-        context["timings"] = timings
-        await self.logger.info(f"pre_process timings: {timings}")
-        return context
-
-    async def handle(self, task: str) -> Any:
+    async def expand_all_with_llm(self, context: str, symptom_text: str):
         """
-        Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
-        Args:
-            task (str): The input text describing symptoms/issues.
-        Returns:
-            Any: Parsed JSON array of extracted issues.
+        Recursively expand all nodes in the tree using the LLM chain.
+        Each node will generate new child issues, which are then added to the tree.
         """
-        def is_ambiguous(result):
-            # Consider ambiguous if result is empty or all likelihoods are below a threshold
-            if not result or not isinstance(result, list):
-                return True
-            if all((item.get('likelihood', 0) < 30) for item in result if isinstance(item, dict)):
-                return True
-            return False
-
-        timings = {}
-        t_llm_min = time.perf_counter()
-        # 1. Try LLM with minimal context (just the input text)
-        minimal_documents = [Document(page_content=task, metadata={"type": "input_text_only"})]
-        chain = create_stuff_documents_chain(llm=self.llm, prompt=self.prompt)
-        if hasattr(chain, "ainvoke"):
-            response = await chain.ainvoke({"input_text": task, "context": minimal_documents})
-        else:
-            response = chain.invoke({"input_text": task, "context": minimal_documents})
-        timings['llm_minimal'] = time.perf_counter() - t_llm_min
-        t_parse_min = time.perf_counter()
-        try:
-            parsed_result = self.output_parser.parse(response)
-        except Exception:
-            parsed_result = []
-        timings['parse_minimal'] = time.perf_counter() - t_parse_min
-
-        # 2. If ambiguous, fetch context (pipeline parallelism: embeddings & scraping overlap)
-        if is_ambiguous(parsed_result):
-            t_context = time.perf_counter()
-            context_task = asyncio.create_task(self.pre_process(task))
-            await asyncio.sleep(0)  # Yield control to start the task
-            context = await context_task
-            timings['context'] = time.perf_counter() - t_context
-            documents: List[Document] = []
-            if context.get("owner_manual"):
-                documents.append(Document(page_content=str(context["owner_manual"]), metadata={"type": "owner_manual"}))
-            for idx, text in enumerate(context.get("guide_links_text", [])):
-                documents.append(Document(page_content=text, metadata={"type": "guide_link", "index": idx}))
-            t_llm_full = time.perf_counter()
-            if hasattr(chain, "ainvoke"):
-                response = await chain.ainvoke({"input_text": task, "context": documents})
-            else:
-                response = chain.invoke({"input_text": task, "context": documents})
-            timings['llm_full'] = time.perf_counter() - t_llm_full
-            t_parse_full = time.perf_counter()
-            try:
-                parsed_result = self.output_parser.parse(response)
-            except Exception:
-                parsed_result = []
-            timings['parse_full'] = time.perf_counter() - t_parse_full
-            # Merge in context timings
-            if 'timings' in context:
-                timings.update({f'context_{k}': v for k, v in context['timings'].items()})
-        await self.logger.info(f"handle timings: {timings}")
-        return parsed_result
-
-    async def post_process(self, result: Any, context: Optional[Dict[str, Any]] = None) -> Any:
-        """
-        Post-process the extracted symptom data if needed.
-        Args:
-            result (Any): Parsed symptom extraction result.
-            context (Optional[Dict[str, Any]]): Optional context dictionary.
-        Returns:
-            Any: Final processed result.
-        """
-        return await super().post_process(result, context)
+        async with self.lock:
+            async def expand_node(node: DiagnosisTreeAgent.TreeNode):
+                llm_input = {
+                    "parent_issue": node.issue_name,
+                    "context": context,
+                    "symptom_text": symptom_text
+                }
+                output = self.chain.invoke(llm_input)
+                try:
+                    parsed_issues = self.output_parser.parse(output)
+                except Exception:
+                    parsed_issues = []
+                for issue in parsed_issues:
+                    name = issue.get("issue_name")
+                    likelihood = issue.get("likelihood", 0)
+                    data = issue.get("data", None)
+                    child = self.node_map.get(name)
+                    if child:
+                        # Update existing child's likelihood and data
+                        child.likelihood = likelihood
+                        child.update_data(data)
+                        if child.parent != node:
+                            if child.parent:
+                                child.parent.remove_child(child)
+                            node.add_child(child)
+                            child.parent = node
+                    else:
+                        # Add new child node to current node
+                        new_node = DiagnosisTreeAgent.TreeNode(name, likelihood, data)
+                        node.add_child(new_node)
+                        new_node.parent = node
+                        self.node_map[name] = new_node
+                # Sort the current node's children
+                node.sort_children_by_likelihood()
+                # Recursively expand each child
+                for child in list(node.children):
+                    await expand_node(child)
+            # Start expansion from the root
+            await expand_node(self.root)

@@ -12,6 +12,8 @@ from functools import partial
 from app.services.embedding_service import EmbeddingService
 from app.services.scraper_service import ScraperService
 import numpy as np
+import time
+from app.utils.logger import Logger
 
 class SymptomExtractorAgent(AgentBase):
     """
@@ -77,6 +79,7 @@ class SymptomExtractorAgent(AgentBase):
         self.output_parser = JsonOutputParser()
         self.car_id = car_id
         self.car_crud = CarCRUD()
+        self.logger = Logger("SymptomExtractorAgent")
 
     async def pre_process(self, task: str) -> Dict[str, Any]:
         """
@@ -87,8 +90,12 @@ class SymptomExtractorAgent(AgentBase):
             Dict[str, Any]: Context dictionary including manuals and scraped data.
         """
         context: Dict[str, Any] = {}
+        timings = {}
+        t0 = time.perf_counter()
         car = await self.car_crud.get_car_by_id(self.car_id)
+        timings['car_fetch'] = time.perf_counter() - t0
         if not car:
+            await self.logger.error(f"Car with id {self.car_id} not found.")
             raise ValueError(f"Car with id {self.car_id} not found.")
 
         input_text = task
@@ -102,70 +109,112 @@ class SymptomExtractorAgent(AgentBase):
 
         embedding_service = EmbeddingService()
 
-        # Parallelize embedding calls for input and guide links
-        input_vec, link_vecs = await asyncio.gather(
-            embedding_service.embed_text(input_text),
-            embedding_service.embed_texts(guide_links)
-        )
+        # Start embedding and scraping in parallel (pipeline parallelism)
+        async def get_embeddings():
+            input_vec, link_vecs = await asyncio.gather(
+                embedding_service.embed_text(input_text),
+                embedding_service.embed_texts(guide_links)
+            )
+            return input_vec, link_vecs
 
+        async def get_scraped_text(top_links):
+            scraper = ScraperService(headless=True)
+            try:
+                scraped = await scraper.perform_action(top_links, limit=len(top_links))
+                return [item.get("text", "") for item in scraped if item.get("text")]
+            except Exception:
+                return []
+
+        # Get embeddings first to determine top_links
+        t1 = time.perf_counter()
+        input_vec, link_vecs = await get_embeddings()
+        timings['embedding'] = time.perf_counter() - t1
         def cosine_sim(a: List[float], b: List[float]) -> float:
             a = np.array(a)
             b = np.array(b)
             return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
-
         scored_links = [
             (link, cosine_sim(input_vec, link_vec))
             for link, link_vec in zip(guide_links, link_vecs)
         ]
         scored_links.sort(key=lambda x: x[1], reverse=True)
         top_links = [link for link, score in scored_links[:3] if score > 0.3]
-
         context["owner_manual"] = car.get("vector", "")
 
-        guide_links_text = []
+        # Start scraping in parallel with other work (if any)
+        t2 = time.perf_counter()
         if top_links:
-            scraper = ScraperService(headless=True)
-            # Parallelize scraping of all top links
-            try:
-                scraped = await scraper.perform_action(top_links, limit=len(top_links))
-                guide_links_text = [item.get("text", "") for item in scraped if item.get("text")]
-            except Exception:
-                guide_links_text = []
-
+            guide_links_text_task = asyncio.create_task(get_scraped_text(top_links))
+            guide_links_text = await guide_links_text_task
+        else:
+            guide_links_text = []
+        timings['scraping'] = time.perf_counter() - t2
         context["guide_links_text"] = guide_links_text
+        context["timings"] = timings
+        await self.logger.info(f"pre_process timings: {timings}")
         return context
 
     async def handle(self, task: str) -> Any:
         """
-        Main handler that runs the symptom extraction chain.
+        Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
         Args:
             task (str): The input text describing symptoms/issues.
         Returns:
             Any: Parsed JSON array of extracted issues.
         """
-        context = await self.pre_process(task)
-        documents: List[Document] = []
+        def is_ambiguous(result):
+            # Consider ambiguous if result is empty or all likelihoods are below a threshold
+            if not result or not isinstance(result, list):
+                return True
+            if all((item.get('likelihood', 0) < 30) for item in result if isinstance(item, dict)):
+                return True
+            return False
 
-        if context.get("owner_manual"):
-            documents.append(Document(page_content=str(context["owner_manual"]), metadata={"type": "owner_manual"}))
-        for idx, text in enumerate(context.get("guide_links_text", [])):
-            documents.append(Document(page_content=text, metadata={"type": "guide_link", "index": idx}))
-
+        timings = {}
+        t_llm_min = time.perf_counter()
+        # 1. Try LLM with minimal context (just the input text)
+        minimal_documents = [Document(page_content=task, metadata={"type": "input_text_only"})]
         chain = create_stuff_documents_chain(llm=self.llm, prompt=self.prompt)
-
-        # Use ainvoke/invoke for modern LangChain
         if hasattr(chain, "ainvoke"):
-            response = await chain.ainvoke({"input_text": task, "context": documents})
+            response = await chain.ainvoke({"input_text": task, "context": minimal_documents})
         else:
-            response = chain.invoke({"input_text": task, "context": documents})
-
-        # Parse JSON output
+            response = chain.invoke({"input_text": task, "context": minimal_documents})
+        timings['llm_minimal'] = time.perf_counter() - t_llm_min
+        t_parse_min = time.perf_counter()
         try:
             parsed_result = self.output_parser.parse(response)
-        except Exception as e:
-            # Handle JSON parse errors gracefully
+        except Exception:
             parsed_result = []
+        timings['parse_minimal'] = time.perf_counter() - t_parse_min
 
+        # 2. If ambiguous, fetch context (pipeline parallelism: embeddings & scraping overlap)
+        if is_ambiguous(parsed_result):
+            t_context = time.perf_counter()
+            context_task = asyncio.create_task(self.pre_process(task))
+            await asyncio.sleep(0)  # Yield control to start the task
+            context = await context_task
+            timings['context'] = time.perf_counter() - t_context
+            documents: List[Document] = []
+            if context.get("owner_manual"):
+                documents.append(Document(page_content=str(context["owner_manual"]), metadata={"type": "owner_manual"}))
+            for idx, text in enumerate(context.get("guide_links_text", [])):
+                documents.append(Document(page_content=text, metadata={"type": "guide_link", "index": idx}))
+            t_llm_full = time.perf_counter()
+            if hasattr(chain, "ainvoke"):
+                response = await chain.ainvoke({"input_text": task, "context": documents})
+            else:
+                response = chain.invoke({"input_text": task, "context": documents})
+            timings['llm_full'] = time.perf_counter() - t_llm_full
+            t_parse_full = time.perf_counter()
+            try:
+                parsed_result = self.output_parser.parse(response)
+            except Exception:
+                parsed_result = []
+            timings['parse_full'] = time.perf_counter() - t_parse_full
+            # Merge in context timings
+            if 'timings' in context:
+                timings.update({f'context_{k}': v for k, v in context['timings'].items()})
+        await self.logger.info(f"handle timings: {timings}")
         return parsed_result
 
     async def post_process(self, result: Any, context: Optional[Dict[str, Any]] = None) -> Any:

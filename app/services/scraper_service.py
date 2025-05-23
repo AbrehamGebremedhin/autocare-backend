@@ -103,7 +103,7 @@ class ScraperService(BaseService):
         driver = self._get_driver()
         try:
             driver.get(url)
-            time.sleep(2)  # Wait for page to load
+            time.sleep(0.7)  # Reduced wait for page load (was 2)
             title = driver.title.strip() if driver.title else ''
             meta_desc = ''
             try:
@@ -134,13 +134,13 @@ class ScraperService(BaseService):
             return {'url': url, 'error': str(e)}
         # Do not call driver.quit() here; cleanup is handled by the cleanup() method
 
-    async def perform_action(self, links: list, limit: int = 10, concurrency: int = 20) -> list:
+    async def perform_action(self, links: list, limit: int = 2, concurrency: int = 10) -> list:
         """
         Scrape a list of links and extract page information in parallel.
         Args:
             links (list): List of URLs to scrape.
-            limit (int): Max number of links to process.
-            concurrency (int): Max number of concurrent scrapes.
+            limit (int): Max number of links to process (default 2 for speed).
+            concurrency (int): Max number of concurrent scrapes (default 10).
         Returns:
             list: List of extracted page info dicts.
         """
@@ -149,7 +149,7 @@ class ScraperService(BaseService):
 
         async def scrape(url):
             async with sem:
-                delay = random.uniform(0.1, 0.5)  # Reduced delay for faster scraping
+                delay = random.uniform(0.1, 0.3)  # Lowered delay for faster scraping
                 await asyncio.sleep(delay)
                 return await self.extract_page_info(url)
 

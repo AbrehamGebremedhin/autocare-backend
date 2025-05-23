@@ -9,6 +9,9 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.schema import Document
 import asyncio
 from functools import partial
+from app.services.embedding_service import EmbeddingService
+from app.services.scraper_service import ScraperService
+import numpy as np
 
 class SymptomExtractorAgent(AgentBase):
     """
@@ -18,28 +21,32 @@ class SymptomExtractorAgent(AgentBase):
     @staticmethod
     def get_prompt_template() -> PromptTemplate:
         return PromptTemplate.from_template("""
-            You are an expert automotive mechanic and diagnostic specialist. Your task is to carefully analyze the input text describing car symptoms or problems and extract **all possible underlying issues** that could cause these symptoms.
+            You are an expert automotive mechanic and diagnostic specialist with extensive experience in automotive systems and failure diagnostics. 
+            Using the user's reported symptoms and any provided context (such as previous diagnostics, vehicle data, or sensor readings), along with your comprehensive automotive knowledge, identify all plausible underlying issues that could cause the described symptoms.
+            Carefully analyze the symptoms and context using your diagnostic expertise and automotive knowledge base. Include:
+            - Common causes that match these symptoms
+            - Less likely but critical failures that should not be overlooked
+            - Any issue that could contribute indirectly or as a downstream effect
 
-            Context information (may help you reason better):
+            Think broadly and reason through how multiple issues may be connected. Output a complete, well-structured JSON array.
+            Context:
             {context}
 
-            For each possible issue, provide a detailed and structured JSON object with the following fields:
-
-            - **issue_name**: The concise name of the issue (e.g., "Engine Knock")
-            - **likelihood**: Your estimated likelihood of this issue causing the symptom, as a percentage between 0 and 100 (e.g., 70)
-            - **issue_type**: The general type of issue (e.g., "mechanical", "electrical", "software")
+            For each possible issue, output a detailed JSON object with the following fields:
+            - **issue_name**: A concise name for the issue (e.g., "Engine Knock")
+            - **likelihood**: Your estimated likelihood (0–100) that this issue is causing the symptom
+            - **issue_type**: The general type of the issue (e.g., "mechanical", "electrical", "software")
             - **issue_category**: The broad category of the issue (e.g., "engine", "transmission", "fuel system")
-            - **issue_subcategory**: A more specific subcategory if applicable (e.g., "ignition system", "fuel injection")
+            - **issue_subcategory**: A specific subcategory if applicable (e.g., "ignition system", "fuel injection")
             - **issue_description**: A clear, detailed explanation of the issue and how it relates to the symptom
             - **severity**: The severity level of the issue, one of ["low", "medium", "high"]
-            - **related_symptoms**: A list of symptoms or signs associated with this issue (e.g., ["engine knocking noise", "loss of power"])
-            - **additional_info**: Any other relevant details, such as common causes, conditions, or diagnostic tips
+            - **additional_info**: Any other relevant details (common causes, conditions, diagnostic tips, etc.)
 
-            **Important instructions:**
-            - Return ONLY a valid JSON array of issue objects—do NOT include any explanations, apologies, or extra text.
-            - Ensure the JSON is well-formed and can be parsed without errors.
-            - Use appropriate data types: strings for text fields, numbers for likelihood, and arrays for lists.
-            - If any field is unknown or not applicable, use `null` or an empty list as appropriate.
+            Important instructions:
+            - Return **ONLY** a valid JSON array of issue objects. Do **NOT** include any extra text or explanations.
+            - Ensure the JSON is well-formed and parseable.
+            - Use appropriate data types: strings for text fields, numbers for likelihood, arrays for lists.
+            - If a field is unknown or not applicable, use `null` or an empty list.
             - If no possible issues are found, return an empty array.
 
             Input text:
@@ -47,7 +54,7 @@ class SymptomExtractorAgent(AgentBase):
             {input_text}
             \"\"\"
 
-            Analyze the symptoms described and extract all plausible issues that could cause them, with detailed information as specified.
+            Carefully analyze the symptoms and context, leveraging your expertise, and list all plausible issues as described above.
         """)
 
 
@@ -93,14 +100,13 @@ class SymptomExtractorAgent(AgentBase):
             # No guide links available, return empty context
             return {}
 
-        from app.services.embedding_service import EmbeddingService
-        import numpy as np
-
         embedding_service = EmbeddingService()
 
-        # Embed input text and guide links
-        input_vec = await embedding_service.embed_text(input_text)
-        link_vecs = await embedding_service.embed_texts(guide_links)
+        # Parallelize embedding calls for input and guide links
+        input_vec, link_vecs = await asyncio.gather(
+            embedding_service.embed_text(input_text),
+            embedding_service.embed_texts(guide_links)
+        )
 
         def cosine_sim(a: List[float], b: List[float]) -> float:
             a = np.array(a)
@@ -116,16 +122,15 @@ class SymptomExtractorAgent(AgentBase):
 
         context["owner_manual"] = car.get("vector", "")
 
+        guide_links_text = []
         if top_links:
-            from app.services.scraper_service import ScraperService
             scraper = ScraperService(headless=True)
+            # Parallelize scraping of all top links
             try:
                 scraped = await scraper.perform_action(top_links, limit=len(top_links))
                 guide_links_text = [item.get("text", "") for item in scraped if item.get("text")]
-            except Exception as e:
+            except Exception:
                 guide_links_text = []
-        else:
-            guide_links_text = []
 
         context["guide_links_text"] = guide_links_text
         return context
@@ -173,21 +178,3 @@ class SymptomExtractorAgent(AgentBase):
             Any: Final processed result.
         """
         return await super().post_process(result, context)
-import time
-
-# Example usage
-if __name__ == "__main__":
-    import asyncio
-    from pprint import pprint
-
-    async def main():
-        car_id = "toyota-echo-2001"  # Replace with actual car ID
-        agent = SymptomExtractorAgent(car_id=car_id)
-        task = "The engine is making a strange noise and the check engine light is on."
-        start_time = time.perf_counter()
-        result = await agent.handle(task)
-        end_time = time.perf_counter()
-        pprint(result)
-        print(f"Processing time: {end_time - start_time:.2f} seconds")
-
-    asyncio.run(main())

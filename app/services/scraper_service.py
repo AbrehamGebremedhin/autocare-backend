@@ -23,6 +23,7 @@ class ScraperService(BaseService):
         super().__init__()
         self.headless = headless
         self.logger = logger or Logger("ScraperService")
+        self.driver = None  # Store driver instance for cleanup
 
     def _get_headers(self) -> dict:
         """
@@ -50,6 +51,8 @@ class ScraperService(BaseService):
         Returns:
             WebDriver: Configured Chrome WebDriver.
         """
+        if self.driver is not None:
+            return self.driver
         options = Options()
         if self.headless:
             options.add_argument('--headless')
@@ -60,8 +63,19 @@ class ScraperService(BaseService):
         options.add_argument('--disable-extensions')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('user-agent=' + self._get_headers()['User-Agent'])
-        driver = webdriver.Chrome(options=options)
-        return driver
+        self.driver = webdriver.Chrome(options=options)
+        return self.driver
+
+    def cleanup(self):
+        """
+        Cleanup method to close the browser/driver if it exists.
+        """
+        if self.driver is not None:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
 
     async def extract_page_info(self, url: str) -> dict:
         """
@@ -118,8 +132,7 @@ class ScraperService(BaseService):
             if hasattr(self, 'logger'):
                 asyncio.run(self.logger.error(f"_extract_page_info_sync error: {e}"))
             return {'url': url, 'error': str(e)}
-        finally:
-            driver.quit()
+        # Do not call driver.quit() here; cleanup is handled by the cleanup() method
 
     async def perform_action(self, links: list, limit: int = 10, concurrency: int = 20) -> list:
         """

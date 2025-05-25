@@ -4,6 +4,7 @@ from langchain_core.language_models.base import BaseLanguageModel
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain.chains.llm import LLMChain
+from app.utils.logger import Logger
 
 class DiagnosisTreeAgent:
     """
@@ -16,7 +17,8 @@ class DiagnosisTreeAgent:
     """
     def __init__(self, llm: BaseLanguageModel, prompt: PromptTemplate,
                  root_issue_name: str = "root", root_likelihood: float = 1.0,
-                 root: Optional['DiagnosisTreeAgent.TreeNode'] = None):
+                 root: Optional['DiagnosisTreeAgent.TreeNode'] = None,
+                 logger: Optional[Logger] = None):
         self.lock = asyncio.Lock()
         if root is not None:
             self.root = root
@@ -31,6 +33,7 @@ class DiagnosisTreeAgent:
         self.prompt = prompt
         self.output_parser = JsonOutputParser()
         self.chain = LLMChain(llm=self.llm, prompt=self.prompt)
+        self.logger = logger or Logger()
 
     class TreeNode:
         """
@@ -180,6 +183,7 @@ class DiagnosisTreeAgent:
                 n.sort_children_by_likelihood()
             # Rebuild the node map to ensure it's consistent with the pruned tree
             self.node_map = {n.issue_name: n for n in self.root.traverse()}
+        await self.logger.info(f"Tree updated from nodes. Total nodes: {len(self.node_map)}")
 
     async def update_issue(self, issue_name: str, data: Any):
         """
@@ -188,8 +192,10 @@ class DiagnosisTreeAgent:
         async with self.lock:
             node = self.node_map.get(issue_name)
             if not node:
+                await self.logger.error(f"Issue '{issue_name}' not found.")
                 raise ValueError(f"Issue '{issue_name}' not found.")
             node.update_data(data)
+        await self.logger.info(f"Issue '{issue_name}' updated.")
 
     async def prune_tree(self, threshold: float = 0.3):
         """
@@ -198,6 +204,7 @@ class DiagnosisTreeAgent:
         async with self.lock:
             self.root.prune(threshold)
             self.node_map = {n.issue_name: n for n in self.root.traverse()}
+        await self.logger.info(f"Tree pruned with threshold {threshold}.")
 
     async def sort_children(self, issue_name: str, reverse: bool = True):
         """
@@ -217,6 +224,7 @@ class DiagnosisTreeAgent:
             root_likelihood = self.root.likelihood
             self.root = self._create_root(root_name, root_likelihood)
             self.node_map = {self.root.issue_name: self.root}
+        await self.logger.info("Diagnosis tree reset to root.")
 
     async def expand_node_with_llm(self, node_name: str, context: str, symptom_text: str) -> List[TreeNode]:
         """
@@ -228,6 +236,7 @@ class DiagnosisTreeAgent:
         async with self.lock:
             parent = self.node_map.get(node_name)
             if not parent:
+                await self.logger.error(f"Node '{node_name}' not found.")
                 raise ValueError(f"Node '{node_name}' not found.")
             llm_input = {
                 "parent_issue": node_name,
@@ -238,7 +247,8 @@ class DiagnosisTreeAgent:
             output = self.chain.invoke(llm_input)
             try:
                 parsed_issues = self.output_parser.parse(output)
-            except Exception:
+            except Exception as e:
+                await self.logger.error(f"LLM output parsing failed: {e}")
                 parsed_issues = []
             new_children = []
             for issue in parsed_issues:
@@ -265,8 +275,9 @@ class DiagnosisTreeAgent:
                     new_children.append(new_node)
             # Sort the parent's children by likelihood (descending)
             parent.sort_children_by_likelihood()
-            # Return the list of (new or updated) child nodes for the given parent
-            return [self.node_map.get(issue.get("issue_name")) for issue in parsed_issues if issue.get("issue_name") in self.node_map]
+        await self.logger.info(f"Node '{node_name}' expanded with LLM. Children count: {len(parent.children)}")
+        # Return the list of (new or updated) child nodes for the given parent
+        return [self.node_map.get(issue.get("issue_name")) for issue in parsed_issues if issue.get("issue_name") in self.node_map]
 
     async def expand_all_with_llm(self, context: str, symptom_text: str):
         """
@@ -283,7 +294,8 @@ class DiagnosisTreeAgent:
                 output = self.chain.invoke(llm_input)
                 try:
                     parsed_issues = self.output_parser.parse(output)
-                except Exception:
+                except Exception as e:
+                    await self.logger.error(f"LLM output parsing failed at node '{node.issue_name}': {e}")
                     parsed_issues = []
                 for issue in parsed_issues:
                     name = issue.get("issue_name")
@@ -312,3 +324,4 @@ class DiagnosisTreeAgent:
                     await expand_node(child)
             # Start expansion from the root
             await expand_node(self.root)
+        await self.logger.info("All nodes expanded with LLM.")

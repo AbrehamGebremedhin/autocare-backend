@@ -57,7 +57,7 @@ class SearchEngineService(BaseService):
 
     async def _get_ground_knowledge_chunks(self, limit=50):
         """
-        Retrieve ground knowledge chunks from the database.
+        Retrieve ground knowledge chunks from the database with optimized query.
         Args:
             limit (int): Maximum number of chunks to retrieve.
         Returns:
@@ -66,10 +66,17 @@ class SearchEngineService(BaseService):
             Exception: If retrieval fails.
         """
         try:
+            # Use caching for frequently accessed ground knowledge
+            cache_key = f"ground_knowledge_{limit}"
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return cached_result
+
             db = self.db_handler._client
             ground_knowledge = db.table("Ground_Knowledge").select("*").limit(limit).execute()
             ground_docs = ground_knowledge.data if hasattr(ground_knowledge, 'data') else ground_knowledge["data"]
-            return [
+            
+            result = [
                 {
                     "id": doc.get("id"),
                     "source": "ground_knowledge",
@@ -79,13 +86,16 @@ class SearchEngineService(BaseService):
                 }
                 for doc in ground_docs
             ]
+              # Cache result for 10 minutes
+            self._set_cache(cache_key, result, 600)
+            return result
         except Exception as e:
-            await self.logger.error(f"_get_ground_knowledge_chunks error: {e}")
+            self.logger.error(f"_get_ground_knowledge_chunks error: {e}")
             raise
 
     async def _get_owner_manual_chunks(self, make, model, year, limit=50):
         """
-        Retrieve owner manual chunks for a specific car.
+        Retrieve owner manual chunks for a specific car with caching.
         Args:
             make (str): Car make.
             model (str): Car model.
@@ -97,7 +107,25 @@ class SearchEngineService(BaseService):
             Exception: If retrieval fails.
         """
         try:
+            # Cache manual chunks to avoid re-processing
+            cache_key = f"manual_{make}_{model}_{year}_{limit}"
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return cached_result
+
             pdf_name = f"{make}-{model}_{year}_EN_US.pdf"
+            bucket_name = "manuals"
+            pdf_bytes = await self.bucket_manager.download_file(bucket_name, pdf_name)
+            owner_chunks_list = await self.parser_service.perform_action(pdf_bytes, source_type="pdf", chunk_size=1000)
+            
+            result = [
+                {"id": f"owner_{i}", "source": "owner_manual", "content": chunk, "vector": None, "metadata": {}}
+                for i, chunk in enumerate(owner_chunks_list[:limit])
+            ]
+            
+            # Cache manual chunks for 30 minutes
+            self._set_cache(cache_key, result, 1800)
+            return result
             bucket_name = "manuals"
             pdf_bytes = await self.bucket_manager.download_file(bucket_name, pdf_name)
             owner_chunks_list = await self.parser_service.perform_action(pdf_bytes, source_type="pdf", chunk_size=1000)
@@ -144,6 +172,61 @@ class SearchEngineService(BaseService):
             await self.logger.error(f"_get_web_chunks error: {e}")
             raise
 
+    async def _get_web_chunks_optimized(self, make, model, year, limit_links=10, limit_chunks=100):
+        """
+        Retrieve web chunks for a specific car with parallel processing and caching.
+        """
+        try:
+            # Cache web chunks to avoid re-scraping
+            cache_key = f"web_{make}_{model}_{year}_{limit_links}_{limit_chunks}"
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return cached_result
+
+            # Parallel fetching and scraping
+            links_task = asyncio.create_task(self.fetch_car_data_service.perform_action(make, model, year))
+            links = await links_task
+            
+            # Use optimized scraping with reduced concurrency for stability
+            scraped = await self.scraper_service.perform_action(links, limit=limit_links, concurrency=3)
+            
+            # Parallel processing of text chunks
+            chunk_tasks = []
+            for i, page in enumerate(scraped[:limit_links]):
+                if 'text' in page and page['text']:
+                    task = asyncio.create_task(
+                        self.parser_service.perform_action(page['text'], source_type="string", chunk_size=1000)
+                    )
+                    chunk_tasks.append((i, page, task))
+            
+            web_chunks = []
+            for i, page, task in chunk_tasks:
+                try:
+                    chunks = await task
+                    for j, chunk in enumerate(chunks):
+                        if len(web_chunks) < limit_chunks:
+                            web_chunks.append({
+                                "id": f"web_{i}_{j}", 
+                                "source": "web", 
+                                "content": chunk, 
+                                "vector": None, 
+                                "metadata": {"url": page.get("url"), "title": page.get("title", "")}
+                            })
+                        else:
+                            break
+                except Exception as e:
+                    await self.logger.warning(f"Failed to process page {page.get('url', 'unknown')}: {e}")
+                
+                if len(web_chunks) >= limit_chunks:
+                    break
+            
+            # Cache web chunks for 15 minutes
+            self._set_cache(cache_key, web_chunks, 900)
+            return web_chunks
+        except Exception as e:
+            await self.logger.error(f"_get_web_chunks_optimized error: {e}")
+            raise
+
     @staticmethod
     def _cosine_sim(a, b):
         """
@@ -158,6 +241,28 @@ class SearchEngineService(BaseService):
         a = np.array(a)
         b = np.array(b)
         return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+    @staticmethod
+    def _cosine_sim_batch(query_vec, vectors):
+        """
+        Compute cosine similarity between query and multiple vectors efficiently.
+        Args:
+            query_vec (np.array): Query vector.
+            vectors (np.array): Matrix of vectors.
+        Returns:
+            np.array: Similarity scores.
+        """
+        import numpy as np
+        query_vec = np.array(query_vec)
+        vectors = np.array(vectors)
+        
+        # Normalize vectors
+        query_norm = query_vec / np.linalg.norm(query_vec)
+        vectors_norm = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+        
+        # Compute similarities
+        similarities = np.dot(vectors_norm, query_norm)
+        return similarities
 
     async def _embed_and_score(self, query, chunks):
         """
@@ -185,6 +290,51 @@ class SearchEngineService(BaseService):
             return chunks
         except Exception as e:
             await self.logger.error(f"_embed_and_score error: {e}")
+            raise
+
+    async def _embed_and_score_optimized(self, query, chunks):
+        """
+        Optimized embedding and scoring with batch processing.
+        """
+        try:
+            if not chunks:
+                return []
+
+            # Get query embedding
+            query_vec = await self.embedding_service.embed_text(query)
+            
+            # Separate chunks with and without embeddings
+            chunks_to_embed = []
+            chunks_with_embeddings = []
+            
+            for chunk in chunks:
+                if chunk["vector"] is None:
+                    chunks_to_embed.append(chunk)
+                else:
+                    chunks_with_embeddings.append(chunk)
+            
+            # Batch embed missing vectors
+            if chunks_to_embed:
+                texts_to_embed = [c["content"] for c in chunks_to_embed]
+                vectors = await self.embedding_service.embed_texts_batch(texts_to_embed)
+                
+                for i, chunk in enumerate(chunks_to_embed):
+                    chunk["vector"] = vectors[i]
+            
+            # Combine all chunks
+            all_chunks = chunks_with_embeddings + chunks_to_embed
+            
+            # Batch compute similarities
+            if all_chunks:
+                all_vectors = [c["vector"] for c in all_chunks]
+                similarities = self._cosine_sim_batch(query_vec, all_vectors)
+                
+                for i, chunk in enumerate(all_chunks):
+                    chunk["score"] = float(similarities[i])
+            
+            return all_chunks
+        except Exception as e:
+            await self.logger.error(f"_embed_and_score_optimized error: {e}")
             raise
 
     async def vector_search(self, query: str, query_type: str = None, make: str = None, model: str = None, year: int = None) -> list:
@@ -222,6 +372,81 @@ class SearchEngineService(BaseService):
                 return all_chunks
         except Exception as e:
             await self.logger.error(f"vector_search error: {e}")
+            raise
+
+    async def vector_search_optimized(self, query: str, query_type: str = None, make: str = None, model: str = None, year: int = None) -> list:
+        """
+        Optimized vector search with parallel processing and improved ranking.
+        """
+        try:
+            if query_type == "generation":
+                # Parallel fetching of different data sources
+                tasks = []
+                if make and model and year:
+                    tasks.append(asyncio.create_task(self._get_owner_manual_chunks(make, model, year)))
+                    tasks.append(asyncio.create_task(self._get_web_chunks_optimized(make, model, year)))
+                
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    owner_chunks = results[0] if len(results) > 0 and not isinstance(results[0], Exception) else []
+                    web_chunks = results[1] if len(results) > 1 and not isinstance(results[1], Exception) else []
+                else:
+                    owner_chunks, web_chunks = [], []
+                
+                all_chunks = owner_chunks + web_chunks
+                all_chunks = await self._embed_and_score_optimized(query, all_chunks)
+                
+                # Enhanced ranking with source weights
+                for chunk in all_chunks:
+                    if chunk["source"] == "owner_manual":
+                        chunk["score"] *= 1.2  # Boost manual content
+                    elif chunk["source"] == "web":
+                        chunk["score"] *= 1.0  # Standard web content
+                
+                all_chunks.sort(key=lambda x: x["score"], reverse=True)
+                return all_chunks[:72]
+                
+            elif query_type == "validation":
+                ground_chunks = await self._get_ground_knowledge_chunks()
+                ground_chunks = await self._embed_and_score_optimized(query, ground_chunks)
+                ground_chunks.sort(key=lambda x: x["score"], reverse=True)
+                return ground_chunks
+                
+            else:
+                # Parallel fetching of all sources
+                tasks = [
+                    asyncio.create_task(self._get_ground_knowledge_chunks())
+                ]
+                
+                if make and model and year:
+                    tasks.extend([
+                        asyncio.create_task(self._get_owner_manual_chunks(make, model, year)),
+                        asyncio.create_task(self._get_web_chunks_optimized(make, model, year))
+                    ])
+                
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                ground_chunks = results[0] if not isinstance(results[0], Exception) else []
+                owner_chunks = results[1] if len(results) > 1 and not isinstance(results[1], Exception) else []
+                web_chunks = results[2] if len(results) > 2 and not isinstance(results[2], Exception) else []
+                
+                all_chunks = ground_chunks + owner_chunks + web_chunks
+                all_chunks = await self._embed_and_score_optimized(query, all_chunks)
+                
+                # Apply source-based ranking
+                for chunk in all_chunks:
+                    if chunk["source"] == "ground_knowledge":
+                        chunk["score"] *= 1.3  # Highest priority for ground knowledge
+                    elif chunk["source"] == "owner_manual":
+                        chunk["score"] *= 1.2
+                    elif chunk["source"] == "web":
+                        chunk["score"] *= 1.0
+                
+                all_chunks.sort(key=lambda x: x["score"], reverse=True)
+                return all_chunks
+                
+        except Exception as e:
+            await self.logger.error(f"vector_search_optimized error: {e}")
             raise
 
     async def web_search(self, query: str, num_results: int = 10) -> List[Dict[str, Any]]:

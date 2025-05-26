@@ -77,9 +77,10 @@ class QueryBuilderService(BaseService):
             )
         }
 
+    @BaseService.cache_result(ttl_seconds=900)  # Cache queries for 15 minutes
     async def perform_action(self, user_query: str, query_type: str = None):
         """
-        Build optimized queries from a user query, optionally for a specific search type.
+        Build optimized queries from a user query with caching and parallel processing.
         Args:
             user_query: The original user query.
             query_type: Optional type of query to generate ('search_engine', 'youtube', 'vector_search', or None for all).
@@ -89,18 +90,57 @@ class QueryBuilderService(BaseService):
             Exception: If query building fails.
         """
         try:
+            await self._rate_limit()  # Apply rate limiting
+            
             results = {}
-            loop = asyncio.get_running_loop()
+            
             if query_type and query_type in self.prompts:
-                chain = self.prompts[query_type] | self.llm
-                result = await chain.ainvoke({"query": user_query})
-                results[query_type] = result.content if hasattr(result, 'content') else str(result)
+                # Single query type with retry logic
+                for attempt in range(3):
+                    try:
+                        chain = self.prompts[query_type] | self.llm
+                        result = await chain.ainvoke({"query": user_query})
+                        results["query"] = result.content if hasattr(result, 'content') else str(result)
+                        break
+                    except Exception as e:
+                        if attempt == 2:  # Last attempt
+                            await self.logger.error(f"Failed to generate {query_type} query after 3 attempts: {e}")
+                            results["query"] = user_query  # Fallback to original query
+                        else:
+                            await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
             else:
-                for key, prompt in self.prompts.items():
-                    chain = prompt | self.llm
-                    result = await chain.ainvoke({"query": user_query})
-                    results[key] = result.content if hasattr(result, 'content') else str(result)
+                # Generate all query types in parallel for better performance
+                async def generate_query(key, prompt):
+                    for attempt in range(3):
+                        try:
+                            chain = prompt | self.llm
+                            result = await chain.ainvoke({"query": user_query})
+                            return key, result.content if hasattr(result, 'content') else str(result)
+                        except Exception as e:
+                            if attempt == 2:
+                                await self.logger.warning(f"Failed to generate {key} query: {e}")
+                                return key, user_query  # Fallback
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                    return key, user_query
+                
+                # Create tasks for parallel execution
+                tasks = [generate_query(key, prompt) for key, prompt in self.prompts.items()]
+                
+                # Execute all tasks concurrently
+                completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                for result in completed_results:
+                    if isinstance(result, Exception):
+                        await self.logger.error(f"Query generation error: {result}")
+                    else:
+                        key, value = result
+                        results[key] = value
+            
             return results
         except Exception as e:
             await self.logger.error(f"perform_action error: {e}")
-            raise
+            # Return fallback results
+            if query_type:
+                return {"query": user_query}
+            else:
+                return {key: user_query for key in self.prompts.keys()}

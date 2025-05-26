@@ -19,6 +19,15 @@ class DummyDriver:
             def text(self):
                 return "Test Text"
         return DummyElement()
+    
+    def find_elements(self, by, value):
+        class DummyElement:
+            def get_attribute(self, attr):
+                return "Test Meta"
+            @property
+            def text(self):
+                return "Test Text"
+        return [DummyElement()]
 
 class DummyScraperService(ScraperService):
     def _get_driver(self):

@@ -2,13 +2,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.responses import JSONResponse
 from app.api.v1.routes import router as v1_router
 from app.utils.websocket import manager as websocket_manager
-from app.utils.logger import Logger
+from app.utils.logger import Logger, get_logger_instance
+from app.db.base import SupabaseDBHandler
 from app.utils.redis_cache import get_redis_cache, RedisCache
 from typing import Any
 from pydantic import BaseModel
 
 app = FastAPI()
-logger = Logger()
+logger = get_logger_instance()
+db_handler = SupabaseDBHandler()
 
 class ErrorResponse(BaseModel):
     detail: str
@@ -39,6 +41,10 @@ async def get_logger_dep() -> Logger:
 # Dependency for websocket manager
 async def get_websocket_manager_dep() -> Any:
     return websocket_manager
+
+# Dependency for db handler
+async def get_db_handler_dep() -> SupabaseDBHandler:
+    return db_handler
 
 def get_logger() -> Logger:
     return logger

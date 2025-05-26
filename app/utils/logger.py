@@ -1,9 +1,20 @@
 import logging
 import asyncio
 import functools
+import typing
 
 class Logger:
+    _instance = None
+    _lock = asyncio.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self, name: str = "autocare"):
+        if hasattr(self, '_initialized') and self._initialized:
+            return
         self.logger = logging.getLogger(name)
         if not self.logger.handlers:
             handler = logging.StreamHandler()
@@ -13,7 +24,7 @@ class Logger:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
         self.logger.setLevel(logging.INFO)
-        self._lock = asyncio.Lock()
+        self._initialized = True
 
     async def info(self, message: str):
         loop = asyncio.get_running_loop()
@@ -47,5 +58,9 @@ class Logger:
                 functools.partial(self.logger.debug, message, extra={"log_type": "debug"})
             )
 
-    async def get_logger(self):
-        return self.logger
+    @classmethod
+    async def get_logger(cls):
+        return cls._instance.logger
+
+def get_logger_instance() -> 'Logger':
+    return Logger()

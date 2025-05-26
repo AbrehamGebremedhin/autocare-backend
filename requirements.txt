@@ -1,0 +1,12 @@
+# Web scraping and crawling
+crawl4ai>=0.6.0
+
+# Async support (if not already included)
+aiohttp>=3.8.0
+
+# Other dependencies (add your existing dependencies here)
+fastapi
+uvicorn
+pydantic
+python-multipart
+python-dotenv

@@ -9,15 +9,16 @@ class ScraperService(BaseService):
     """
     Enhanced service to scrape URLs using Crawl4AI with async capabilities, retry logic, and performance optimizations.
     """
-    def __init__(self, headless: bool = True, logger: Optional[Logger] = None, pool_size: int = 3):
+    def __init__(self, headless: bool = True, logger: Optional[Logger] = None, pool_size: int = 3, websocket_manager=None):
         """
         Initialize the ScraperService with crawl4ai configuration.
         Args:
             headless (bool): Whether to run the browser in headless mode.
             logger (Logger): Optional logger instance.
             pool_size (int): Number of concurrent crawlers (used for semaphore).
+            websocket_manager: Optional WebSocketManager for notifications.
         """
-        super().__init__()
+        super().__init__(websocket_manager=websocket_manager)
         self.headless = headless
         self.logger = logger or Logger("ScraperService")
         self.pool_size = pool_size
@@ -187,6 +188,12 @@ class ScraperService(BaseService):
             concurrency (int): Max number of concurrent scrapes.
         Returns:
             list: List of extracted page info dicts.
+        """
+        return await self.run_with_notification(self._perform_action_impl, links, limit, concurrency)
+
+    async def _perform_action_impl(self, links: list, limit: int = 2, concurrency: int = 3) -> list:
+        """
+        Internal implementation of perform_action without notification.
         """
         if not links:
             return []

@@ -2,6 +2,20 @@ import pytest
 from app.services.scraper_service import ScraperService
 from app.utils.logger import Logger
 
+class DummyWebSocketManager:
+    def __init__(self):
+        self.messages = []
+    async def broadcast(self, message):
+        self.messages.append(message)
+
+class DummyScraperService(ScraperService):
+    def __init__(self, websocket_manager=None):
+        super().__init__(websocket_manager=websocket_manager)
+    async def _perform_action_impl(self, *args, **kwargs):
+        return 'scraped'
+    async def perform_action(self, *args, **kwargs):
+        return await self.run_with_notification(self._perform_action_impl, *args, **kwargs)
+
 @pytest.mark.asyncio
 async def test_extract_page_info():
     """Test that scraper service can extract page info using crawl4ai."""
@@ -65,3 +79,12 @@ async def test_extract_page_info_error_handling():
         
     finally:
         await service.cleanup()
+
+@pytest.mark.asyncio
+async def test_perform_action_with_notification():
+    ws = DummyWebSocketManager()
+    service = DummyScraperService(websocket_manager=ws)
+    result = await service.perform_action()
+    assert result == 'scraped'
+    assert ws.messages[0]['event'] == 'task_started'
+    assert ws.messages[-1]['event'] == 'task_finished'

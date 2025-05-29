@@ -17,8 +17,7 @@ class FetchCarDataService(BaseService):
             websocket_manager: Optional WebSocketManager for notifications.
             logger: Optional logger instance.
         """
-        super().__init__()
-        self.websocket_manager = websocket_manager
+        super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or Logger("FetchCarDataService")
         settings = get_settings()
         self.BASE_URL = settings.BASE_URL
@@ -220,6 +219,9 @@ class FetchCarDataService(BaseService):
         Raises:
             Exception: If any step fails.
         """
+        return await self.run_with_notification(self._perform_action_impl, make, model, year)
+
+    async def _perform_action_impl(self, make: str, model: str, year: int):
         try:
             links = self.build_url(make, model, year)
             

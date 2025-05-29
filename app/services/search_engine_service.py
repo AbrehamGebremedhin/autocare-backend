@@ -22,7 +22,8 @@ class SearchEngineService(BaseService):
                  bucket_manager=None,
                  fetch_car_data_service=None,
                  db_handler=None,
-                 logger: Optional[Logger] = None):
+                 logger: Optional[Logger] = None,
+                 websocket_manager=None):
         """
         Initialize the SearchEngineService with required dependencies and API clients.
         Allows dependency injection for easier testing and flexibility.
@@ -36,8 +37,9 @@ class SearchEngineService(BaseService):
             fetch_car_data_service: FetchCarDataService instance.
             db_handler: SupabaseDBHandler instance.
             logger: Logger instance.
+            websocket_manager: Optional WebSocketManager for notifications.
         """
-        super().__init__()
+        super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or Logger("SearchEngineService")
         settings = get_settings()
         self.query_builder = query_builder or QueryBuilderService()
@@ -541,6 +543,42 @@ class SearchEngineService(BaseService):
         return hours * 3600 + minutes * 60 + seconds
 
     async def perform_action(self, user_query: str, query_type: str = None):
+        """
+        Perform a search action based on the query type.
+        Args:
+            user_query (str): The user's search query.
+            query_type (str, optional): The type of search ('search_engine', 'youtube', 'vector').
+        Returns:
+            List of search results from the selected search method.
+        Raises:
+            Exception: If search fails.
+        """
+        try:
+            query = await self.query_builder.perform_action(user_query, query_type)
+            query = query.get('query', user_query)
+            if not query:
+                await self.logger.warning("No optimized query generated.")
+                return []
+            print(f"Optimized query: {query}")
+            if not query_type:
+                return await self.web_search(query)
+            query_type = query_type.lower()
+            if query_type == "search_engine":
+                return await self.web_search(query)
+            elif query_type == "youtube":
+                return await self.youtube_search(query)
+            elif query_type == "vector":
+                return await self.vector_search(query)
+            else:
+                return await self.web_search(user_query)
+        except Exception as e:
+            await self.logger.error(f"perform_action error: {e}")
+            raise
+
+    async def perform_action(self, *args, **kwargs):
+        return await self.run_with_notification(self._perform_action_impl, *args, **kwargs)
+
+    async def _perform_action_impl(self, user_query: str, query_type: str = None):
         """
         Perform a search action based on the query type.
         Args:

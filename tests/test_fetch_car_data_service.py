@@ -34,3 +34,17 @@ def test_build_url_missing_args():
         service.build_url("Toyota", "", 2001)
     with pytest.raises(ValueError):
         service.build_url("Toyota", "echo", None)
+
+@pytest.mark.asyncio
+async def test_perform_action_with_notification():
+    ws = DummyWebSocketManager()
+    class DummyFetchCarDataService(FetchCarDataService):
+        async def _perform_action_impl(self, *args, **kwargs):
+            return 'done'
+        async def perform_action(self, *args, **kwargs):
+            return await self.run_with_notification(self._perform_action_impl, *args, **kwargs)
+    service = DummyFetchCarDataService(websocket_manager=ws)
+    result = await service.perform_action()
+    assert result == 'done'
+    assert ws.messages[0]['event'] == 'task_started'
+    assert ws.messages[-1]['event'] == 'task_finished'

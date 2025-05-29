@@ -1,6 +1,12 @@
 import pytest
 from app.services.search_engine_service import SearchEngineService
 
+class DummyWebSocketManager:
+    def __init__(self):
+        self.messages = []
+    async def broadcast(self, message):
+        self.messages.append(message)
+
 class DummyQueryBuilder:
     async def build_search_engine_query(self, query):
         return "optimized query"
@@ -56,3 +62,27 @@ async def test_get_ground_knowledge_chunks():
     result = await service._get_ground_knowledge_chunks(limit=1)
     assert isinstance(result, list)
     assert result[0]["id"] == 1
+
+@pytest.mark.asyncio
+async def test_perform_action_with_notification():
+    ws = DummyWebSocketManager()
+    class DummySearchEngineService(SearchEngineService):
+        async def _perform_action_impl(self, *args, **kwargs):
+            return 'searched'
+        async def perform_action(self, *args, **kwargs):
+            return await self.run_with_notification(self._perform_action_impl, *args, **kwargs)
+    service = DummySearchEngineService(
+        query_builder=DummyQueryBuilder(),
+        youtube_client=DummyYouTube(),
+        embedding_service=DummyEmbeddingService(),
+        parser_service=DummyParserService(),
+        scraper_service=DummyScraperService(),
+        bucket_manager=DummyBucketManager(),
+        fetch_car_data_service=DummyFetchCarDataService(),
+        db_handler=DummyDBHandler(),
+        websocket_manager=ws
+    )
+    result = await service.perform_action()
+    assert result == 'searched'
+    assert ws.messages[0]['event'] == 'task_started'
+    assert ws.messages[-1]['event'] == 'task_finished'

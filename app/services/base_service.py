@@ -9,8 +9,8 @@ class BaseService(ABC):
     """
     Abstract base class for all service classes with performance enhancements.
     """
-    def __init__(self):
-        self.websocket_manager = manager
+    def __init__(self, websocket_manager=None):
+        self.websocket_manager = websocket_manager or manager
         self._cache: Dict[str, Any] = {}
         self._cache_ttl: Dict[str, float] = {}
         self._default_cache_duration = 300  # 5 minutes default
@@ -86,6 +86,26 @@ class BaseService(ABC):
         """Clear all cached data."""
         self._cache.clear()
         self._cache_ttl.clear()
+
+    async def notify_task(self, event: str, detail: str = ""):
+        """Send a websocket notification about task events (start/finish)."""
+        if self.websocket_manager:
+            await self.websocket_manager.broadcast({
+                "service": self.__class__.__name__,
+                "event": event,
+                "detail": detail
+            })
+
+    async def run_with_notification(self, coro, *args, **kwargs):
+        """Run a coroutine with start/finish notifications."""
+        await self.notify_task("task_started")
+        try:
+            result = await coro(*args, **kwargs)
+            await self.notify_task("task_finished")
+            return result
+        except Exception as exc:
+            await self.notify_task("task_failed", detail=str(exc))
+            raise
 
     @abstractmethod
     async def perform_action(self, *args, **kwargs):

@@ -10,13 +10,14 @@ class QueryBuilderService(BaseService):
     """
     Service to build optimized queries for search engines, YouTube, and vector search using Gemini API via LangChain.
     """
-    def __init__(self, logger: Optional[Logger] = None):
+    def __init__(self, logger: Optional[Logger] = None, websocket_manager=None):
         """
         Initialize the QueryBuilderService.
         Args:
             logger (Logger): Optional logger instance.
+            websocket_manager: Optional WebSocketManager for notifications.
         """
-        super().__init__()
+        super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or Logger("QueryBuilderService")
         settings = get_settings()
         self.gemini_api_key = settings.GEMINI_KEY
@@ -89,6 +90,9 @@ class QueryBuilderService(BaseService):
         Raises:
             Exception: If query building fails.
         """
+        return await self.run_with_notification(self._perform_action_impl, user_query, query_type)
+
+    async def _perform_action_impl(self, user_query: str, query_type: str = None):
         try:
             await self._rate_limit()  # Apply rate limiting
             

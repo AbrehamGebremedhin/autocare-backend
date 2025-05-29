@@ -11,15 +11,16 @@ class EmbeddingService(BaseService):
     Service for generating embeddings using GoogleGenerativeAIEmbeddings.
     Enhanced with batch processing, caching, and performance optimizations.
     """
-    def __init__(self, embedder: Optional[Any] = None, logger: Optional[Logger] = None, settings: Optional[Any] = None):
+    def __init__(self, embedder: Optional[Any] = None, logger: Optional[Logger] = None, settings: Optional[Any] = None, websocket_manager=None):
         """
         Initialize the EmbeddingService.
         Args:
             embedder: Optional custom embedding backend.
             logger: Optional logger instance.
             settings: Optional settings/config object.
+            websocket_manager: Optional WebSocketManager for notifications.
         """
-        super().__init__()
+        super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or Logger("EmbeddingService")
         self.settings = settings or get_settings()
         self.embedder = embedder or GoogleGenerativeAIEmbeddings(
@@ -161,6 +162,9 @@ class EmbeddingService(BaseService):
             raise
 
     async def perform_action(self, *args, **kwargs):
+        return await self.run_with_notification(self._perform_action_impl, *args, **kwargs)
+
+    async def _perform_action_impl(self, *args, **kwargs):
         """
         Perform embedding action based on provided arguments.
         Args:

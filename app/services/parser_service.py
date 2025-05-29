@@ -16,16 +16,17 @@ class ParserService(BaseService):
     Service for parsing PDFs, large strings, and other documents into structured text chunks.
     Dependencies can be injected for testability and flexibility.
     """
-    def __init__(self, pdf_reader: Optional[Any] = None, logger: Optional[Logger] = None):
+    def __init__(self, pdf_reader: Optional[Any] = None, logger: Optional[Logger] = None, websocket_manager=None):
         """
         Initialize the ParserService.
         Args:
             pdf_reader: Optional PDF reader backend.
             logger: Optional logger instance.
+            websocket_manager: Optional WebSocketManager for notifications.
         Raises:
             ImportError: If no PDF reader is available.
         """
-        super().__init__()
+        super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or Logger("ParserService")
         self.pdf_reader = pdf_reader or PdfReader
         if self.pdf_reader is None:
@@ -270,6 +271,19 @@ class ParserService(BaseService):
     async def perform_action(self, file_path: str = None, pdf_bytes: bytes = None, text: str = None, chunk_size: int = 1000, **kwargs) -> List[str]:
         """
         Perform parsing action based on input type.
+        Args:
+            file_path (str): Path to file to parse
+            pdf_bytes (bytes): PDF bytes to parse
+            text (str): Text to chunk
+            chunk_size (int): Size of chunks
+        Returns:
+            List[str]: Parsed and chunked text
+        """
+        return await self.run_with_notification(self._perform_action_impl, file_path, pdf_bytes, text, chunk_size, **kwargs)
+
+    async def _perform_action_impl(self, file_path: str = None, pdf_bytes: bytes = None, text: str = None, chunk_size: int = 1000, **kwargs) -> List[str]:
+        """
+        Implementation of the parsing action logic.
         Args:
             file_path (str): Path to file to parse
             pdf_bytes (bytes): PDF bytes to parse

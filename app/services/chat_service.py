@@ -19,7 +19,8 @@ class ChatService(BaseService):
                  embedding_service: Optional[EmbeddingService] = None,
                  search_service: Optional[SearchEngineService] = None,
                  query_builder: Optional[QueryBuilderService] = None,
-                 logger: Optional[Logger] = None):
+                 logger: Optional[Logger] = None,
+                 websocket_manager=None):
         """
         Initialize the ChatService with enhanced capabilities.
         Args:
@@ -27,8 +28,9 @@ class ChatService(BaseService):
             search_service: Service for searching knowledge base
             query_builder: Service for building optimized queries
             logger: Optional logger instance
+            websocket_manager: Optional WebSocketManager for notifications.
         """
-        super().__init__()
+        super().__init__(websocket_manager=websocket_manager)
         self.embedding_service = embedding_service or EmbeddingService()
         self.search_service = search_service or SearchEngineService()
         self.query_builder = query_builder or QueryBuilderService()
@@ -521,3 +523,9 @@ class ChatService(BaseService):
             'active_conversations': len([c for c in self._conversation_cache.values() 
                                        if (datetime.now() - c.get('last_updated', datetime.now())).total_seconds() < 3600])
         }
+
+    async def perform_action(self, *args, **kwargs):
+        return await self.run_with_notification(self._perform_action_impl, *args, **kwargs)
+
+    async def _perform_action_impl(self, *args, **kwargs):
+        pass

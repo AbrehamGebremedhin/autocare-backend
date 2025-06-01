@@ -20,7 +20,7 @@ class MilvusHandler:
                 FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, auto_id=False, max_length=64),
                 FieldSchema(name="book_title", dtype=DataType.VARCHAR, max_length=256),
                 FieldSchema(name="content_chunk", dtype=DataType.VARCHAR, max_length=8192),
-                FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=768),  # Adjust dim as needed
+                FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=1024),  # Changed to 1024 dimensions
                 FieldSchema(name="page_number", dtype=DataType.INT64),
                 FieldSchema(name="metadata", dtype=DataType.JSON)
             ]
@@ -44,6 +44,19 @@ class MilvusHandler:
             expr=filter_expr,
             output_fields=["id", "book_title", "content_chunk", "page_number", "metadata"]
         )
+        return results
+
+    def query(self, expr=None, output_fields=None, limit=100):
+        """
+        Query the collection for documents (non-vector search).
+        Args:
+            expr: Optional filter expression.
+            output_fields: List of fields to return.
+            limit: Max number of results.
+        Returns:
+            List of dicts for each entity.
+        """
+        results = self.collection.query(expr=expr, output_fields=output_fields, limit=limit)
         return results
 
     def count(self):

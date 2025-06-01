@@ -6,7 +6,7 @@ import uuid
 import time
 from app.services.parser_service import ParserService
 from app.services.embedding_service import EmbeddingService
-from app.db.base import SupabaseDBHandler
+from app.db.milvus_handler import MilvusHandler
 from app.utils.logger import Logger
 
 CAR_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'car_data')
@@ -16,7 +16,7 @@ MAX_EMBEDDING_RETRIES = 3
 MAX_INSERT_RETRIES = 3
 RETRY_BASE_DELAY = 2  # seconds
 
-async def process_pdf(pdf_path, parser_service, embedding_service, supabase_client, logger):
+async def process_pdf(pdf_path, parser_service, embedding_service, milvus_handler, logger):
     book_title = os.path.splitext(os.path.basename(pdf_path))[0]
     try:
         await logger.info(f"Processing PDF: {pdf_path}")
@@ -41,6 +41,8 @@ async def process_pdf(pdf_path, parser_service, embedding_service, supabase_clie
                 else:
                     await logger.error(f"Embedding failed after {MAX_EMBEDDING_RETRIES} attempts: {e}")
                     return
+        # Prepare data for Milvus
+        milvus_data = []
         for idx, (chunk, vector) in enumerate(zip(chunks, embeddings)):
             data = {
                 "id": str(uuid.uuid4()),
@@ -50,19 +52,20 @@ async def process_pdf(pdf_path, parser_service, embedding_service, supabase_clie
                 "page_number": -1,  # Use -1 if page number is unknown
                 "metadata": {"source_file": pdf_path, "chunk_index": idx}
             }
-            # Retry insert with exponential backoff
-            for attempt in range(MAX_INSERT_RETRIES):
-                try:
-                    await logger.info(f"Inserting into table '{TABLE_NAME}': {data}")
-                    supabase_client.table(TABLE_NAME).insert(data).execute()
-                    break  # Success
-                except Exception as e:
-                    if attempt < MAX_INSERT_RETRIES - 1:
-                        delay = RETRY_BASE_DELAY * (2 ** attempt)
-                        await logger.warning(f"Insert failed (attempt {attempt+1}/{MAX_INSERT_RETRIES}): {e}. Retrying in {delay}s...")
-                        await asyncio.sleep(delay)
-                    else:
-                        await logger.error(f"Insert failed after {MAX_INSERT_RETRIES} attempts: {e}")
+            milvus_data.append(data)
+        # Insert all at once (Milvus is batch-friendly)
+        for attempt in range(MAX_INSERT_RETRIES):
+            try:
+                await logger.info(f"Inserting {len(milvus_data)} records into Milvus collection '{TABLE_NAME}'")
+                milvus_handler.insert(milvus_data)
+                break  # Success
+            except Exception as e:
+                if attempt < MAX_INSERT_RETRIES - 1:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    await logger.warning(f"Milvus insert failed (attempt {attempt+1}/{MAX_INSERT_RETRIES}): {e}. Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                else:
+                    await logger.error(f"Milvus insert failed after {MAX_INSERT_RETRIES} attempts: {e}")
         await logger.info(f"Finished processing {pdf_path}")
     except Exception as e:
         tb = traceback.format_exc()
@@ -72,12 +75,11 @@ async def main():
     logger = Logger("dataloader")
     parser_service = ParserService()
     embedding_service = EmbeddingService()
-    db_handler = SupabaseDBHandler()
-    supabase_client = await db_handler.client
+    milvus_handler = MilvusHandler(collection_name=TABLE_NAME)
 
     pdf_files = [os.path.join(CAR_DATA_DIR, f) for f in os.listdir(CAR_DATA_DIR) if f.lower().endswith('.pdf')]
     await logger.info(f"Found {len(pdf_files)} PDF files in {CAR_DATA_DIR}")
-    tasks = [process_pdf(pdf, parser_service, embedding_service, supabase_client, logger) for pdf in pdf_files]
+    tasks = [process_pdf(pdf, parser_service, embedding_service, milvus_handler, logger) for pdf in pdf_files]
     await asyncio.gather(*tasks)
 
 if __name__ == "__main__":

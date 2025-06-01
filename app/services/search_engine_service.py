@@ -7,6 +7,7 @@ from app.services.query_builder_service import QueryBuilderService
 from typing import List, Dict, Any, Optional
 import asyncio
 from app.utils.logger import Logger
+from app.db.milvus_handler import MilvusHandler
 
 class SearchEngineService(BaseService):
     """
@@ -56,28 +57,23 @@ class SearchEngineService(BaseService):
         self.bucket_manager = bucket_manager or SupabaseBucketManager()
         self.fetch_car_data_service = fetch_car_data_service or FetchCarDataService()
         self.db_handler = db_handler or SupabaseDBHandler()
+        self.milvus_handler = MilvusHandler(collection_name="Groundknowledge")
 
     async def _get_ground_knowledge_chunks(self, limit=50):
         """
-        Retrieve ground knowledge chunks from the database with optimized query.
-        Args:
-            limit (int): Maximum number of chunks to retrieve.
-        Returns:
-            List[dict]: List of ground knowledge chunks.
-        Raises:
-            Exception: If retrieval fails.
+        Retrieve ground knowledge chunks from Milvus with optimized query.
         """
         try:
-            # Use caching for frequently accessed ground knowledge
             cache_key = f"ground_knowledge_{limit}"
             cached_result = self._get_from_cache(cache_key)
             if cached_result is not None:
                 return cached_result
 
-            db = self.db_handler._client
-            ground_knowledge = db.table("Ground_Knowledge").select("*").limit(limit).execute()
-            ground_docs = ground_knowledge.data if hasattr(ground_knowledge, 'data') else ground_knowledge["data"]
-            
+            # Milvus search: get all vectors (or top N if needed)
+            # For now, just fetch all entities (no vector search here)
+            collection = self.milvus_handler.collection
+            results = collection.query(expr=None, output_fields=["id", "book_title", "content_chunk", "vector", "metadata"], limit=limit)
+            ground_docs = results
             result = [
                 {
                     "id": doc.get("id"),
@@ -88,7 +84,6 @@ class SearchEngineService(BaseService):
                 }
                 for doc in ground_docs
             ]
-              # Cache result for 10 minutes
             self._set_cache(cache_key, result, 600)
             return result
         except Exception as e:

@@ -1,6 +1,6 @@
 from app.services.base_service import BaseService
 from app.core.config import get_settings
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_ollama import OllamaEmbeddings
 from typing import Optional, Any, List
 from app.utils.logger import Logger
 import asyncio
@@ -8,25 +8,21 @@ import numpy as np
 
 class EmbeddingService(BaseService):
     """
-    Service for generating embeddings using GoogleGenerativeAIEmbeddings.
+    Service for generating embeddings using a locally running Ollama model (nomic-embed-text).
     Enhanced with batch processing, caching, and performance optimizations.
     """
-    def __init__(self, embedder: Optional[Any] = None, logger: Optional[Logger] = None, settings: Optional[Any] = None, websocket_manager=None):
+    def __init__(self, model_name: str = "nomic-embed-text", logger: Optional[Logger] = None, websocket_manager=None):
         """
         Initialize the EmbeddingService.
         Args:
-            embedder: Optional custom embedding backend.
+            model_name: Name of the Ollama model to use for embeddings.
             logger: Optional logger instance.
-            settings: Optional settings/config object.
             websocket_manager: Optional WebSocketManager for notifications.
         """
         super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or Logger("EmbeddingService")
-        self.settings = settings or get_settings()
-        self.embedder = embedder or GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
-            google_api_key=self.settings.GEMINI_KEY,
-        )
+        self.model_name = model_name
+        self.embedder = OllamaEmbeddings(model=model_name)
         self._batch_size = 50  # Optimal batch size for API calls
         self._max_retries = 3
         self._retry_delay = 1.0
@@ -56,10 +52,11 @@ class EmbeddingService(BaseService):
         """
         try:
             await self._rate_limit()
-            result = await self._retry_with_backoff(
-                lambda: asyncio.get_event_loop().run_in_executor(
-                    None, self.embedder.embed_query, text
-                )
+            import asyncio
+            loop = asyncio.get_event_loop()
+            # Use OllamaEmbeddings' embed_query method
+            result = await loop.run_in_executor(
+                None, lambda: self.embedder.embed_query(text)
             )
             return result
         except Exception as e:
@@ -91,7 +88,7 @@ class EmbeddingService(BaseService):
                 
                 batch_result = await self._retry_with_backoff(
                     lambda b=batch: asyncio.get_event_loop().run_in_executor(
-                        None, self.embedder.embed_documents, b
+                        None, lambda: self.embedder.embed_documents(b)
                     )
                 )
                 results.extend(batch_result)

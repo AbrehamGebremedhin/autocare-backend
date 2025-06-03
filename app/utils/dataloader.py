@@ -24,10 +24,17 @@ async def process_pdf(pdf_path, parser_service, embedding_service, milvus_handle
         if not chunks:
             await logger.warning(f"No text extracted from {pdf_path}")
             return
+        # Build a list of safe, truncated strings for both embedding and insertion
+        def sanitize_chunk(chunk):
+            chunk_str = str(chunk)
+            if len(chunk_str) > 8192:
+                chunk_str = chunk_str[:8192]
+            return chunk_str
+        safe_chunks = [sanitize_chunk(chunk) for chunk in chunks]
         # Retry embedding with exponential backoff
         for attempt in range(MAX_EMBEDDING_RETRIES):
             try:
-                embeddings_result = embedding_service.embed_texts(chunks)
+                embeddings_result = embedding_service.embed_texts(safe_chunks)
                 if inspect.isawaitable(embeddings_result):
                     embeddings = await embeddings_result
                 else:
@@ -41,19 +48,44 @@ async def process_pdf(pdf_path, parser_service, embedding_service, milvus_handle
                 else:
                     await logger.error(f"Embedding failed after {MAX_EMBEDDING_RETRIES} attempts: {e}")
                     return
-        # Prepare data for Milvus
+        # Prepare data for Milvus, with strict enforcement of chunk length
         milvus_data = []
-        for idx, (chunk, vector) in enumerate(zip(chunks, embeddings)):
+        for idx, (chunk_str, vector) in enumerate(zip(safe_chunks, embeddings)):
+            # chunk_str is already sanitized, but double-check defensively
+            if len(chunk_str) > 8192:
+                await logger.warning(f"[CRITICAL] Chunk at index {idx} still exceeds 8192 chars (length: {len(chunk_str)}). Truncating before insertion.")
+                chunk_str = chunk_str[:8192]
+            assert len(chunk_str) <= 8192, f"Chunk at index {idx} exceeds 8192 chars after sanitization!"
             data = {
                 "id": str(uuid.uuid4()),
                 "book_title": book_title,
-                "content_chunk": chunk,
+                "content_chunk": chunk_str,
                 "vector": vector,
                 "page_number": -1,  # Use -1 if page number is unknown
                 "metadata": {"source_file": pdf_path, "chunk_index": idx}
             }
             milvus_data.append(data)
         # Insert all at once (Milvus is batch-friendly)
+        # FINAL ENFORCEMENT: Force string and truncate all content_chunk fields before insert
+        for idx, record in enumerate(milvus_data):
+            chunk = record["content_chunk"]
+            if not isinstance(chunk, str):
+                await logger.warning(f"[FINAL ENFORCEMENT] Chunk at index {idx} is not a string (type: {type(chunk)}). Repr: {repr(chunk)[:100]!r}")
+                chunk = str(chunk)
+            # Ensure content_chunk is truncated to 8192 characters
+            record["content_chunk"] = chunk[:8192] if len(chunk) > 8192 else chunk
+            if not isinstance(record["content_chunk"], str):
+                await logger.error(f"[FINAL ENFORCEMENT ERROR] Chunk at index {idx} is not a string after conversion! Type: {type(record['content_chunk'])}")
+                raise ValueError(f"[FINAL ENFORCEMENT ERROR] Chunk at index {idx} is not a string after conversion!")
+            if len(record["content_chunk"]) > 8192:
+                await logger.error(f"[FINAL ENFORCEMENT ERROR] Chunk at index {idx} still exceeds 8192 chars after truncation! Length: {len(record['content_chunk'])}. Preview: {record['content_chunk'][:100]!r}")
+                raise ValueError(f"[FINAL ENFORCEMENT ERROR] Chunk at index {idx} still exceeds 8192 chars after truncation!")
+        # FINAL DIAGNOSTIC: Check all content_chunk fields before insert
+        for idx, record in enumerate(milvus_data):
+            chunk = record["content_chunk"]
+            if len(chunk) > 8192:
+                await logger.error(f"[DIAGNOSTIC ERROR] About to insert overlong chunk at index {idx} (length: {len(chunk)}). Preview: {chunk[:100]!r}")
+                raise ValueError(f"[DIAGNOSTIC ERROR] About to insert overlong chunk at index {idx} (length: {len(chunk)})")
         for attempt in range(MAX_INSERT_RETRIES):
             try:
                 await logger.info(f"Inserting {len(milvus_data)} records into Milvus collection '{TABLE_NAME}'")

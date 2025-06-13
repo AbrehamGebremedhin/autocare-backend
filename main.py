@@ -1,5 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from app.api.v1.routes import router as v1_router
 from app.utils.websocket import manager as websocket_manager
 from app.utils.logger import Logger, get_logger_instance
@@ -7,10 +7,15 @@ from app.db.base import SupabaseDBHandler
 from app.utils.redis_cache import get_redis_cache, RedisCache
 from typing import Any
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 app = FastAPI()
 logger = get_logger_instance()
 db_handler = SupabaseDBHandler()
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
 
 class ErrorResponse(BaseModel):
     detail: str
@@ -33,6 +38,11 @@ async def generic_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content=ErrorResponse(detail="Internal server error", code=500).dict(),
     )
+
+# Exception handler for rate limiting
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return PlainTextResponse("Rate limit exceeded", status_code=429)
 
 # Dependency for logger
 async def get_logger_dep() -> Logger:
@@ -85,6 +95,7 @@ async def shutdown_event():
 app.include_router(v1_router, prefix="/api/v1")
 
 @app.get("/")
+@limiter.limit("10/minute")
 async def read_root():
     return {"message": "Welcome to AutoCare API"}
 

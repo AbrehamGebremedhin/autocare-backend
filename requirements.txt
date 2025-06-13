@@ -10,6 +10,7 @@ attrs==25.3.0
 beautifulsoup4==4.13.4
 Brotli==1.1.0
 cachetools==5.5.2
+celery==5.4.0
 certifi==2025.4.26
 cffi==1.17.1
 chardet==5.2.0
@@ -142,6 +143,7 @@ snowballstemmer==2.2.0
 sortedcontainers==2.4.0
 soupsieve==2.7
 SQLAlchemy==2.0.41
+slowapi==0.1.9
 starlette==0.46.2
 storage3==0.11.3
 StrEnum==0.4.15

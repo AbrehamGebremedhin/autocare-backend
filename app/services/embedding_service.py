@@ -3,6 +3,7 @@ from app.core.config import get_settings
 from langchain_ollama import OllamaEmbeddings
 from typing import Optional, Any, List
 from app.utils.logger import Logger
+from app.utils.redis_cache import redis_cache_decorator
 import asyncio
 import numpy as np
 
@@ -63,6 +64,7 @@ class EmbeddingService(BaseService):
             await self.logger.error(f"EmbeddingService.embed_text error: {e}")
             raise
 
+    @redis_cache_decorator(expire=1800)  # Cache for 30 minutes
     async def embed_texts_batch(self, texts: List[str], batch_size: Optional[int] = None) -> List[List[float]]:
         """
         Generate embeddings for a list of text strings with optimized batching.

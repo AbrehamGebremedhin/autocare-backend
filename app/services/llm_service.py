@@ -8,7 +8,7 @@ class LLMService(BaseService):
     Service for interacting with a locally running Ollama LLM using LangChain.
     Supports dynamic model switching, streaming, and advanced parameterization.
     """
-    def __init__(self, model_name: str = "llama3", websocket_manager=None, **default_params):
+    def __init__(self, model_name: str = "gemma3:12b", websocket_manager=None, **default_params):
         super().__init__(websocket_manager=websocket_manager)
         self.model_name = model_name
         self.default_params = default_params

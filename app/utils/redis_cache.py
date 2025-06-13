@@ -35,29 +35,30 @@ class RedisCache:
         redis_conn = await self.connect()
         await redis_conn.delete(key)
 
-    def redis_cache_decorator(expire: int = 300):
-        """
-        Decorator to cache async function results in Redis.
-        The cache key is based on function name and arguments.
-        """
-        def decorator(func):
-            @wraps(func)
-            async def wrapper(*args, **kwargs):
-                # Create a unique cache key
-                key_base = f"{func.__module__}.{func.__name__}:{args}:{kwargs}"
-                cache_key = hashlib.sha256(key_base.encode()).hexdigest()
-                cached = await redis_cache.get(cache_key)
-                if cached is not None:
-                    return cached
-                result = await func(*args, **kwargs)
-                await redis_cache.set(cache_key, result, expire=expire)
-                return result
-            return wrapper
-        return decorator
-
 # Singleton instance for DI
 redis_cache = RedisCache()
 
-# FastAPI dependency
+def redis_cache_decorator(expire: int = 300):
+    """
+    Decorator to cache async function results in Redis.
+    The cache key is based on function name and arguments.
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Create a unique cache key
+            key_base = f"{func.__module__}.{func.__name__}:{args}:{kwargs}"
+            cache_key = hashlib.sha256(key_base.encode()).hexdigest()
+            cached = await redis_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            result = await func(*args, **kwargs)
+            await redis_cache.set(cache_key, result, expire=expire)
+            return result
+        return wrapper
+    return decorator
+
 async def get_redis_cache() -> RedisCache:
     return redis_cache
+
+__all__ = ["RedisCache", "redis_cache", "redis_cache_decorator", "get_redis_cache"]

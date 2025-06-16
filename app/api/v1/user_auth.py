@@ -31,7 +31,8 @@ async def register_user(user: UserCreate, db_handler: SupabaseDBHandler = Depend
             user_data = response['user']
         else:
             raise HTTPException(status_code=400, detail="Registration failed.")
-        return UserBase(**user_data)
+        # Fix: ensure user_data is a dict for UserBase
+        return UserBase(**(user_data.model_dump() if hasattr(user_data, "model_dump") else dict(user_data)))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

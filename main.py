@@ -96,7 +96,7 @@ app.include_router(v1_router, prefix="/api/v1")
 
 @app.get("/")
 @limiter.limit("10/minute")
-async def read_root():
+async def read_root(request: Request):
     return {"message": "Welcome to AutoCare API"}
 
 @app.websocket("/ws")

@@ -81,11 +81,13 @@ class ChatService(BaseService):
             conversation = self._get_conversation(user_id)
             
             # Add user message to conversation
+            is_initial = len(conversation['messages']) == 0
             conversation['messages'].append({
                 'role': 'user',
                 'content': message,
                 'timestamp': start_time.isoformat(),
-                'context': context
+                'context': context,
+                'is_initial': is_initial
             })
             
             # Process message with enhanced logic

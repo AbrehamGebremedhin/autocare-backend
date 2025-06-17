@@ -215,6 +215,19 @@ class SymptomExtractorAgent():
             if 'timings' in context:
                 timings.update({f'context_{k}': v for k, v in context['timings'].items()})
         await self.logger.info(f"handle timings: {timings}")
+
+        # Add results to the diagnosis_tree if it exists
+        if self.diagnosis_tree is not None and isinstance(parsed_result, list):
+            for issue in parsed_result:
+                issue_name = issue.get('issue_name', 'Unknown Issue')
+                likelihood = issue.get('likelihood', 0) / 100.0  # Convert to 0-1 float
+                node = DiagnosisTreeNode(
+                    issue_name=issue_name,
+                    likelyhood=likelihood,
+                    data=issue
+                )
+                self.diagnosis_tree.add_child(node)
+
         return parsed_result
 
     async def process(self, task: str) -> Any:
@@ -226,18 +239,6 @@ class SymptomExtractorAgent():
             Any: Final processed result.
         """
         result = await self.handle(task)
-        # You can add additional post-processing here if needed
+        
         return result
     
-from pprint import pprint
-async def main():
-    agent = SymptomExtractorAgent(car_id="toyota-echo-2001")
-    task = "The car makes a knocking sound when accelerating and the check engine light is on."
-    context = await agent.pre_process(task)
-    result = await agent.handle(task)
-    final_result = await agent.post_process(result, context)
-    pprint(result)
-    pprint(final_result)
-
-if __name__ == "__main__":
-    asyncio.run(main())

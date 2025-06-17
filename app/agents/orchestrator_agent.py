@@ -1,23 +1,20 @@
 from app.agents.symptom_extraction_agent import SymptomExtractorAgent
-from app.services.chat_service import ChatService
 
 class OrchestratorAgent:
     def __init__(self):
         self.agents = {
-            'symptom_extraction': SymptomExtractorAgent(),
-            'chat': ChatService(),
-            # Add other agents here
+            'symptom_extraction': SymptomExtractorAgent,  # Store the class, not the instance
         }
 
     async def route_request(self, user_request: str, user_id: str = None, context: dict = None):
         """
         Main entry point: decides which agent should handle the user request.
         """
-        # Example: route to chat agent for general chat or fallback
-        if self._is_chat_request(user_request):
-            return await self._handle_with_chat_agent(user_id, user_request, context)
         if 'symptom' in user_request.lower():
-            return self._handle_with_agent('symptom_extraction', user_request)
+            car_id = None
+            if context and 'car_id' in context:
+                car_id = context['car_id']
+            return self._handle_with_agent('symptom_extraction', user_request, car_id)
         # Add more routing logic here
         return {'response': 'No suitable agent found for this request.'}
 
@@ -26,17 +23,14 @@ class OrchestratorAgent:
         keywords = ['symptom', 'diagnosis', 'extract']
         return not any(k in user_request.lower() for k in keywords)
 
-    async def _handle_with_chat_agent(self, user_id: str, message: str, context: dict = None):
-        chat_agent = self.agents.get('chat')
-        if not chat_agent:
-            return {'response': 'Chat agent not available.'}
-        # ChatService expects async send_message
-        return await chat_agent.send_message(user_id, message, context)
-
-    def _handle_with_agent(self, agent_key: str, request: str):
-        agent = self.agents.get(agent_key)
-        if not agent:
+    def _handle_with_agent(self, agent_key: str, request: str, car_id=None):
+        agent_class = self.agents.get(agent_key)
+        if not agent_class:
             return {'response': f'Agent {agent_key} not found.'}
+        if car_id is not None:
+            agent = agent_class(car_id)
+        else:
+            return {'response': 'car_id is required for symptom extraction.'}
         response = agent.handle(request)
         # If agent needs more info, orchestrator can facilitate further interactions
         if response.get('need_more_info'):

@@ -26,7 +26,7 @@ class CreateChatSessionRequest(BaseModel):
     user_id: str
     context: Optional[Dict[str, Any]] = None
 
-# --- Session Management ---
+# --- Session Management --
 @router.post('/chat/session/create', summary="Create a new chat session", tags=["Chat"])
 async def create_chat_session(request: CreateChatSessionRequest):
     try:

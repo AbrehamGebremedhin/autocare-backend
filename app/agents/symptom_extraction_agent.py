@@ -158,7 +158,7 @@ class SymptomExtractorAgent():
         """
         Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
         Uses only the LLM with minimal context first. If the result is ambiguous (not good enough),
-        retries with owner manual and online data as additional context.
+        retries with owner manual and online data as additional context using pre_process.
         Args:
             task (str): The input text describing symptoms/issues.
         Returns:
@@ -189,13 +189,10 @@ class SymptomExtractorAgent():
             parsed_result = []
         timings['parse_minimal'] = time.perf_counter() - t_parse_min
 
-        # 2. If ambiguous, fetch context (owner manual and online data) and retry
+        # 2. If ambiguous, fetch context (owner manual and online data) and retry using pre_process
         if is_ambiguous(parsed_result):
-            # Only use owner manual and online data if LLM-only result is not good enough
             t_context = time.perf_counter()
-            context_task = asyncio.create_task(self.pre_process(task))
-            await asyncio.sleep(0)  # Yield control to start the task
-            context = await context_task
+            context = await self.pre_process(task)
             timings['context'] = time.perf_counter() - t_context
             documents: List[Document] = []
             if context.get("owner_manual"):
@@ -228,7 +225,6 @@ class SymptomExtractorAgent():
         Returns:
             Any: Final processed result.
         """
-        context = await self.pre_process(task)
         result = await self.handle(task)
         # You can add additional post-processing here if needed
         return result

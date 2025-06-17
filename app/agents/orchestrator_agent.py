@@ -10,10 +10,13 @@ class OrchestratorAgent:
         """
         Main entry point: decides which agent should handle the user request.
         """
+        car_id = None
+        if context and 'car_id' in context:
+            car_id = context['car_id']
+        # If this is the initial message, extract symptoms
+        if context and context.get('is_initial_message'):
+            return self._handle_with_agent('symptom_extraction', user_request, car_id)
         if 'symptom' in user_request.lower():
-            car_id = None
-            if context and 'car_id' in context:
-                car_id = context['car_id']
             return self._handle_with_agent('symptom_extraction', user_request, car_id)
         # Add more routing logic here
         return {'response': 'No suitable agent found for this request.'}

@@ -1,4 +1,5 @@
 from app.agents.symptom_extraction_agent import SymptomExtractorAgent
+from app.utils.diagnosis_tree import DiagnosisTreeNode
 
 class OrchestratorAgent:
     def __init__(self):
@@ -11,13 +12,15 @@ class OrchestratorAgent:
         Main entry point: decides which agent should handle the user request.
         """
         car_id = None
-        if context and 'car_id' in context:
-            car_id = context['car_id']
+        diagnosis_tree = None
+        if context:
+            car_id = context.get('car_id')
+            diagnosis_tree = context.get('diagnosis_tree')
         # If this is the initial message, extract symptoms
         if context and context.get('is_initial_message'):
-            return await self._handle_with_agent('symptom_extraction', user_request, car_id)
+            return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
         if 'symptom' in user_request.lower():
-            return await self._handle_with_agent('symptom_extraction', user_request, car_id)
+            return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
         # Add more routing logic here
         return {'response': 'No suitable agent found for this request.'}
 
@@ -26,12 +29,12 @@ class OrchestratorAgent:
         keywords = ['symptom', 'diagnosis', 'extract']
         return not any(k in user_request.lower() for k in keywords)
 
-    async def _handle_with_agent(self, agent_key: str, request: str, car_id=None):
+    async def _handle_with_agent(self, agent_key: str, request: str, car_id=None, diagnosis_tree=None):
         agent_class = self.agents.get(agent_key)
         if not agent_class:
             return {'response': f'Agent {agent_key} not found.'}
         if car_id is not None:
-            agent = agent_class(car_id)
+            agent = agent_class(car_id, diagnosis_tree=diagnosis_tree)
         else:
             return {'response': 'car_id is required for symptom extraction.'}
         response = await agent.handle(request)

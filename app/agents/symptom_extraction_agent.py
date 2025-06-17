@@ -14,6 +14,7 @@ import numpy as np
 import time
 from app.utils.logger import Logger
 from langchain_ollama import OllamaLLM
+from app.utils.diagnosis_tree import DiagnosisTreeNode
 
 class SymptomExtractorAgent():
     """
@@ -60,11 +61,12 @@ class SymptomExtractorAgent():
         """)
 
 
-    def __init__(self, car_id: str, **kwargs: Any):
+    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode = None, **kwargs: Any):
         """
         Initialize the SymptomExtractorAgent with a language model and car_id.
         Args:
             car_id (str): The unique identifier for the car.
+            diagnosis_tree (DiagnosisTreeNode): The diagnosis tree instance for the session.
         """
         super().__init__()
         # Use OllamaLLM directly for LangChain compatibility
@@ -74,6 +76,7 @@ class SymptomExtractorAgent():
         self.car_id = car_id
         self.car_crud = CarCRUD()
         self.logger = Logger("SymptomExtractorAgent")
+        self.diagnosis_tree = diagnosis_tree
 
     async def pre_process(self, task: str) -> Dict[str, Any]:
         """
@@ -217,16 +220,18 @@ class SymptomExtractorAgent():
         await self.logger.info(f"handle timings: {timings}")
         return parsed_result
 
-    async def post_process(self, result: Any, context: Optional[Dict[str, Any]] = None) -> Any:
+    async def process(self, task: str) -> Any:
         """
-        Post-process the extracted symptom data if needed.
+        Accepts the incoming request, handles the extraction, and returns the processed result.
         Args:
-            result (Any): Parsed symptom extraction result.
-            context (Optional[Dict[str, Any]]): Optional context dictionary.
+            task (str): The input text describing symptoms/issues.
         Returns:
             Any: Final processed result.
         """
-        return True
+        context = await self.pre_process(task)
+        result = await self.handle(task)
+        # You can add additional post-processing here if needed
+        return result
     
 from pprint import pprint
 async def main():

@@ -5,6 +5,8 @@ from app.services.base_service import BaseService
 from app.agents.orchestrator_agent import OrchestratorAgent
 from collections import deque
 from uuid import uuid4
+import logging
+from app.utils.diagnosis_tree import DiagnosisTreeNode
 
 class ChatService(BaseService):
     """
@@ -17,6 +19,7 @@ class ChatService(BaseService):
         self._max_conversation_length = 20  # Maximum messages to keep in memory
         self._conversation_ttl = 3600  # 1 hour TTL for conversations
         self._response_times = deque(maxlen=100)  # Track last 100 response times
+        self.logger = logging.getLogger(__name__)
 
     def _get_conversation(self, user_id: str) -> Dict:
         now = datetime.now()
@@ -29,13 +32,15 @@ class ChatService(BaseService):
                 return conversation
         # Create new conversation
         session_id = str(uuid4())
+        # Create a diagnosis tree instance for this session
+        diagnosis_tree = DiagnosisTreeNode(issue_name='root', likelyhood=1.0)
         conversation = {
             'id': session_id,
             'user_id': user_id,
             'messages': [],
             'created_at': now,
             'updated_at': now,
-            'context': {},
+            'context': {'diagnosis_tree': diagnosis_tree},
         }
         self._conversation_cache[user_id] = conversation
         return conversation
@@ -72,6 +77,8 @@ class ChatService(BaseService):
             if is_initial:
                 context = dict(context)
                 context['is_initial_message'] = True
+            # Always pass the session's diagnosis tree in context
+            context['diagnosis_tree'] = conversation['context'].get('diagnosis_tree')
             response_data = await self.orchestrator.route_request(message, user_id, context)
             # Add assistant response to conversation
             conversation['messages'].append({

@@ -54,3 +54,8 @@ class AbstractTreeNode(ABC):
     def process(self):
         pass
 
+class DiagnosisTreeNode(AbstractTreeNode):
+    def process(self):
+        # Implement your custom processing logic here
+        pass
+

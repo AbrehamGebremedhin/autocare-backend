@@ -1,10 +1,10 @@
-from app.agents.symptom_extraction_agent import SymptomExtractionAgent
+from app.agents.symptom_extraction_agent import SymptomExtractorAgent
 from app.services.chat_service import ChatService
 
 class OrchestratorAgent:
     def __init__(self):
         self.agents = {
-            'symptom_extraction': SymptomExtractionAgent(),
+            'symptom_extraction': SymptomExtractorAgent(),
             'chat': ChatService(),
             # Add other agents here
         }
@@ -52,8 +52,3 @@ class OrchestratorAgent:
         if from_agent and from_agent in self.agents:
             return self.agents[from_agent].provide_info(info_type)
         return f'Dummy info for {info_type}'
-
-# Example usage (async):
-# orchestrator = OrchestratorAgent()
-# result = await orchestrator.route_request('How do I change my oil filter?', user_id='user123')
-# print(result)

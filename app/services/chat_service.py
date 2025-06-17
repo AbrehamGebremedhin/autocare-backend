@@ -9,6 +9,10 @@ from app.services.query_builder_service import QueryBuilderService
 from app.utils.logger import Logger
 import httpx
 from collections import deque
+from app.utils.diagnosis_tree import DiagnosisTreeNode
+from app.CRUD import ChatSessionCRUD
+from app.schemas.Chat_Session import ChatSession
+from uuid import uuid4
 
 class ChatService(BaseService):
     """
@@ -105,6 +109,11 @@ class ChatService(BaseService):
             # Update conversation cache
             conversation['last_updated'] = datetime.now()
             self._conversation_cache[user_id] = conversation
+            
+            # Save updated messages to DB
+            from app.CRUD import ChatSessionCRUD
+            chat_session_crud = ChatSessionCRUD()
+            await chat_session_crud.update({'id': conversation['id']}, {'messages': conversation['messages'], 'updated_at': datetime.now().isoformat()})
             
             # Track performance
             response_time = (datetime.now() - start_time).total_seconds()
@@ -445,28 +454,51 @@ class ChatService(BaseService):
         return response
 
     def _get_conversation(self, user_id: str) -> Dict:
-        """Get or create conversation context for user."""
+        """Get or create conversation context for user, and initialize diagnosis tree if new. Also save to DB if new."""
         now = datetime.now()
-        
         if user_id in self._conversation_cache:
             conversation = self._conversation_cache[user_id]
-            
-            # Check if conversation is still valid
             last_updated = conversation.get('last_updated', now)
             if (now - last_updated).total_seconds() < self._conversation_ttl:
-                # Trim conversation if it's too long
                 if len(conversation['messages']) > self._max_conversation_length:
                     conversation['messages'] = conversation['messages'][-self._max_conversation_length:]
                 return conversation
-        
-        # Create new conversation
-        return {
-            'user_id': user_id,
-            'messages': [],
-            'created': now,
-            'last_updated': now,
-            'context': {}
-        }
+        # Create new conversation and initialize diagnosis tree
+        diagnosis_tree = DiagnosisTreeNode(issue_name='root', likelyhood=1.0)
+        session_id = str(uuid4())
+        session = ChatSession(
+            id=session_id,
+            user_id=user_id,
+            messages=[],
+            created_at=now,
+            updated_at=now,
+            context={},
+            diagnosis_tree=diagnosis_tree
+        )
+        conversation = session.dict()
+        conversation['diagnosis_tree'] = diagnosis_tree  # Keep the object for runtime use
+        self._conversation_cache[user_id] = conversation
+        # Save to DB (Chatsession table)
+        chat_session_crud = ChatSessionCRUD()
+        diagnosis_tree_dict = ChatSession.serialize_diagnosis_tree(diagnosis_tree)
+        now_iso = now.isoformat()
+        import asyncio
+        async def save_session():
+            await chat_session_crud.create({
+                'id': session_id,
+                'user_id': user_id,
+                'messages': [],
+                'created_at': now_iso,
+                'updated_at': now_iso,
+                'context': {},
+                'diagnosis_tree': diagnosis_tree_dict
+            })
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(save_session())
+        except RuntimeError:
+            asyncio.run(save_session())
+        return conversation
 
     @BaseService.cache_result(ttl_seconds=600)  # Cache for 10 minutes
     async def get_history(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:

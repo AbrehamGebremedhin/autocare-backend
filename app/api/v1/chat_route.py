@@ -137,11 +137,27 @@ async def send_message_in_session(session_id: str, request: ChatSessionMessageRe
     """)
 async def send_chat_message(request: ChatMessageRequest):
     try:
+        # Create a new session for each request
+        session_id = str(uuid4())
+        now = datetime.now().isoformat()
+        session_data = {
+            'id': session_id,
+            'user_id': request.user_id,
+            'messages': [],
+            'created_at': now,
+            'updated_at': now,
+            'context': request.context or {}
+        }
+        # Optionally, persist the session if needed:
+        # await chat_session_crud.create(session_data)
+        # Pass the context to chat_service.send_message
         response = await chat_service.send_message(
             user_id=request.user_id,
             message=request.message,
             context=request.context
         )
+        # Optionally, return the session_id in the response
+        response['session_id'] = session_id
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

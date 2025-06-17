@@ -15,9 +15,9 @@ class OrchestratorAgent:
             car_id = context['car_id']
         # If this is the initial message, extract symptoms
         if context and context.get('is_initial_message'):
-            return self._handle_with_agent('symptom_extraction', user_request, car_id)
+            return await self._handle_with_agent('symptom_extraction', user_request, car_id)
         if 'symptom' in user_request.lower():
-            return self._handle_with_agent('symptom_extraction', user_request, car_id)
+            return await self._handle_with_agent('symptom_extraction', user_request, car_id)
         # Add more routing logic here
         return {'response': 'No suitable agent found for this request.'}
 
@@ -26,7 +26,7 @@ class OrchestratorAgent:
         keywords = ['symptom', 'diagnosis', 'extract']
         return not any(k in user_request.lower() for k in keywords)
 
-    def _handle_with_agent(self, agent_key: str, request: str, car_id=None):
+    async def _handle_with_agent(self, agent_key: str, request: str, car_id=None):
         agent_class = self.agents.get(agent_key)
         if not agent_class:
             return {'response': f'Agent {agent_key} not found.'}
@@ -34,13 +34,11 @@ class OrchestratorAgent:
             agent = agent_class(car_id)
         else:
             return {'response': 'car_id is required for symptom extraction.'}
-        response = agent.handle(request)
+        response = await agent.handle(request)
         # If agent needs more info, orchestrator can facilitate further interactions
         if response.get('need_more_info'):
-            # Example: ask another agent or the user for more info
             more_info = self.request_more_info(response['info_type'])
-            # Re-run the agent with additional info
-            return agent.handle(request, more_info)
+            return await agent.handle(request, more_info)
         return response
 
     def request_more_info(self, info_type: str, from_agent: str = None):

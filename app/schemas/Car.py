@@ -12,4 +12,4 @@ class CarBase(BaseModel):
     car_guide_links: Optional[List[str]] = None  # List of additional car guide links
 
     class Config:
-        orm_mode = True
+        from_attributes = True

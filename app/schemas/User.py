@@ -15,4 +15,4 @@ class UserBase(BaseModel):
     cars: Optional[List[str]] = None  # List of car IDs added by the user
 
     class Config:
-        orm_mode = True
+        from_attributes = True

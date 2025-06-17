@@ -10,4 +10,4 @@ class GroundKnowledgeBase(BaseModel):
     metadata: Optional[dict] = None  # Any additional metadata
 
     class Config:
-        orm_mode = True
+        from_attributes = True

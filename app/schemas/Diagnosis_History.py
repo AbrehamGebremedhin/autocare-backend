@@ -9,4 +9,4 @@ class Diagnosis_History(BaseModel):
     timestamp: datetime = datetime.now()
 
     class Config:
-        orm_mode = True
+        from_attributes = True

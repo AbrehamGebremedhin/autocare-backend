@@ -13,7 +13,7 @@ class ChatSession(BaseModel):
     diagnosis_tree: Any  # Store the DiagnosisTreeNode or its serializable representation
 
     class Config:
-        orm_mode = True
+        from_attributes = True
         arbitrary_types_allowed = True
 
     @staticmethod

@@ -17,10 +17,7 @@ class ChatService(BaseService):
         """
         super().__init__(websocket_manager=websocket_manager)
         self.orchestrator = OrchestratorAgent()
-        
-    async def cleanup(self):
-        """Clean up resources."""
-        pass  # No resources to clean up in simplified version
+        self._conversation_cache = {}  # Cache for conversations
 
     @BaseService.cache_result(ttl_seconds=300)  # Cache responses for 5 minutes
     async def send_message(self, user_id: str, message: str, context: Optional[Dict] = None) -> Dict[str, Any]:

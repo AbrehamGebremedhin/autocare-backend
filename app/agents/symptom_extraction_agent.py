@@ -78,7 +78,7 @@ class SymptomExtractorAgent():
         self.diagnosis_tree = diagnosis_tree
         self.tree_manager_agent = None
         if self.diagnosis_tree is not None:
-            self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree)
+            self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree, llm_service=self.llm_service)
 
     async def pre_process(self, task: str) -> Dict[str, Any]:
         """
@@ -282,3 +282,9 @@ class SymptomExtractorAgent():
         except Exception as e:
             await self.logger.error(f"SymptomExtractorAgent parsing error: {e}")
             return []
+
+    def get_langchain_llm(self):
+        """
+        For advanced LangChain integrations (e.g., chains), use this accessor.
+        """
+        return self.llm_service.get_llm()

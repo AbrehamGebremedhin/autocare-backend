@@ -165,10 +165,16 @@ class DiagnosisAgent:
                 "user_message": user_friendly
             }
 
-    async def generate_diagnosis(self, user_message: str, tree_summary: str, manual_context: str) -> str:
+    async def generate_diagnosis(self, user_message: str, tree_summary: str, manual_context: str, kb_context: str = "", online_context: str = "") -> str:
         """
         Generate diagnosis using the LLM service.
         """
-        prompt = self.prompt.format(user_message=user_message, tree_summary=tree_summary, manual_context=manual_context)
+        prompt = self.prompt.format(user_message=user_message, tree_summary=tree_summary, manual_context=manual_context, kb_context=kb_context, online_context=online_context)
         response = await self.llm_service.generate_response(prompt)
         return response
+
+    def get_langchain_llm(self):
+        """
+        For advanced LangChain integrations (e.g., chains), use this accessor.
+        """
+        return self.llm_service.get_llm()

@@ -30,6 +30,9 @@ class TreeManagerAgent:
         import asyncio
         tree_state = self.get_tree_state()
         prompt = self.prompt.format(symptom=symptom, tree_state=tree_state)
+        # Use the underlying LLM for advanced LangChain integrations if needed
+        llm = self.llm_service.get_llm()
+        # If you need to use LLMChain, pass llm here; otherwise, use generate_response
         response = asyncio.run(self.llm_service.generate_response(prompt))
         parent_name = response.strip()
         if parent_name.lower() == 'root':

@@ -53,6 +53,12 @@ class UserInteractionAgent:
                 "success": False
             }
 
+    def get_langchain_llm(self):
+        """
+        For advanced LangChain integrations (e.g., chains), use this accessor.
+        """
+        return self.llm_service.get_llm()
+
     async def process(self, user_message: str, diagnosis_result: Any) -> dict:
         """
         Accepts the user message and diagnosis result, generates a user-facing message, and returns the result with success status and error handling.

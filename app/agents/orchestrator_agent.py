@@ -1,12 +1,14 @@
 from app.agents.symptom_extraction_agent import SymptomExtractorAgent
 from app.agents.diagnostic_agent import DiagnosisAgent
 from app.utils.diagnosis_tree import DiagnosisTreeNode
+from app.agents.user_interaction_agent import UserInteractionAgent
 
 class OrchestratorAgent:
     def __init__(self):
         self.agents = {
             'symptom_extraction': SymptomExtractorAgent,  # Store the class, not the instance
         }
+        self.user_interaction_agent = UserInteractionAgent()
 
     async def route_request(self, user_request: str, user_id: str = None, context: dict = None):
         """
@@ -22,8 +24,9 @@ class OrchestratorAgent:
             return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
         if 'symptom' in user_request.lower():
             return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
-        # Add more routing logic here
-        return {'response': 'No suitable agent found for this request.'}
+        # All other responses go through UserInteractionAgent
+        user_response = await self.user_interaction_agent.process(user_request, 'No suitable agent found for this request.')
+        return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
 
     def _is_chat_request(self, user_request: str) -> bool:
         # Simple heuristic: treat as chat if not a specific agent keyword
@@ -33,32 +36,39 @@ class OrchestratorAgent:
     async def _handle_with_agent(self, agent_key: str, request: str, car_id=None, diagnosis_tree=None):
         agent_class = self.agents.get(agent_key)
         if not agent_class:
-            return {'response': f'Agent {agent_key} not found.'}
+            user_response = await self.user_interaction_agent.process(request, f'Agent {agent_key} not found.')
+            return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
         if car_id is not None:
             agent = agent_class(car_id, diagnosis_tree=diagnosis_tree)
         else:
-            return {'response': 'car_id is required for symptom extraction.'}
-        # Always use the process function for agent interaction
+            user_response = await self.user_interaction_agent.process(request, 'car_id is required for symptom extraction.')
+            return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
         process_result = await agent.process(request)
         result = process_result.get('result')
         success = process_result.get('success', True)
-        # If agent needs more info, orchestrator asks the user for clarification
         if isinstance(result, dict) and result.get('need_more_info'):
             info_type = result.get('info_type', 'additional information')
+            user_response = await self.user_interaction_agent.process(request, f"Could you please provide more details about: {info_type}?")
             return {
-                'response': f"Could you please provide more details about: {info_type}?",
+                'response': user_response.get('result'),
                 'need_more_info': True,
-                'info_type': info_type
+                'info_type': info_type,
+                'success': user_response.get('success', True)
             }
         if not success:
-            return {'response': 'An error occurred during processing.'}
+            user_response = await self.user_interaction_agent.process(request, 'An error occurred during processing.')
+            return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
         # After successful symptom extraction, run diagnostic agent
         if agent_key == 'symptom_extraction':
             updated_tree = process_result.get('tree')
             diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=updated_tree)
             diagnosis_result = await diagnostic_agent.process(request)
-            return diagnosis_result
-        return result
+            # Always pass the diagnosis result through UserInteractionAgent
+            user_response = await self.user_interaction_agent.process(request, diagnosis_result)
+            return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
+        # For all other agent results, pass through UserInteractionAgent
+        user_response = await self.user_interaction_agent.process(request, result)
+        return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
 
     def request_more_info(self, info_type: str, from_agent: str = None):
         # Orchestrator can ask other agents or the user for more info
@@ -75,11 +85,12 @@ class OrchestratorAgent:
         try:
             result = await self.route_request(user_request, user_id=user_id, context=context)
             return {
-                'result': result,
-                'success': True
+                'result': result.get('response'),
+                'success': result.get('success', True)
             }
         except Exception as e:
+            user_response = await self.user_interaction_agent.process(user_request, f'Error: {str(e)}')
             return {
-                'result': {'response': f'Error: {str(e)}'},
+                'result': user_response.get('result'),
                 'success': False
             }

@@ -117,7 +117,17 @@ class DiagnosisAgent:
             }
             chain = self.llm | self.prompt
             response = await chain.ainvoke(prompt_vars) if hasattr(chain, "ainvoke") else chain.invoke(prompt_vars)
-            return {"diagnosis": response, "success": True}
+            # --- Symptom extraction trigger logic ---
+            # If the LLM response or tree indicates more symptoms are needed, set the flag
+            need_symptom_extraction = False
+            if isinstance(response, str) and ("need more symptom" in response.lower() or "provide more symptoms" in response.lower()):
+                need_symptom_extraction = True
+            # You can add more advanced logic here based on the tree or structured response
+            return {
+                "diagnosis": response,
+                "success": True,
+                "need_symptom_extraction": need_symptom_extraction
+            }
         except Exception as e:
             tb = traceback.format_exc()
             await self.logger.error(f"DiagnosisAgent error: {e}\n{tb}")

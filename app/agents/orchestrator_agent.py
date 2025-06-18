@@ -26,6 +26,19 @@ class OrchestratorAgent:
         if car_id is not None:
             diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=diagnosis_tree)
             diagnosis_result = await diagnostic_agent.process(user_request)
+            # If diagnostic agent requests symptom extraction, process with symptom extractor, then re-run diagnosis
+            if isinstance(diagnosis_result, dict) and diagnosis_result.get('need_symptom_extraction'):
+                # Run symptom extraction
+                symptom_result = await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
+                # Get updated tree if available
+                updated_tree = None
+                if isinstance(symptom_result, dict) and 'tree' in symptom_result:
+                    updated_tree = symptom_result['tree']
+                else:
+                    updated_tree = diagnosis_tree
+                # Re-run diagnosis with updated tree
+                diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=updated_tree)
+                diagnosis_result = await diagnostic_agent.process(user_request)
             user_response = await self.user_interaction_agent.process(user_request, diagnosis_result)
             return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
         else:

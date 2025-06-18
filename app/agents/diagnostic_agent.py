@@ -7,7 +7,6 @@ from app.CRUD.car_crud import CarCRUD
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from langchain.prompts import PromptTemplate
 from langchain.schema import Document
-from langchain_ollama import OllamaLLM
 import asyncio
 import numpy as np
 import traceback
@@ -20,7 +19,7 @@ class DiagnosisAgent:
         self.car_id = car_id
         self.diagnosis_tree = diagnosis_tree
         self.logger = Logger("DiagnosisAgent")
-        self.llm = OllamaLLM(model="gemma3:12b")
+        self.llm_service = LLMService()
         self.car_crud = CarCRUD()
         self.embedding_service = EmbeddingService()
         self.scraper_service = ScraperService(headless=True)
@@ -115,7 +114,7 @@ class DiagnosisAgent:
                 "kb_context": context["kb_context"],
                 "online_context": "\n".join(context["online_context"])
             }
-            chain = self.llm | self.prompt
+            chain = self.llm_service | self.prompt
             response = await chain.ainvoke(prompt_vars) if hasattr(chain, "ainvoke") else chain.invoke(prompt_vars)
             # --- Symptom extraction trigger logic ---
             # If the LLM response or tree indicates more symptoms are needed, set the flag
@@ -165,3 +164,11 @@ class DiagnosisAgent:
                 "error_type": type(e).__name__,
                 "user_message": user_friendly
             }
+
+    async def generate_diagnosis(self, user_message: str, tree_summary: str, manual_context: str) -> str:
+        """
+        Generate diagnosis using the LLM service.
+        """
+        prompt = self.prompt.format(user_message=user_message, tree_summary=tree_summary, manual_context=manual_context)
+        response = await self.llm_service.generate_response(prompt)
+        return response

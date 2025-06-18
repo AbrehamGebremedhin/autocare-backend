@@ -13,7 +13,6 @@ from app.services.scraper_service import ScraperService
 import numpy as np
 import time
 from app.utils.logger import Logger
-from langchain_ollama import OllamaLLM
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.agents.tree_manager_agent import TreeManagerAgent
 
@@ -70,8 +69,7 @@ class SymptomExtractorAgent():
             diagnosis_tree (DiagnosisTreeNode): The diagnosis tree instance for the session.
         """
         super().__init__()
-        # Use OllamaLLM directly for LangChain compatibility
-        self.llm = OllamaLLM(model="gemma3:12b")
+        self.llm_service = LLMService()
         self.prompt = self.get_prompt_template()
         self.output_parser = JsonOutputParser()
         self.car_id = car_id
@@ -181,7 +179,7 @@ class SymptomExtractorAgent():
         t_llm_min = time.perf_counter()
         # 1. Try LLM with minimal context (just the input text)
         minimal_documents = [Document(page_content=task, metadata={"type": "input_text_only"})]
-        chain = create_stuff_documents_chain(llm=self.llm, prompt=self.prompt)
+        chain = create_stuff_documents_chain(llm=self.llm_service, prompt=self.prompt)
         if hasattr(chain, "ainvoke"):
             response = await chain.ainvoke({"input_text": task, "context": minimal_documents})
         else:
@@ -267,3 +265,20 @@ class SymptomExtractorAgent():
             "tree": self.diagnosis_tree,
             "success": success
         }
+
+    async def extract_symptoms(self, input_text: str, context: str = "") -> List[Dict[str, Any]]:
+        """
+        Extract symptoms from the input text using the LLM service.
+        Args:
+            input_text (str): The input text describing symptoms/issues.
+            context (str): Additional context to include (optional).
+        Returns:
+            List[Dict[str, Any]]: Parsed JSON array of extracted symptoms.
+        """
+        prompt = self.prompt.format(input_text=input_text, context=context)
+        response = await self.llm_service.generate_response(prompt)
+        try:
+            return self.output_parser.parse(response)
+        except Exception as e:
+            await self.logger.error(f"SymptomExtractorAgent parsing error: {e}")
+            return []

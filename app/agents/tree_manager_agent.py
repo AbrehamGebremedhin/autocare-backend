@@ -1,14 +1,13 @@
 from langchain.agents import AgentExecutor, Tool
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
 from app.utils.diagnosis_tree import DiagnosisTreeNode
-from typing import List, Dict, Any
-from langchain_ollama import OllamaLLM
+from typing import Any
+from app.services.llm_service import LLMService
 
 class TreeManagerAgent:
-    def __init__(self, root: DiagnosisTreeNode, llm=None):
+    def __init__(self, root: DiagnosisTreeNode, llm_service: LLMService = None):
         self.root = root
-        self.llm = llm or OllamaLLM(model="gemma3:12b")
+        self.llm_service = llm_service or LLMService()
         self.prompt = PromptTemplate(
             input_variables=["symptom", "tree_state"],
             template="""
@@ -18,7 +17,6 @@ class TreeManagerAgent:
                 Decide under which node (by issue_name) this symptom should be added as a child. Reply with the exact issue_name or 'root' if it should be a direct child of the root.
             """
         )
-        self.chain = LLMChain(llm=self.llm, prompt=self.prompt)
 
     def get_tree_state(self) -> str:
         def node_repr(node, depth=0):
@@ -29,8 +27,10 @@ class TreeManagerAgent:
         return node_repr(self.root)
 
     def decide_parent_for_symptom(self, symptom: str) -> DiagnosisTreeNode:
+        import asyncio
         tree_state = self.get_tree_state()
-        response = self.chain.run(symptom=symptom, tree_state=tree_state)
+        prompt = self.prompt.format(symptom=symptom, tree_state=tree_state)
+        response = asyncio.run(self.llm_service.generate_response(prompt))
         parent_name = response.strip()
         if parent_name.lower() == 'root':
             return self.root

@@ -1,6 +1,6 @@
 from typing import Any, Dict
 from langchain.prompts import PromptTemplate
-from langchain_ollama import OllamaLLM
+from app.services.llm_service import LLMService
 from app.utils.logger import Logger
 
 class UserInteractionAgent:
@@ -8,7 +8,7 @@ class UserInteractionAgent:
     Agentic RAG that takes the result from the diagnostic agent and creates a user-facing message.
     """
     def __init__(self, **kwargs):
-        self.llm = OllamaLLM(model="gemma3:12b")
+        self.llm_service = LLMService()
         self.logger = Logger("UserInteractionAgent")
         self.prompt = PromptTemplate.from_template(
             """
@@ -43,8 +43,8 @@ class UserInteractionAgent:
                 "user_message": user_message,
                 "diagnosis_result": str(diagnosis_result)
             }
-            chain = self.llm | self.prompt
-            response = await chain.ainvoke(prompt_vars) if hasattr(chain, "ainvoke") else chain.invoke(prompt_vars)
+            prompt = self.prompt.format(**prompt_vars)
+            response = await self.llm_service.generate_response(prompt)
             return {"user_message": response, "success": True}
         except Exception as e:
             await self.logger.error(f"UserInteractionAgent error: {e}")

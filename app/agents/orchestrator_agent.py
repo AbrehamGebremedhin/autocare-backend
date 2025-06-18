@@ -18,11 +18,11 @@ class OrchestratorAgent:
         diagnosis_tree = None
         if context:
             car_id = context.get('car_id')
-            diagnosis_tree = context.get('diagnosis_tree')
+            diagnosis_tree = context.get('diagnosis_tree')  # Always use the session's current tree
         # If this is the initial message, extract symptoms
         if context and context.get('is_initial_message'):
             return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
-        # For all other messages, go directly to diagnostic agent
+        # For all other messages, use the current session's diagnosis_tree
         if car_id is not None:
             diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=diagnosis_tree)
             diagnosis_result = await diagnostic_agent.process(user_request)

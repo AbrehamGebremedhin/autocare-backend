@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+from unittest.mock import patch
 from app.services.fetch_car_data_service import FetchCarDataService
 
 class DummyWebSocketManager:
@@ -48,3 +49,12 @@ async def test_perform_action_with_notification():
     assert result == 'done'
     assert ws.messages[0]['event'] == 'task_started'
     assert ws.messages[-1]['event'] == 'task_finished'
+
+@pytest.fixture
+def service():
+    with patch('app.services.fetch_car_data_service.Logger'):
+        yield FetchCarDataService()
+
+def test_constructor(service):
+    assert hasattr(service, 'BASE_URL')
+    assert hasattr(service, 'logger')

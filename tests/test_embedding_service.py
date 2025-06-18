@@ -1,6 +1,7 @@
 import pytest
 from app.services.embedding_service import EmbeddingService
 import asyncio
+from unittest.mock import patch, MagicMock
 
 class DummyWebSocketManager:
     def __init__(self):
@@ -25,6 +26,26 @@ class DummyEmbeddingService(EmbeddingService):
             return await self.embed_texts(kwargs['texts'])
     async def perform_action(self, *args, **kwargs):
         return await self.run_with_notification(self._perform_action_impl, *args, **kwargs)
+
+@pytest.fixture
+def service():
+    with patch('app.services.embedding_service.OllamaEmbeddings') as MockEmbed, \
+         patch('app.services.embedding_service.Logger'):
+        MockEmbed.return_value.embed_query = MagicMock(return_value=[0.1, 0.2])
+        yield EmbeddingService()
+
+@pytest.mark.asyncio
+async def test_embed_text(service):
+    with patch.object(service, '_rate_limit', return_value=None):
+        result = await service.embed_text('test')
+        assert isinstance(result, list)
+
+@pytest.mark.asyncio
+async def test_retry_with_backoff(service):
+    async def fail_func():
+        raise Exception('fail')
+    with pytest.raises(Exception):
+        await service._retry_with_backoff(fail_func)
 
 @pytest.mark.asyncio
 async def test_embed_text():

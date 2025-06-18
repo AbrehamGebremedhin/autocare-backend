@@ -22,11 +22,15 @@ class OrchestratorAgent:
         # If this is the initial message, extract symptoms
         if context and context.get('is_initial_message'):
             return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
-        if 'symptom' in user_request.lower():
-            return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
-        # All other responses go through UserInteractionAgent
-        user_response = await self.user_interaction_agent.process(user_request, 'No suitable agent found for this request.')
-        return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
+        # For all other messages, go directly to diagnostic agent
+        if car_id is not None:
+            diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=diagnosis_tree)
+            diagnosis_result = await diagnostic_agent.process(user_request)
+            user_response = await self.user_interaction_agent.process(user_request, diagnosis_result)
+            return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
+        else:
+            user_response = await self.user_interaction_agent.process(user_request, 'car_id is required for diagnosis.')
+            return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
 
     def _is_chat_request(self, user_request: str) -> bool:
         # Simple heuristic: treat as chat if not a specific agent keyword

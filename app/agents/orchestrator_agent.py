@@ -1,4 +1,5 @@
 from app.agents.symptom_extraction_agent import SymptomExtractorAgent
+from app.agents.diagnostic_agent import DiagnosisAgent
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 
 class OrchestratorAgent:
@@ -37,12 +38,27 @@ class OrchestratorAgent:
             agent = agent_class(car_id, diagnosis_tree=diagnosis_tree)
         else:
             return {'response': 'car_id is required for symptom extraction.'}
-        response = await agent.handle(request)
-        # If agent needs more info, orchestrator can facilitate further interactions
-        if response.get('need_more_info'):
-            more_info = self.request_more_info(response['info_type'])
-            return await agent.handle(request, more_info)
-        return response
+        # Always use the process function for agent interaction
+        process_result = await agent.process(request)
+        result = process_result.get('result')
+        success = process_result.get('success', True)
+        # If agent needs more info, orchestrator asks the user for clarification
+        if isinstance(result, dict) and result.get('need_more_info'):
+            info_type = result.get('info_type', 'additional information')
+            return {
+                'response': f"Could you please provide more details about: {info_type}?",
+                'need_more_info': True,
+                'info_type': info_type
+            }
+        if not success:
+            return {'response': 'An error occurred during processing.'}
+        # After successful symptom extraction, run diagnostic agent
+        if agent_key == 'symptom_extraction':
+            updated_tree = process_result.get('tree')
+            diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=updated_tree)
+            diagnosis_result = await diagnostic_agent.process(request)
+            return diagnosis_result
+        return result
 
     def request_more_info(self, info_type: str, from_agent: str = None):
         # Orchestrator can ask other agents or the user for more info
@@ -50,3 +66,20 @@ class OrchestratorAgent:
         if from_agent and from_agent in self.agents:
             return self.agents[from_agent].provide_info(info_type)
         return f'Dummy info for {info_type}'
+
+    async def process(self, user_request: str, user_id: str = None, context: dict = None) -> dict:
+        """
+        Standard entry point for all orchestrator interactions.
+        Calls route_request and returns a standardized result dict.
+        """
+        try:
+            result = await self.route_request(user_request, user_id=user_id, context=context)
+            return {
+                'result': result,
+                'success': True
+            }
+        except Exception as e:
+            return {
+                'result': {'response': f'Error: {str(e)}'},
+                'success': False
+            }

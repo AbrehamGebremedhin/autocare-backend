@@ -15,6 +15,7 @@ import time
 from app.utils.logger import Logger
 from langchain_ollama import OllamaLLM
 from app.utils.diagnosis_tree import DiagnosisTreeNode
+from app.agents.tree_manager_agent import TreeManagerAgent
 
 class SymptomExtractorAgent():
     """
@@ -77,6 +78,9 @@ class SymptomExtractorAgent():
         self.car_crud = CarCRUD()
         self.logger = Logger("SymptomExtractorAgent")
         self.diagnosis_tree = diagnosis_tree
+        self.tree_manager_agent = None
+        if self.diagnosis_tree is not None:
+            self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree)
 
     async def pre_process(self, task: str) -> Dict[str, Any]:
         """
@@ -159,10 +163,11 @@ class SymptomExtractorAgent():
         Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
         Uses only the LLM with minimal context first. If the result is ambiguous (not good enough),
         retries with owner manual and online data as additional context using pre_process.
+        If still ambiguous, returns a response indicating more info is needed from the user.
         Args:
             task (str): The input text describing symptoms/issues.
         Returns:
-            Any: Parsed JSON array of extracted issues.
+            Any: Parsed JSON array of extracted issues, or a dict requesting more info if ambiguous.
         """
         def is_ambiguous(result):
             # Consider ambiguous if result is empty or all likelihoods are below a threshold
@@ -214,31 +219,51 @@ class SymptomExtractorAgent():
             # Merge in context timings
             if 'timings' in context:
                 timings.update({f'context_{k}': v for k, v in context['timings'].items()})
+
         await self.logger.info(f"handle timings: {timings}")
 
+        # If still ambiguous after all attempts, ask user for more info
+        if is_ambiguous(parsed_result):
+            return {
+                'need_more_info': True,
+                'info_type': 'symptom description',
+                'response': 'Could you please provide more details about the symptoms or describe the issue more clearly?'
+            }
+
         # Add results to the diagnosis_tree if it exists
-        if self.diagnosis_tree is not None and isinstance(parsed_result, list):
+        if self.tree_manager_agent is not None and isinstance(parsed_result, list):
             for issue in parsed_result:
                 issue_name = issue.get('issue_name', 'Unknown Issue')
                 likelihood = issue.get('likelihood', 0) / 100.0  # Convert to 0-1 float
-                node = DiagnosisTreeNode(
-                    issue_name=issue_name,
+                self.tree_manager_agent.add_symptom(
+                    symptom=issue_name,
                     likelyhood=likelihood,
                     data=issue
                 )
-                self.diagnosis_tree.add_child(node)
+            # Optionally prune and sort after adding
+            self.tree_manager_agent.prune_tree()
+            self.tree_manager_agent.sort_tree()
 
         return parsed_result
 
-    async def process(self, task: str) -> Any:
+    async def process(self, task: str) -> Dict[str, Any]:
         """
         Accepts the incoming request, handles the extraction, and returns the processed result.
         Args:
             task (str): The input text describing symptoms/issues.
         Returns:
-            Any: Final processed result.
+            Dict[str, Any]: Contains the result, tree instance, and success status.
         """
-        result = await self.handle(task)
-        
-        return result
-    
+        try:
+            result = await self.handle(task)
+            success = True
+        except Exception as e:
+            result = None
+            success = False
+            await self.logger.error(f"Error in process: {e}")
+
+        return {
+            "result": result,
+            "tree": self.diagnosis_tree,
+            "success": success
+        }

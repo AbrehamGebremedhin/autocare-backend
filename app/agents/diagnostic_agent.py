@@ -12,12 +12,13 @@ import numpy as np
 import traceback
 from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
 import json
+from app.services.search_engine_service import SearchEngineService
 
 class DiagnosisAgent:
     """
     Agentic RAG for generating a diagnosis using the diagnosis tree, user message, and multi-source context.
     """
-    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode, **kwargs):
+    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode, search_engine_service: Optional[SearchEngineService] = None, **kwargs):
         self.car_id = car_id
         self.diagnosis_tree = diagnosis_tree
         self.logger = Logger("DiagnosisAgent")
@@ -25,65 +26,80 @@ class DiagnosisAgent:
         self.car_crud = CarCRUD()
         self.embedding_service = EmbeddingService()
         self.scraper_service = ScraperService(headless=True)
+        self.search_engine_service = search_engine_service or SearchEngineService()
         self.prompt = PromptTemplate.from_template(
             """
-            You are an expert automotive diagnostician. Using the provided diagnosis tree (structured symptom and issue data), the user's message, and all available context (owner's manual, knowledge base, and online sources), generate a comprehensive diagnosis for the user's vehicle.
+            You are an expert automotive diagnostician. Your task is to generate a comprehensive, evidence-based diagnosis for the user's vehicle problem.
 
-            - Reference the diagnosis tree to identify the most likely root causes.
-            - Use the owner's manual and knowledge base for technical accuracy.
-            - Use online sources for up-to-date or rare issues.
-            - Clearly explain the reasoning, referencing evidence from each source.
-            - Provide actionable recommendations and next steps.
+            CONTEXT SOURCES:
+            - Diagnosis tree: Structured symptom and issue data (see below)
+            - Owner's manual/context: Official documentation and technical details
+            - Knowledge base: Trusted reference material and prior cases
+            - Online context: Recent or rare issues from the web and car-specific guides
 
-            Input:
+            INSTRUCTIONS:
+            1. Carefully analyze the user's message and the diagnosis tree to identify likely root causes.
+            2. Attribute supporting evidence to each context source (owner's manual, knowledge base, online, tree).
+            3. Clearly explain your reasoning, referencing specific evidence from each source.
+            4. If information is missing or ambiguous, state what additional details are needed.
+            5. Provide actionable, step-by-step recommendations for the user.
+
+            INPUT:
             - User message: {user_message}
             - Diagnosis tree: {tree_summary}
             - Owner's manual/context: {manual_context}
             - Knowledge base: {kb_context}
             - Online context: {online_context}
 
-            Output a structured JSON object with:
-            - diagnosis_summary: Main diagnosis and reasoning
-            - supporting_evidence: List of evidence from each source
-            - recommendations: List of next steps for the user
+            OUTPUT (JSON):
+            {{
+                "diagnosis_summary": "Main diagnosis and reasoning, with source attributions",
+                "supporting_evidence": [
+                    {{"source": "diagnosis_tree", "evidence": "..."}},
+                    {{"source": "owner_manual", "evidence": "..."}},
+                    {{"source": "knowledge_base", "evidence": "..."}},
+                    {{"source": "online", "evidence": "..."}}
+                ],
+                "recommendations": ["Step 1...", "Step 2...", "..."],
+                "missing_information": ["..."],
+                "next_steps": ["..."],
+                "confidence": "High/Medium/Low"
+            }}
             """
         )
 
     async def retrieve_context(self, user_message: str) -> Dict[str, Any]:
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Retrieving context"}))
         """
-        Retrieve owner's manual, knowledge base, and online context relevant to the user message and tree.
+        Retrieve owner's manual, knowledge base, and online context relevant to the user message and tree using SearchEngineService.
+        Also use valid links in car_guide_links for online context.
         """
+        # Get car info for owner manual search
         car = await self.car_crud.get_car_by_id(self.car_id)
-        manual_context = car.get("vector", "") if car else ""
-        guide_links: List[str] = car.get("car_guide_links") or [] if car else []
+        make = car.get("make") if car else None
+        model = car.get("model") if car else None
+        year = car.get("year") if car else None
+        # Use vector_search for knowledge base and owner manual context
+        kb_chunks = await self.search_engine_service.vector_search(user_message, query_type="validation")
+        manual_chunks = await self.search_engine_service.vector_search(user_message, query_type="generation", make=make, model=model, year=year)
+        # Use web_search for online context (top 3 URLs, then scrape)
+        web_links = await self.search_engine_service.web_search(user_message, num_results=3)
+        # Also use car_guide_links from car row
+        car_guide_links = car.get("car_guide_links") if car else []
         valid_prefixes = ("http://", "https://", "file://", "raw:")
-        guide_links = [link for link in guide_links if isinstance(link, str) and link.startswith(valid_prefixes)]
-        # Use embeddings to select top guide links
-        input_vec, link_vecs = await asyncio.gather(
-            self.embedding_service.embed_text(user_message),
-            self.embedding_service.embed_texts(guide_links) if guide_links else asyncio.sleep(0, result=[])
-        )
-        def cosine_sim(a, b):
-            a = np.array(a)
-            b = np.array(b)
-            return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
-        scored_links = [
-            (link, cosine_sim(input_vec, link_vec))
-            for link, link_vec in zip(guide_links, link_vecs)
-        ] if guide_links else []
-        scored_links.sort(key=lambda x: x[1], reverse=True)
-        top_links = [link for link, score in scored_links[:3] if score > 0.3]
-        # Scrape online context
+        valid_guide_links = [link for link in car_guide_links if isinstance(link, str) and link.startswith(valid_prefixes)]
+        # Combine and deduplicate links
+        all_links = list(dict.fromkeys(web_links + valid_guide_links))
         online_context = []
-        if top_links:
+        if all_links:
             try:
-                scraped = await self.scraper_service.perform_action(top_links, limit=len(top_links))
+                scraped = await self.scraper_service.perform_action(all_links, limit=len(all_links))
                 online_context = [item.get("text", "") for item in scraped if item.get("text")]
             except Exception:
                 online_context = []
-        # Knowledge base context (could be expanded to vector search)
-        kb_context = manual_context  # For now, use manual as KB
+        # Compose context strings
+        manual_context = "\n".join([c["content"] for c in manual_chunks[:3]]) if manual_chunks else ""
+        kb_context = "\n".join([c["content"] for c in kb_chunks[:3]]) if kb_chunks else ""
         return {
             "manual_context": manual_context,
             "kb_context": kb_context,

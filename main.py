@@ -75,7 +75,8 @@ class WebSocketHandler:
         try:
             while True:
                 data = await websocket.receive_text()
-                await self.manager.send_personal_message(f"You wrote: {data}", websocket)
+                # Echo back the raw JSON string, not a wrapped message
+                await self.manager.send_personal_message(data, websocket)
         except WebSocketDisconnect:
             await self.manager.disconnect(websocket)
             await self.logger.info("WebSocket disconnected.")

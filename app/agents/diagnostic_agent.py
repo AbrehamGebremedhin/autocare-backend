@@ -11,6 +11,7 @@ import asyncio
 import numpy as np
 import traceback
 from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
+import json
 
 class DiagnosisAgent:
     """
@@ -49,7 +50,7 @@ class DiagnosisAgent:
         )
 
     async def retrieve_context(self, user_message: str) -> Dict[str, Any]:
-        await manager.broadcast("Stage: Retrieving context")
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Retrieving context"}))
         """
         Retrieve owner's manual, knowledge base, and online context relevant to the user message and tree.
         """
@@ -101,15 +102,15 @@ class DiagnosisAgent:
             }
         return str(node_to_dict(self.diagnosis_tree))
 
-    async def diagnose(self, user_message: str) -> Dict[str, Any]:
-        await manager.broadcast("Stage: Starting diagnosis")
+    async def diagnose(self, user_message: str) -> dict:
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Starting diagnosis"}))
         """
         Main entry: generate diagnosis using tree, user message, and multi-source context.
         Improved error handling.
         """
         try:
             context = await self.retrieve_context(user_message)
-            await manager.broadcast("Stage: Context retrieved")
+            await manager.broadcast(json.dumps({"type": "stage", "stage": "Context retrieved"}))
             tree_summary = self.summarize_tree()
             prompt_vars = {
                 "user_message": user_message,
@@ -118,10 +119,11 @@ class DiagnosisAgent:
                 "kb_context": context["kb_context"],
                 "online_context": "\n".join(context["online_context"])
             }
-            await manager.broadcast("Stage: Invoking LLM for diagnosis")
-            chain = self.llm_service | self.prompt
-            response = await chain.ainvoke(prompt_vars) if hasattr(chain, "ainvoke") else chain.invoke(prompt_vars)
-            await manager.broadcast("Stage: LLM response received")
+            await manager.broadcast(json.dumps({"type": "stage", "stage": "Invoking LLM for diagnosis"}))
+            llm = self.llm_service.get_llm()
+            prompt = self.prompt.format(**prompt_vars)
+            response = await llm.ainvoke(prompt) if hasattr(llm, "ainvoke") else llm.invoke(prompt)
+            await manager.broadcast(json.dumps({"type": "stage", "stage": "LLM response received"}))
             # --- Symptom extraction trigger logic ---
             # If the LLM response or tree indicates more symptoms are needed, set the flag
             need_symptom_extraction = False
@@ -135,7 +137,7 @@ class DiagnosisAgent:
             }
         except Exception as e:
             tb = traceback.format_exc()
-            await manager.broadcast(f"Stage: Error occurred - {type(e).__name__}")
+            await manager.broadcast(json.dumps({"type": "stage", "stage": f"Error occurred - {type(e).__name__}"}))
             await self.logger.error(f"DiagnosisAgent error: {e}\n{tb}")
             user_friendly = "An internal error occurred while generating the diagnosis. Please try again later."
             return {

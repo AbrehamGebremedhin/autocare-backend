@@ -1,5 +1,5 @@
 from app.services.base_service import BaseService
-from langchain_community.llms import Ollama
+from langchain_ollama import OllamaLLM
 from typing import Optional, Any, Dict, Callable
 import logging
 from app.utils.redis_cache import redis_cache
@@ -17,7 +17,7 @@ class LLMService(BaseService):
         self.model_name = model_name
         self.version = version
         self.default_params = default_params
-        self.llm = Ollama(model=model_name, **default_params)
+        self.llm = OllamaLLM(model=model_name, **default_params)
         self.logger = logging.getLogger(__name__)
 
     def set_model(self, model_name: str, version: str = None, **params) -> None:
@@ -25,7 +25,7 @@ class LLMService(BaseService):
         if version:
             self.version = version
         self.default_params.update(params)
-        self.llm = Ollama(model=model_name, **self.default_params)
+        self.llm = OllamaLLM(model=model_name, **self.default_params)
         self.logger.info(f"Switched Ollama model to {model_name} (version {self.version}) with params {self.default_params}")
 
     def render_prompt(self, template: str, variables: dict) -> str:

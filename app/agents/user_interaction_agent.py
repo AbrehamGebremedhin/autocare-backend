@@ -3,6 +3,7 @@ from langchain.prompts import PromptTemplate
 from app.services.llm_service import LLMService
 from app.utils.logger import Logger
 from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
+import json
 
 class UserInteractionAgent:
     """
@@ -31,18 +32,19 @@ class UserInteractionAgent:
         )
 
     async def generate_user_message(self, user_message: str, diagnosis_result: Any) -> Dict[str, Any]:
-        await manager.broadcast("Stage: Generating user-facing message")
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Generating user-facing message"}))
         try:
             prompt_vars = {
                 "user_message": user_message,
                 "diagnosis_result": str(diagnosis_result)
             }
             prompt = self.prompt.format(**prompt_vars)
+            # Use the LLMService for direct prompt calls
             response = await self.llm_service.generate_response(prompt)
-            await manager.broadcast("Stage: User message generated")
+            await manager.broadcast(json.dumps({"type": "stage", "stage": "User message generated"}))
             return {"user_message": response, "success": True}
         except Exception as e:
-            await manager.broadcast(f"Stage: Error in user message generation - {type(e).__name__}")
+            await manager.broadcast(json.dumps({"type": "stage", "stage": f"Error in user message generation - {type(e).__name__}"}))
             await self.logger.error(f"UserInteractionAgent error: {e}")
             return {
                 "user_message": "Sorry, I couldn't generate a response at this time. Please try again later.",

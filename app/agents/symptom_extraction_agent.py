@@ -16,6 +16,7 @@ from app.utils.logger import Logger
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.agents.tree_manager_agent import TreeManagerAgent
 from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
+import json
 
 class SymptomExtractorAgent():
     """
@@ -82,7 +83,7 @@ class SymptomExtractorAgent():
             self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree, llm_service=self.llm_service)
 
     async def pre_process(self, task: str) -> Dict[str, Any]:
-        await manager.broadcast("Stage: Symptom extraction - Pre-processing context")
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Pre-processing context"}))
         """
         Pre-process the input task by fetching car data and relevant context.
         Args:
@@ -159,7 +160,7 @@ class SymptomExtractorAgent():
         return context
 
     async def handle(self, task: str) -> Any:
-        await manager.broadcast("Stage: Symptom extraction - Minimal LLM context")
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Minimal LLM context"}))
         """
         Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
         Uses only the LLM with minimal context first. If the result is ambiguous (not good enough),
@@ -182,7 +183,7 @@ class SymptomExtractorAgent():
         t_llm_min = time.perf_counter()
         # 1. Try LLM with minimal context (just the input text)
         minimal_documents = [Document(page_content=task, metadata={"type": "input_text_only"})]
-        chain = create_stuff_documents_chain(llm=self.llm_service, prompt=self.prompt)
+        chain = create_stuff_documents_chain(llm=self.llm_service.get_llm(), prompt=self.prompt)
         if hasattr(chain, "ainvoke"):
             response = await chain.ainvoke({"input_text": task, "context": minimal_documents})
         else:
@@ -197,7 +198,7 @@ class SymptomExtractorAgent():
 
         # 2. If ambiguous, fetch context (owner manual and online data) and retry using pre_process
         if is_ambiguous(parsed_result):
-            await manager.broadcast("Stage: Symptom extraction - Fetching extended context")
+            await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Fetching extended context"}))
             t_context = time.perf_counter()
             context = await self.pre_process(task)
             timings['context'] = time.perf_counter() - t_context
@@ -211,7 +212,7 @@ class SymptomExtractorAgent():
                 response = await chain.ainvoke({"input_text": task, "context": documents})
             else:
                 response = chain.invoke({"input_text": task, "context": documents})
-            await manager.broadcast("Stage: Symptom extraction - LLM with extended context")
+            await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - LLM with extended context"}))
             timings['llm_full'] = time.perf_counter() - t_llm_full
             t_parse_full = time.perf_counter()
             try:
@@ -223,7 +224,7 @@ class SymptomExtractorAgent():
             if 'timings' in context:
                 timings.update({f'context_{k}': v for k, v in context['timings'].items()})
 
-        await manager.broadcast("Stage: Symptom extraction - Completed")
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Completed"}))
         await self.logger.info(f"handle timings: {timings}")
 
         # If still ambiguous after all attempts, ask user for more info
@@ -251,7 +252,7 @@ class SymptomExtractorAgent():
         return parsed_result
 
     async def process(self, task: str) -> Dict[str, Any]:
-        await manager.broadcast("Stage: Symptom extraction - Processing request")
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Processing request"}))
         """
         Accepts the incoming request, handles the extraction, and returns the processed result.
         Args:
@@ -263,11 +264,11 @@ class SymptomExtractorAgent():
             result = await self.handle(task)
             success = True
         except Exception as e:
-            await manager.broadcast(f"Stage: Symptom extraction - Error - {type(e).__name__}")
+            await manager.broadcast(json.dumps({"type": "stage", "stage": f"Symptom extraction - Error - {type(e).__name__}"}))
             result = None
             success = False
             await self.logger.error(f"Error in process: {e}")
-        await manager.broadcast("Stage: Symptom extraction - Done")
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Done"}))
         return {
             "result": result,
             "tree": self.diagnosis_tree,

@@ -3,6 +3,7 @@ from langchain.prompts import PromptTemplate
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from typing import Any
 from app.services.llm_service import LLMService
+import asyncio
 
 class TreeManagerAgent:
     def __init__(self, root: DiagnosisTreeNode, llm_service: LLMService = None):
@@ -26,22 +27,18 @@ class TreeManagerAgent:
             return s
         return node_repr(self.root)
 
-    def decide_parent_for_symptom(self, symptom: str) -> DiagnosisTreeNode:
-        import asyncio
+    async def decide_parent_for_symptom(self, symptom: str) -> DiagnosisTreeNode:
         tree_state = self.get_tree_state()
         prompt = self.prompt.format(symptom=symptom, tree_state=tree_state)
-        # Use the underlying LLM for advanced LangChain integrations if needed
-        llm = self.llm_service.get_llm()
-        # If you need to use LLMChain, pass llm here; otherwise, use generate_response
-        response = asyncio.run(self.llm_service.generate_response(prompt))
+        response = await self.llm_service.generate_response(prompt)
         parent_name = response.strip()
         if parent_name.lower() == 'root':
             return self.root
         node = self.root.find(parent_name)
         return node if node else self.root
 
-    def add_symptom(self, symptom: str, likelyhood: float, data: Any = None):
-        parent_node = self.decide_parent_for_symptom(symptom)
+    async def add_symptom(self, symptom: str, likelyhood: float, data: Any = None):
+        parent_node = await self.decide_parent_for_symptom(symptom)
         new_node = DiagnosisTreeNode(issue_name=symptom, likelyhood=likelyhood, data=data)
         parent_node.add_child(new_node)
         return new_node

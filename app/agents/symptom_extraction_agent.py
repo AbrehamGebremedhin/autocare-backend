@@ -25,10 +25,11 @@ class SymptomExtractorAgent():
 
     @staticmethod
     def get_prompt_template() -> PromptTemplate:
-        return PromptTemplate.from_template("""
+        return PromptTemplate.from_template(
+            """
             You are an expert automotive mechanic and diagnostic specialist with extensive experience in automotive systems and failure diagnostics. 
-            Using the user's reported symptoms and any provided context (such as previous diagnostics, vehicle data, or sensor readings), along with your comprehensive automotive knowledge, identify all plausible underlying issues that could cause the described symptoms.
-            Carefully analyze the symptoms and context using your diagnostic expertise and automotive knowledge base. Include:
+            Using up to the last 5 user messages (provided below, most recent last) and any provided context (such as previous diagnostics, vehicle data, or sensor readings), along with your comprehensive automotive knowledge, identify all plausible underlying issues that could cause the described symptoms.
+            Carefully analyze the conversation context, symptoms, and provided context using your diagnostic expertise and automotive knowledge base. Include:
             - Common causes that match these symptoms
             - Less likely but critical failures that should not be overlooked
             - Any issue that could contribute indirectly or as a downstream effect
@@ -53,14 +54,17 @@ class SymptomExtractorAgent():
             - Use appropriate data types: strings for text fields, numbers for likelihood, arrays for lists.
             - If a field is unknown or not applicable, use `null` or an empty list.
             - If no possible issues are found, return an empty array.
+            - Analyze up to the last 5 user messages as a conversation (most recent last) to extract all relevant symptoms and context.
 
-            Input text:
-            \"\"\"
-            {input_text}
-            \"\"\"
+            Input:
+            - User messages (up to last 5, most recent last):
+            """
+            """{input_text}"""
+            """
 
             Carefully analyze the symptoms and context, leveraging your expertise, and list all plausible issues as described above.
-        """)
+            """
+        )
 
 
     def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode = None, **kwargs: Any):
@@ -82,7 +86,7 @@ class SymptomExtractorAgent():
         if self.diagnosis_tree is not None:
             self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree, llm_service=self.llm_service)
 
-    async def pre_process(self, task: str) -> Dict[str, Any]:
+    async def pre_process(self, task: Any) -> Dict[str, Any]:
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Pre-processing context"}))
         """
         Pre-process the input task by fetching car data and relevant context.
@@ -100,7 +104,7 @@ class SymptomExtractorAgent():
             await self.logger.error(f"Car with id {self.car_id} not found.")
             raise ValueError(f"Car with id {self.car_id} not found.")
 
-        input_text = task
+        input_text = self._concat_user_messages(task)
         if not input_text:
             raise ValueError("No input text provided for symptom extraction.")
 
@@ -159,7 +163,7 @@ class SymptomExtractorAgent():
         await self.logger.info(f"pre_process timings: {timings}")
         return context
 
-    async def handle(self, task: str) -> Any:
+    async def handle(self, task: Any) -> Any:
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Minimal LLM context"}))
         """
         Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
@@ -182,12 +186,13 @@ class SymptomExtractorAgent():
         timings = {}
         t_llm_min = time.perf_counter()
         # 1. Try LLM with minimal context (just the input text)
-        minimal_documents = [Document(page_content=task, metadata={"type": "input_text_only"})]
+        user_message_concat = self._concat_user_messages(task)
+        minimal_documents = [Document(page_content=user_message_concat, metadata={"type": "input_text_only"})]
         chain = create_stuff_documents_chain(llm=self.llm_service.get_llm(), prompt=self.prompt)
         if hasattr(chain, "ainvoke"):
-            response = await chain.ainvoke({"input_text": task, "context": minimal_documents})
+            response = await chain.ainvoke({"input_text": user_message_concat, "context": minimal_documents})
         else:
-            response = chain.invoke({"input_text": task, "context": minimal_documents})
+            response = chain.invoke({"input_text": user_message_concat, "context": minimal_documents})
         timings['llm_minimal'] = time.perf_counter() - t_llm_min
         t_parse_min = time.perf_counter()
         try:
@@ -209,9 +214,9 @@ class SymptomExtractorAgent():
                 documents.append(Document(page_content=text, metadata={"type": "guide_link", "index": idx}))
             t_llm_full = time.perf_counter()
             if hasattr(chain, "ainvoke"):
-                response = await chain.ainvoke({"input_text": task, "context": documents})
+                response = await chain.ainvoke({"input_text": user_message_concat, "context": documents})
             else:
-                response = chain.invoke({"input_text": task, "context": documents})
+                response = chain.invoke({"input_text": user_message_concat, "context": documents})
             await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - LLM with extended context"}))
             timings['llm_full'] = time.perf_counter() - t_llm_full
             t_parse_full = time.perf_counter()
@@ -251,7 +256,7 @@ class SymptomExtractorAgent():
 
         return parsed_result
 
-    async def process(self, task: str) -> Dict[str, Any]:
+    async def process(self, task: Any) -> Dict[str, Any]:
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Processing request"}))
         """
         Accepts the incoming request, handles the extraction, and returns the processed result.
@@ -275,22 +280,34 @@ class SymptomExtractorAgent():
             "success": success
         }
 
-    async def extract_symptoms(self, input_text: str, context: str = "") -> List[Dict[str, Any]]:
+    async def extract_symptoms(self, input_text: Any, context: str = "") -> List[Dict[str, Any]]:
         """
         Extract symptoms from the input text using the LLM service.
         Args:
-            input_text (str): The input text describing symptoms/issues.
+            input_text (Any): The input text or list of user messages describing symptoms/issues.
             context (str): Additional context to include (optional).
         Returns:
             List[Dict[str, Any]]: Parsed JSON array of extracted symptoms.
         """
-        prompt = self.prompt.format(input_text=input_text, context=context)
+        user_message_concat = self._concat_user_messages(input_text)
+        prompt = self.prompt.format(input_text=user_message_concat, context=context)
         response = await self.llm_service.generate_response(prompt)
         try:
             return self.output_parser.parse(response)
         except Exception as e:
             await self.logger.error(f"SymptomExtractorAgent parsing error: {e}")
             return []
+
+    def _concat_user_messages(self, messages: Any) -> str:
+        """
+        Utility to join up to the last 5 user messages (most recent last).
+        Accepts a string or a list of strings.
+        """
+        if isinstance(messages, list):
+            return "\n".join(messages[-5:])
+        elif isinstance(messages, str):
+            return messages
+        return ""
 
     def get_langchain_llm(self):
         """

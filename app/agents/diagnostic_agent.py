@@ -38,14 +38,15 @@ class DiagnosisAgent:
             - Online context: Recent or rare issues from the web and car-specific guides
 
             INSTRUCTIONS:
-            1. Carefully analyze the user's message and the diagnosis tree to identify likely root causes.
+            1. Carefully analyze the last 5 user messages (provided below, most recent last) and the diagnosis tree to identify likely root causes.
             2. Attribute supporting evidence to each context source (owner's manual, knowledge base, online, tree).
             3. Clearly explain your reasoning, referencing specific evidence from each source.
             4. If information is missing or ambiguous, state what additional details are needed.
             5. Provide actionable, step-by-step recommendations for the user.
+            6. Consider the conversation context and progression from the last 5 user messages.
 
             INPUT:
-            - User message: {user_message}
+            - User messages (last 5, most recent last): {user_message}
             - Diagnosis tree: {tree_summary}
             - Owner's manual/context: {manual_context}
             - Knowledge base: {kb_context}
@@ -118,18 +119,23 @@ class DiagnosisAgent:
             }
         return str(node_to_dict(self.diagnosis_tree))
 
-    async def diagnose(self, user_message: str) -> dict:
+    async def diagnose(self, user_messages: List[str]) -> dict:
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Starting diagnosis"}))
         """
-        Main entry: generate diagnosis using tree, user message, and multi-source context.
+        Main entry: generate diagnosis using tree, last 5 user messages, and multi-source context.
         Improved error handling.
+        Args:
+            user_messages (List[str]): List of user messages (use only the last 5).
         """
         try:
-            context = await self.retrieve_context(user_message)
+            # Use only the last 5 messages
+            last_messages = user_messages[-5:] if isinstance(user_messages, list) else [user_messages]
+            user_message_concat = "\n".join(last_messages)
+            context = await self.retrieve_context(user_message_concat)
             await manager.broadcast(json.dumps({"type": "stage", "stage": "Context retrieved"}))
             tree_summary = self.summarize_tree()
             prompt_vars = {
-                "user_message": user_message,
+                "user_message": user_message_concat,
                 "tree_summary": tree_summary,
                 "manual_context": context["manual_context"],
                 "kb_context": context["kb_context"],
@@ -141,11 +147,9 @@ class DiagnosisAgent:
             response = await llm.ainvoke(prompt) if hasattr(llm, "ainvoke") else llm.invoke(prompt)
             await manager.broadcast(json.dumps({"type": "stage", "stage": "LLM response received"}))
             # --- Symptom extraction trigger logic ---
-            # If the LLM response or tree indicates more symptoms are needed, set the flag
             need_symptom_extraction = False
             if isinstance(response, str) and ("need more symptom" in response.lower() or "provide more symptoms" in response.lower()):
                 need_symptom_extraction = True
-            # You can add more advanced logic here based on the tree or structured response
             return {
                 "diagnosis": response,
                 "success": True,
@@ -164,13 +168,13 @@ class DiagnosisAgent:
                 "user_message": user_friendly
             }
 
-    async def process(self, user_message: str) -> Dict[str, Any]:
+    async def process(self, user_messages: List[str]) -> Dict[str, Any]:
         """
-        Accepts the user message, runs the diagnosis, and returns the result and success status.
-        Improved error handling.
+        Accepts the user messages (list), runs the diagnosis, and returns the result and success status.
+        Uses only the last 5 user messages.
         """
         try:
-            result = await self.diagnose(user_message)
+            result = await self.diagnose(user_messages)
             return {
                 "success": result.get("success", False),
                 "result": result.get("diagnosis"),

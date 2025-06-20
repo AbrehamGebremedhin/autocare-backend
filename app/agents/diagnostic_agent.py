@@ -47,6 +47,7 @@ class DiagnosisAgent:
             7. If the problem is urgent or could cause further damage, highlight this and advise the user accordingly.
             8. Always include actionable next steps, and if the user should consult a professional mechanic, say so.
             9. Consider the conversation context and progression from the last 5 user messages.
+            10. If the diagnosis tree exists, mention other possible causes from the tree that may be relevant as "Other Possible Causes" in your output, especially if they have not been ruled out by the current symptoms.
 
             INPUT:
             - User messages (last 5, most recent last): {user_message}
@@ -67,6 +68,7 @@ class DiagnosisAgent:
                 "recommendations": ["Step 1...", "Step 2...", "..."],
                 "missing_information": ["..."],
                 "next_steps": ["..."],
+                "other_possible_causes": ["..."],
                 "confidence": "High/Medium/Low"
             }}
             """

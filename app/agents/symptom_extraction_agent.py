@@ -29,10 +29,11 @@ class SymptomExtractorAgent():
             """
             You are an expert automotive mechanic and diagnostic specialist with extensive experience in automotive systems and failure diagnostics. 
             Using up to the last 5 user messages (provided below, most recent last) and any provided context (such as previous diagnostics, vehicle data, or sensor readings), along with your comprehensive automotive knowledge, identify all plausible underlying issues that could cause the described symptoms.
-            Carefully analyze the conversation context, symptoms, and provided context using your diagnostic expertise and automotive knowledge base. Include:
+            Carefully analyze the conversation context, symptoms, provided context, and the current diagnosis tree (if available) using your diagnostic expertise and automotive knowledge base. Include:
             - Common causes that match these symptoms
             - Less likely but critical failures that should not be overlooked
             - Any issue that could contribute indirectly or as a downstream effect
+            - If the diagnosis tree exists, mention other possible causes from the tree that may be relevant, as "Other Possible Causes" in your output.
 
             For each possible issue, provide a detailed explanation of why it is plausible, and include step-by-step diagnostic or repair suggestions for the user (if applicable). If any information is missing or ambiguous, clearly state what is needed and ask the user for it in a friendly way.
 
@@ -49,6 +50,7 @@ class SymptomExtractorAgent():
             - **issue_description**: A clear, detailed explanation of the issue, how it relates to the symptom, and step-by-step diagnostic or repair suggestions for the user (if applicable)
             - **severity**: The severity level of the issue, one of ["low", "medium", "high"]
             - **additional_info**: Any other relevant details (common causes, conditions, diagnostic tips, etc.)
+            - **other_possible_causes**: If the diagnosis tree suggests other plausible causes or related issues, list them here as additional suggestions (otherwise null or empty list).
             - **missing_info_request**: If any information is missing or ambiguous, specify what to ask the user for, otherwise null or empty string.
 
             Important instructions:

@@ -22,6 +22,7 @@ class UserInteractionAgent:
             - Be concise, friendly, and avoid technical jargon unless necessary, but be specific and detailed in instructions.
             - If the diagnosis is inconclusive or more info is needed, politely and clearly ask the user for the exact information required to proceed, and explain why it is needed.
             - If the issue could be urgent or dangerous, highlight this and advise the user accordingly.
+            - If the diagnosis includes a list of 'Other Possible Causes' (from the diagnosis tree), mention these to the user as additional things to consider or discuss with a mechanic.
             - Always end with actionable next steps, and if the user should consult a professional mechanic, say so.
 
             Input:

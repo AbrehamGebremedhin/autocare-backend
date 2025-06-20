@@ -34,6 +34,8 @@ class SymptomExtractorAgent():
             - Less likely but critical failures that should not be overlooked
             - Any issue that could contribute indirectly or as a downstream effect
 
+            For each possible issue, provide a detailed explanation of why it is plausible, and include step-by-step diagnostic or repair suggestions for the user (if applicable). If any information is missing or ambiguous, clearly state what is needed and ask the user for it in a friendly way.
+
             Think broadly and reason through how multiple issues may be connected. Output a complete, well-structured JSON array.
             Context:
             {context}
@@ -44,9 +46,10 @@ class SymptomExtractorAgent():
             - **issue_type**: The general type of the issue (e.g., "mechanical", "electrical", "software")
             - **issue_category**: The broad category of the issue (e.g., "engine", "transmission", "fuel system")
             - **issue_subcategory**: A specific subcategory if applicable (e.g., "ignition system", "fuel injection")
-            - **issue_description**: A clear, detailed explanation of the issue and how it relates to the symptom
+            - **issue_description**: A clear, detailed explanation of the issue, how it relates to the symptom, and step-by-step diagnostic or repair suggestions for the user (if applicable)
             - **severity**: The severity level of the issue, one of ["low", "medium", "high"]
             - **additional_info**: Any other relevant details (common causes, conditions, diagnostic tips, etc.)
+            - **missing_info_request**: If any information is missing or ambiguous, specify what to ask the user for, otherwise null or empty string.
 
             Important instructions:
             - Return **ONLY** a valid JSON array of issue objects. Do **NOT** include any extra text or explanations.
@@ -245,7 +248,7 @@ class SymptomExtractorAgent():
             for issue in parsed_result:
                 issue_name = issue.get('issue_name', 'Unknown Issue')
                 likelihood = issue.get('likelihood', 0) / 100.0  # Convert to 0-1 float
-                self.tree_manager_agent.add_symptom(
+                await self.tree_manager_agent.add_symptom(
                     symptom=issue_name,
                     likelyhood=likelihood,
                     data=issue

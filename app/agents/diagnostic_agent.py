@@ -41,9 +41,12 @@ class DiagnosisAgent:
             1. Carefully analyze the last 5 user messages (provided below, most recent last) and the diagnosis tree to identify likely root causes.
             2. Attribute supporting evidence to each context source (owner's manual, knowledge base, online, tree).
             3. Clearly explain your reasoning, referencing specific evidence from each source.
-            4. If information is missing or ambiguous, state what additional details are needed.
-            5. Provide actionable, step-by-step recommendations for the user.
-            6. Consider the conversation context and progression from the last 5 user messages.
+            4. If information is missing or ambiguous, explicitly state what additional details are needed and ask the user for this information in a clear, friendly way.
+            5. Provide a detailed, step-by-step troubleshooting and repair guide for the user, including safety precautions, required tools, and what to check at each step.
+            6. If multiple possible causes exist, explain how to distinguish between them and what to check first.
+            7. If the problem is urgent or could cause further damage, highlight this and advise the user accordingly.
+            8. Always include actionable next steps, and if the user should consult a professional mechanic, say so.
+            9. Consider the conversation context and progression from the last 5 user messages.
 
             INPUT:
             - User messages (last 5, most recent last): {user_message}
@@ -73,34 +76,14 @@ class DiagnosisAgent:
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Retrieving context"}))
         """
         Retrieve owner's manual, knowledge base, and online context relevant to the user message and tree using SearchEngineService.
-        Also use valid links in car_guide_links for online context.
+        Uses the new search engine unified interface.
         """
-        # Get car info for owner manual search
-        car = await self.car_crud.get_car_by_id(self.car_id)
-        make = car.get("make") if car else None
-        model = car.get("model") if car else None
-        year = car.get("year") if car else None
-        # Use vector_search for knowledge base and owner manual context
-        kb_chunks = await self.search_engine_service.vector_search(user_message, query_type="validation")
-        manual_chunks = await self.search_engine_service.vector_search(user_message, query_type="generation", make=make, model=model, year=year)
-        # Use web_search for online context (top 3 URLs, then scrape)
-        web_links = await self.search_engine_service.web_search(user_message, num_results=3)
-        # Also use car_guide_links from car row
-        car_guide_links = car.get("car_guide_links") if car else []
-        valid_prefixes = ("http://", "https://", "file://", "raw:")
-        valid_guide_links = [link for link in car_guide_links if isinstance(link, str) and link.startswith(valid_prefixes)]
-        # Combine and deduplicate links
-        all_links = list(dict.fromkeys(web_links + valid_guide_links))
-        online_context = []
-        if all_links:
-            try:
-                scraped = await self.scraper_service.perform_action(all_links, limit=len(all_links))
-                online_context = [item.get("text", "") for item in scraped if item.get("text")]
-            except Exception:
-                online_context = []
-        # Compose context strings
-        manual_context = "\n".join([c["content"] for c in manual_chunks[:3]]) if manual_chunks else ""
-        kb_context = "\n".join([c["content"] for c in kb_chunks[:3]]) if kb_chunks else ""
+        # Use the new search engine to get all relevant context as LangChain Documents
+        docs = await self.search_engine_service.search(self.car_id, user_message, top_k=10)
+        # Group by source for context assembly
+        manual_context = "\n".join([d.page_content for d in docs if d.metadata.get("source") == "owner_manual"])
+        kb_context = "\n".join([d.page_content for d in docs if d.metadata.get("source") == "ground_knowledge"])
+        online_context = [d.page_content for d in docs if d.metadata.get("source") == "car_guide_link"]
         return {
             "manual_context": manual_context,
             "kb_context": kb_context,

@@ -37,6 +37,16 @@ class UserInteractionAgent:
     async def generate_user_message(self, user_message: str, diagnosis_result: Any) -> Dict[str, Any]:
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Generating user-facing message"}))
         try:
+            # Extract step_by_step_guide if present
+            step_by_step_guide = None
+            if isinstance(diagnosis_result, dict):
+                step_by_step_guide = diagnosis_result.get('step_by_step_guide')
+            elif isinstance(diagnosis_result, str):
+                try:
+                    parsed = json.loads(diagnosis_result)
+                    step_by_step_guide = parsed.get('step_by_step_guide')
+                except Exception:
+                    step_by_step_guide = None
             prompt_vars = {
                 "user_message": user_message,
                 "diagnosis_result": str(diagnosis_result)
@@ -45,13 +55,18 @@ class UserInteractionAgent:
             # Use the LLMService for direct prompt calls
             response = await self.llm_service.generate_response(prompt)
             await manager.broadcast(json.dumps({"type": "stage", "stage": "User message generated"}))
-            return {"user_message": response, "success": True}
+            return {
+                "user_message": response,
+                "success": True,
+                "step_by_step_guide": step_by_step_guide
+            }
         except Exception as e:
             await manager.broadcast(json.dumps({"type": "stage", "stage": f"Error in user message generation - {type(e).__name__}"}))
             await self.logger.error(f"UserInteractionAgent error: {e}")
             return {
                 "user_message": "Sorry, I couldn't generate a response at this time. Please try again later.",
-                "success": False
+                "success": False,
+                "step_by_step_guide": None
             }
 
     def get_langchain_llm(self):

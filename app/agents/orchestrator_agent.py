@@ -49,7 +49,11 @@ class OrchestratorAgent:
             await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - Running user interaction agent"}))
             user_response = await self.user_interaction_agent.process(user_request, diagnosis_result)
             await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - Done"}))
-            return {'response': user_response.get('result'), 'success': user_response.get('success', True)}
+            return {
+                'response': user_response.get('result'),
+                'success': user_response.get('success', True),
+                'step_by_step_guide': diagnosis_result.get('step_by_step_guide')
+            }
         else:
             await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - No car_id provided, cannot diagnose"}))
             user_response = await self.user_interaction_agent.process(user_request, 'car_id is required for diagnosis.')

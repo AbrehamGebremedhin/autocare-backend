@@ -49,13 +49,6 @@ class DiagnosisAgent:
             9. Consider the conversation context and progression from the last 5 user messages.
             10. If the diagnosis tree exists, mention other possible causes from the tree that may be relevant as "Other Possible Causes" in your output, especially if they have not been ruled out by the current symptoms.
 
-            INPUT:
-            - User messages (last 5, most recent last): {user_message}
-            - Diagnosis tree: {tree_summary}
-            - Owner's manual/context: {manual_context}
-            - Knowledge base: {kb_context}
-            - Online context: {online_context}
-
             OUTPUT (JSON):
             {{
                 "diagnosis_summary": "Main diagnosis and reasoning, with source attributions",
@@ -66,11 +59,21 @@ class DiagnosisAgent:
                     {{"source": "online", "evidence": "..."}}
                 ],
                 "recommendations": ["Step 1...", "Step 2...", "..."],
+                "step_by_step_guide": ["Step 1: ...", "Step 2: ...", "..."],
                 "missing_information": ["..."],
                 "next_steps": ["..."],
                 "other_possible_causes": ["..."],
                 "confidence": "High/Medium/Low"
             }}
+            - The 'step_by_step_guide' field must be a clear, numbered, step-by-step guide for the user to follow to fix the problem, separate from general recommendations.
+            - If the problem cannot be fixed by the user, explain why and what to do instead.
+
+            INPUT:
+            - User messages (last 5, most recent last): {user_message}
+            - Diagnosis tree: {tree_summary}
+            - Owner's manual/context: {manual_context}
+            - Knowledge base: {kb_context}
+            - Online context: {online_context}
             """
         )
 
@@ -135,10 +138,18 @@ class DiagnosisAgent:
             need_symptom_extraction = False
             if isinstance(response, str) and ("need more symptom" in response.lower() or "provide more symptoms" in response.lower()):
                 need_symptom_extraction = True
+            # Try to parse the response as JSON and extract the step_by_step_guide
+            step_by_step_guide = None
+            try:
+                parsed = json.loads(response) if isinstance(response, str) else response
+                step_by_step_guide = parsed.get("step_by_step_guide")
+            except Exception:
+                step_by_step_guide = None
             return {
                 "diagnosis": response,
                 "success": True,
-                "need_symptom_extraction": need_symptom_extraction
+                "need_symptom_extraction": need_symptom_extraction,
+                "step_by_step_guide": step_by_step_guide
             }
         except Exception as e:
             tb = traceback.format_exc()
@@ -163,6 +174,7 @@ class DiagnosisAgent:
             return {
                 "success": result.get("success", False),
                 "result": result.get("diagnosis"),
+                "step_by_step_guide": result.get("step_by_step_guide"),
                 "error": result.get("error") if not result.get("success", False) else None,
                 "error_type": result.get("error_type") if not result.get("success", False) else None,
                 "user_message": result.get("user_message") if not result.get("success", False) else None

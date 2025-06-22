@@ -10,6 +10,24 @@ import os
 import asyncio
 import re
 from langchain_core.documents import Document
+from collections import OrderedDict
+
+class LRUCache:
+    def __init__(self, capacity=32):
+        self.cache = OrderedDict()
+        self.capacity = capacity
+
+    def get(self, key):
+        if key not in self.cache:
+            return None
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
+    def set(self, key, value):
+        self.cache[key] = value
+        self.cache.move_to_end(key)
+        if len(self.cache) > self.capacity:
+            self.cache.popitem(last=False)
 
 class SearchEngineService(BaseService):
     """
@@ -23,12 +41,19 @@ class SearchEngineService(BaseService):
         self.milvus_handler = MilvusHandler()
         self.car_crud = CarCRUD()
         self.bucket_manager = SupabaseBucketManager()
+        # Caches
+        self._manual_path_cache = LRUCache(capacity=32)
+        self._embedding_cache = LRUCache(capacity=32)
 
     async def download_owner_manual(self, car_id: str) -> Optional[str]:
         """
         Download the owner's manual for the given car_id from the Supabase bucket.
         Returns the local file path to the manual PDF, or None if not found.
         """
+        # Check cache first
+        cached_path = self._manual_path_cache.get(car_id)
+        if cached_path and os.path.exists(cached_path):
+            return cached_path
         car = await self.car_crud.get_car_by_id(car_id)
         owner_manual_url = car.get('owner_manual_url') if car else None
         if not owner_manual_url:
@@ -46,6 +71,7 @@ class SearchEngineService(BaseService):
                 return None
             with open(local_path, 'wb') as f:
                 f.write(file_bytes)
+        self._manual_path_cache.set(car_id, local_path)
         return local_path
 
     @staticmethod
@@ -66,32 +92,42 @@ class SearchEngineService(BaseService):
         else:
             return [(s - min_score) / (max_score - min_score) for s in scores]
 
-    async def embed_and_vector_search(self, content_path: str, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    async def embed_and_vector_search(self, content_path: str, query: str, top_k: int = 12, chunk_size: int = 800) -> List[Dict[str, Any]]:
         """
         Embed the content (PDF path) and perform a vector search against the query.
         Returns top_k relevant results.
+        chunk_size is tunable for retrieval quality and speed.
         """
-        # 1. Parse PDF into chunks (improved chunking)
-        with open(content_path, 'rb') as f:
-            pdf_bytes = f.read()
-        chunks = await self.parser_service.parse_pdf_bytes_optimized(pdf_bytes, chunk_size=1000)
-        if not chunks:
-            return []
-        # 2. Embed chunks and query
-        chunk_embeddings = await self.embedding_service.embed_texts_batch(chunks)
+        # Use cache key based on file path, query, and chunk_size
+        cache_key = f"{content_path}:{query}:{chunk_size}"
+        cached_result = self._embedding_cache.get(cache_key)
+        if cached_result is not None:
+            return cached_result
+        # Precompute and store embeddings for static documents (owner manuals)
+        static_embedding_key = f"static:{content_path}:{chunk_size}"
+        static_data = self._embedding_cache.get(static_embedding_key)
+        if static_data is not None:
+            chunks, chunk_embeddings = static_data
+        else:
+            with open(content_path, 'rb') as f:
+                pdf_bytes = f.read()
+            chunks = await self.parser_service.parse_pdf_bytes_optimized(pdf_bytes, chunk_size=chunk_size)
+            if not chunks:
+                return []
+            chunk_embeddings = await self.embedding_service.embed_texts_batch(chunks)
+            self._embedding_cache.set(static_embedding_key, (chunks, chunk_embeddings))
         query_embedding = await self.embedding_service.embed_text(query)
-        # 3. Vector search
         top_matches = await self.embedding_service.find_most_similar(query_embedding, chunk_embeddings, top_k=top_k)
-        # 4. Normalize scores (cosine similarity: higher is better)
         scores = [score for _, score in top_matches]
         norm_scores = self.score_normalizer(scores, reverse=False)
         results = [
             {"source": "owner_manual", "chunk": chunks[idx], "score": norm_score}
             for (idx, _), norm_score in zip(top_matches, norm_scores)
         ]
+        self._embedding_cache.set(cache_key, results)
         return results
 
-    async def vector_search_ground_knowledge(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    async def vector_search_ground_knowledge(self, query: str, top_k: int = 24) -> List[Dict[str, Any]]:
         """
         Perform a vector search on ground knowledge for the query using Milvus.
         """
@@ -154,7 +190,7 @@ class SearchEngineService(BaseService):
         ]
         return results
 
-    async def search(self, car_id: str, query: str, top_k: int = 5) -> List[Document]:
+    async def search(self, car_id: str, query: str, top_k: int = 12) -> List[Document]:
         """
         Perform a comprehensive search using owner's manual, ground knowledge, and car guide links.
         Returns a list of LangChain Document objects.
@@ -164,8 +200,28 @@ class SearchEngineService(BaseService):
         ground_task = self.vector_search_ground_knowledge(query, top_k=top_k)
         links_task = self.scrape_and_vector_search_links(car_id, query, top_k=top_k)
         manual_results, ground_results, link_results = await asyncio.gather(manual_task, ground_task, links_task)
-        # Aggregate and sort all results by normalized score
-        all_results = (manual_results or []) + (ground_results or []) + (link_results or [])
+        # Tag each result with its source type for normalization
+        all_results = []
+        for r in (manual_results or []):
+            r['similarity_type'] = 'cosine'
+            all_results.append(r)
+        for r in (ground_results or []):
+            r['similarity_type'] = 'l2'
+            all_results.append(r)
+        for r in (link_results or []):
+            r['similarity_type'] = 'cosine'
+            all_results.append(r)
+        # Unify all scores to cosine-like (higher is better)
+        for r in all_results:
+            if r['similarity_type'] == 'l2':
+                # Invert L2 so higher is better
+                r['score'] = 1.0 - r['score']
+        # Normalize all scores together
+        scores = [r['score'] for r in all_results]
+        norm_scores = self.score_normalizer(scores, reverse=False)
+        for i, norm_score in enumerate(norm_scores):
+            all_results[i]['score'] = norm_score
+        # Sort by normalized score (higher is better)
         all_results = sorted(all_results, key=lambda x: x.get("score", 0), reverse=True)
         # Convert to LangChain Document objects
         documents = [
@@ -193,4 +249,3 @@ class SearchEngineService(BaseService):
         """
         if hasattr(self.scraper_service, 'cleanup'):
             await self.scraper_service.cleanup()
-        

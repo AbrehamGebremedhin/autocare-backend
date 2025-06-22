@@ -110,13 +110,18 @@ async def send_message_in_session(session_id: str, request: ChatSessionMessageRe
             'is_initial': len(messages) == 0
         }
         messages.append(user_message)
-        # Optionally, generate assistant response (reuse chat_service logic if needed)
+        # Use chat_service to generate assistant response
+        response = await chat_service.send_message(
+            user_id=session.get('user_id'),
+            message=request.message,
+            context=request.context
+        )
         assistant_message = {
             'role': 'assistant',
-            'content': f"Echo: {request.message}",
+            'content': response.get('response', ''),
             'timestamp': datetime.now().isoformat(),
-            'confidence': 1.0,
-            'sources': []
+            'confidence': response.get('confidence', 1.0),
+            'sources': response.get('sources', [])
         }
         messages.append(assistant_message)
         session['messages'] = messages

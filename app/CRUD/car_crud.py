@@ -141,6 +141,9 @@ class CarCRUD(BaseCRUD):
         data['owner_manual_url'] = data.get('owner_manual_url') or ""
         data['service_manual_url'] = data.get('service_manual_url') or ""
         data['car_guide_links'] = self.ensure_list(data.get('car_guide_links'))
+        # Ensure vector is not null
+        if data.get('vector') is None:
+            data['vector'] = []
         # 1. Create the car record first
         car = await super().create(data)
         if not car or not isinstance(car, list) or not car[0]:

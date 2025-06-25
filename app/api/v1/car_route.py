@@ -3,11 +3,22 @@ from app.CRUD.user_crud import UserCRUD
 from app.CRUD.car_crud import CarCRUD
 from app.schemas.User import UserBase
 from typing import List
+import json
 
 router = APIRouter(prefix="/user/cars", tags=["Cars"])
 
 user_crud = UserCRUD()
 car_crud = CarCRUD()
+
+def ensure_list(value):
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    try:
+        return json.loads(value)
+    except Exception:
+        return []
 
 @router.get("/{user_id}", response_model=List[str], summary="Get user's cars", description="Retrieve the list of car IDs associated with a user.")
 async def get_user_cars(user_id: str):
@@ -19,7 +30,7 @@ async def get_user_cars(user_id: str):
     user = await user_crud.read({"id": user_id})
     if not user or not user[0]:
         raise HTTPException(status_code=404, detail="User not found.")
-    return user[0].get("cars", [])
+    return ensure_list(user[0].get("cars", []))
 
 @router.post("/{user_id}", response_model=dict, summary="Add a car to user", description="Add a car to the user's list. If the car does not exist, it will be created. If it exists, it will only be added to the user's cars field.")
 async def add_car_to_user(user_id: str, car: dict):
@@ -47,7 +58,7 @@ async def add_car_to_user(user_id: str, car: dict):
             raise HTTPException(status_code=400, detail="Car could not be created.")
         car_obj = car_result[0]
         car_id = car_obj.get("id")
-    cars = user[0].get("cars", []) or []
+    cars = ensure_list(user[0].get("cars", []))
     if car_id not in cars:
         cars.append(car_id)
         await user_crud.update({"id": user_id}, {"cars": cars})
@@ -64,7 +75,7 @@ async def remove_car_from_user(user_id: str, car_id: str):
     user = await user_crud.read({"id": user_id})
     if not user or not user[0]:
         raise HTTPException(status_code=404, detail="User not found.")
-    cars = user[0].get("cars", []) or []
+    cars = ensure_list(user[0].get("cars", []))
     if car_id in cars:
         cars.remove(car_id)
         await user_crud.update({"id": user_id}, {"cars": cars})

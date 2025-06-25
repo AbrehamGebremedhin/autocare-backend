@@ -153,6 +153,18 @@ Output:
         Returns:
             dict: Contains 'success', 'diagnosis', 'actionable_steps', 'needed_tools', 'safety_note', 'followup_questions', 'confidence', and optionally 'error' and 'error_type'.
         """
+        # Convert DiagnosisTreeNode to dict if present in diagnosis_result
+        def serialize(obj):
+            from app.utils.diagnosis_tree import DiagnosisTreeNode
+            if isinstance(obj, DiagnosisTreeNode):
+                return obj.to_dict()
+            if isinstance(obj, dict):
+                return {k: serialize(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [serialize(i) for i in obj]
+            return obj
+        diagnosis_result = serialize(diagnosis_result)
+
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:

@@ -59,3 +59,14 @@ class DiagnosisTreeNode(AbstractTreeNode):
         # Implement your custom processing logic here
         pass
 
+    def to_dict(self):
+        """
+        Recursively convert the tree node and its children to a serializable dictionary.
+        """
+        return {
+            'issue_name': self.issue_name,
+            'likelyhood': self.likelyhood,
+            'data': self.data,
+            'children': [child.to_dict() for child in self.children]
+        }
+

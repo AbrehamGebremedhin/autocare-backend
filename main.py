@@ -5,6 +5,7 @@ from app.utils.websocket import manager as websocket_manager
 from app.utils.logger import Logger, get_logger_instance
 from app.db.base import SupabaseDBHandler
 from app.utils.redis_cache import get_redis_cache, RedisCache
+from app.utils.startup_checks import check_milvus_connection, check_supabase_connection, check_redis_connection
 from typing import Any
 from pydantic import BaseModel
 from slowapi import Limiter
@@ -87,6 +88,27 @@ class WebSocketHandler:
 
 @app.on_event("startup")
 async def startup_event():
+    # Check Milvus
+    milvus_ok, milvus_err = await check_milvus_connection()
+    if not milvus_ok:
+        await logger.error(f"Milvus connection failed: {milvus_err}")
+        raise RuntimeError(f"Milvus connection failed: {milvus_err}")
+    await logger.info("Milvus connection successful.")
+
+    # Check Supabase
+    supabase_ok, supabase_err = await check_supabase_connection()
+    if not supabase_ok:
+        await logger.error(f"Supabase connection failed: {supabase_err}")
+        raise RuntimeError(f"Supabase connection failed: {supabase_err}")
+    await logger.info("Supabase connection successful.")
+
+    # Check Redis
+    redis_ok, redis_err = await check_redis_connection()
+    if not redis_ok:
+        await logger.error(f"Redis connection failed: {redis_err}")
+        raise RuntimeError(f"Redis connection failed: {redis_err}")
+    await logger.info("Redis connection successful.")
+
     await logger.info("WebSocket manager is ready.")
 
 @app.on_event("shutdown")

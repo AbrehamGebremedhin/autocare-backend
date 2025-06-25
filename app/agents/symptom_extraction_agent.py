@@ -17,8 +17,9 @@ from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.agents.tree_manager_agent import TreeManagerAgent
 from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
 import json
+from app.agents.base_agent import BaseAgent
 
-class SymptomExtractorAgent():
+class SymptomExtractorAgent(BaseAgent):
     """
     Agent for extracting symptoms from input text.
     """
@@ -32,6 +33,11 @@ class SymptomExtractorAgent():
 
             Always include safety warnings before any potentially hazardous steps. Use simple language and explain technical terms. Do NOT recommend visiting a mechanic unless absolutely necessary. Try to empower the user to understand and address the problem first.
 
+            IMPORTANT:
+            - You have access to the car's make, model, and year: Make: {car_make}, Model: {car_model}, Year: {car_year}.
+            - Do NOT ask the user for car make, model, or year; you already have this information.
+            - Do NOT tell the user to refer to the owner's manual; use the information from the manual directly in your response.
+
             Using up to the last 5 user messages (provided below, most recent last) and any provided context (such as previous diagnostics, vehicle data, or sensor readings), along with your comprehensive automotive knowledge, identify all plausible underlying issues that could cause the described symptoms.
             Carefully analyze the conversation context, symptoms, provided context, and the current diagnosis tree (if available) using your diagnostic expertise and automotive knowledge base. Include:
             - Common causes that match these symptoms
@@ -42,6 +48,9 @@ class SymptomExtractorAgent():
             For each possible issue, provide a detailed explanation of why it is plausible, and include step-by-step diagnostic or repair suggestions for the user (if applicable). If any information is missing or ambiguous, clearly state what is needed and ask the user for it in a friendly way.
 
             Think broadly and reason through how multiple issues may be connected. Output a complete, well-structured JSON array.
+            Car make: {car_make}
+            Car model: {car_model}
+            Car year: {car_year}
             Context:
             {context}
 
@@ -66,6 +75,9 @@ class SymptomExtractorAgent():
             - Analyze up to the last 5 user messages as a conversation (most recent last) to extract all relevant symptoms and context.
 
             Input:
+            - Car make: {car_make}
+            - Car model: {car_model}
+            - Car year: {car_year}
             - User messages (up to last 5, most recent last):
             """
             """{input_text}"""
@@ -76,21 +88,13 @@ class SymptomExtractorAgent():
         )
 
 
-    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode = None, **kwargs: Any):
-        """
-        Initialize the SymptomExtractorAgent with a language model and car_id.
-        Args:
-            car_id (str): The unique identifier for the car.
-            diagnosis_tree (DiagnosisTreeNode): The diagnosis tree instance for the session.
-        """
-        super().__init__()
+    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode = None, car_make: str = None, car_model: str = None, car_year: str = None, **kwargs: Any):
+        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year)
         self.llm_service = LLMService()
         self.prompt = self.get_prompt_template()
         self.output_parser = JsonOutputParser()
-        self.car_id = car_id
-        self.car_crud = CarCRUD()
-        self.logger = Logger("SymptomExtractorAgent")
         self.diagnosis_tree = diagnosis_tree
+        self.logger = Logger("SymptomExtractorAgent")
         self.tree_manager_agent = None
         if self.diagnosis_tree is not None:
             self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree, llm_service=self.llm_service)
@@ -173,6 +177,7 @@ class SymptomExtractorAgent():
         return context
 
     async def handle(self, task: Any) -> Any:
+        await self._ensure_car_info()
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Minimal LLM context"}))
         """
         Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
@@ -263,9 +268,10 @@ class SymptomExtractorAgent():
             self.tree_manager_agent.prune_tree()
             self.tree_manager_agent.sort_tree()
 
-        return parsed_result
+        return [self._sanitize_output(json.dumps(issue)) if isinstance(issue, dict) else self._sanitize_output(str(issue)) for issue in parsed_result] if isinstance(parsed_result, list) else parsed_result
 
     async def process(self, task: Any) -> Dict[str, Any]:
+        await self._ensure_car_info()
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Processing request"}))
         """
         Accepts the incoming request, handles the extraction, and returns the processed result.
@@ -290,6 +296,7 @@ class SymptomExtractorAgent():
         }
 
     async def extract_symptoms(self, input_text: Any, context: str = "") -> List[Dict[str, Any]]:
+        await self._ensure_car_info()
         """
         Extract symptoms from the input text using the LLM service.
         Args:
@@ -301,6 +308,7 @@ class SymptomExtractorAgent():
         user_message_concat = self._concat_user_messages(input_text)
         prompt = self.prompt.format(input_text=user_message_concat, context=context)
         response = await self.llm_service.generate_response(prompt)
+        response = self._sanitize_output(response)
         try:
             return self.output_parser.parse(response)
         except Exception as e:

@@ -13,25 +13,34 @@ import traceback
 from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
 import json
 from app.services.search_engine_service import SearchEngineService
+from app.agents.base_agent import BaseAgent
 
-class DiagnosisAgent:
+class DiagnosisAgent(BaseAgent):
     """
     Agentic RAG for generating a diagnosis using the diagnosis tree, user message, and multi-source context.
     """
-    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode, search_engine_service: Optional[SearchEngineService] = None, **kwargs):
+    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode, car_make: str = None, car_model: str = None, car_year: str = None, search_engine_service: Optional[SearchEngineService] = None, **kwargs):
+        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year)
         self.car_id = car_id
         self.diagnosis_tree = diagnosis_tree
         self.logger = Logger("DiagnosisAgent")
         self.llm_service = LLMService()
-        self.car_crud = CarCRUD()
         self.embedding_service = EmbeddingService()
         self.scraper_service = ScraperService(headless=True)
         self.search_engine_service = search_engine_service or SearchEngineService()
+        self.car_make = car_make
+        self.car_model = car_model
+        self.car_year = car_year
         self.prompt = PromptTemplate.from_template(
             """
             You are an expert automotive diagnostician. Your goal is to help the user diagnose and, if possible, resolve the issue themselves. Provide clear, step-by-step instructions for safe DIY troubleshooting and minor repairs. Only recommend seeing a mechanic if the issue is dangerous, requires specialized tools, or cannot be safely addressed by a typical car owner.
 
             Always include safety warnings before any potentially hazardous steps. Use simple language and explain technical terms. Do NOT recommend visiting a mechanic unless absolutely necessary. Try to empower the user to understand and address the problem first.
+
+            IMPORTANT:
+            - You have access to the car's make, model, and year: Make: {car_make}, Model: {car_model}, Year: {car_year}.
+            - Do NOT ask the user for car make, model, or year; you already have this information.
+            - Do NOT tell the user to refer to the owner's manual; use the information from the manual directly in your response.
 
             CONTEXT SOURCES:
             - Diagnosis tree: Structured symptom and issue data (see below)
@@ -71,6 +80,9 @@ class DiagnosisAgent:
             - If the problem cannot be fixed by the user, explain why and what to do instead.
 
             INPUT:
+            - Car make: {car_make}
+            - Car model: {car_model}
+            - Car year: {car_year}
             - User messages (last 5, most recent last): {user_message}
             - Diagnosis tree: {tree_summary}
             - Owner's manual/context: {manual_context}
@@ -135,6 +147,11 @@ class DiagnosisAgent:
             llm = self.llm_service.get_llm()
             prompt = self.prompt.format(**prompt_vars)
             response = await llm.ainvoke(prompt) if hasattr(llm, "ainvoke") else llm.invoke(prompt)
+            # Sanitize output
+            if isinstance(response, str):
+                response = self._sanitize_output(response)
+            elif isinstance(response, dict):
+                response = json.loads(self._sanitize_output(json.dumps(response)))
             await manager.broadcast(json.dumps({"type": "stage", "stage": "LLM response received"}))
             # --- Symptom extraction trigger logic ---
             need_symptom_extraction = False
@@ -167,6 +184,7 @@ class DiagnosisAgent:
             }
 
     async def process(self, user_messages: List[str]) -> Dict[str, Any]:
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Processing diagnosis"}))
         """
         Accepts the user messages (list), runs the diagnosis, and returns the result and success status.
         Uses only the last 5 user messages.
@@ -194,11 +212,13 @@ class DiagnosisAgent:
             }
 
     async def generate_diagnosis(self, user_message: str, tree_summary: str, manual_context: str, kb_context: str = "", online_context: str = "") -> str:
+        await manager.broadcast(json.dumps({"type": "stage", "stage": "Generating diagnosis"}))
         """
         Generate diagnosis using the LLM service.
         """
         prompt = self.prompt.format(user_message=user_message, tree_summary=tree_summary, manual_context=manual_context, kb_context=kb_context, online_context=online_context)
         response = await self.llm_service.generate_response(prompt)
+        response = self._sanitize_output(response)
         return response
 
     def get_langchain_llm(self):

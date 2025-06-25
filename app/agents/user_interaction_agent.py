@@ -20,6 +20,10 @@ You are an expert automotive assistant. Your goal is to help the user diagnose a
 
 Always include safety warnings before any potentially hazardous steps. Use simple language and explain technical terms. Do NOT recommend visiting a mechanic unless absolutely necessary. Try to empower the user to understand and address the problem first.
 
+IMPORTANT:
+- Do NOT ask the user for car make, model, or year; you already have this information.
+- Do NOT tell the user to refer to the owner's manual; use the information from the manual directly in your response.
+
 Given the user's message and the diagnostic result, generate a clear, empathetic, and actionable message for the user.
 
 Return your response as a JSON object with the following fields:
@@ -64,6 +68,19 @@ Output:
                     return text[start:i+1]
         return None
 
+    def _sanitize_output(self, text: str) -> str:
+        """
+        Remove or rewrite any LLM output that tells the user to refer to the owner's manual or asks for car make/model/year.
+        """
+        import re
+        text = re.sub(r"(?i)refer to (the|your) owner's manual[\.,]?", "", text)
+        text = re.sub(r"(?i)see (the|your) owner's manual[\.,]?", "", text)
+        text = re.sub(r"(?i)consult (the|your) owner's manual[\.,]?", "", text)
+        text = re.sub(r"(?i)what is (the )?car'?s? (make|model|year)[\?\.]?", "", text)
+        text = re.sub(r"(?i)please provide (the )?car'?s? (make|model|year)[\?\.]?", "", text)
+        text = re.sub(r"(?i)can you tell me (the )?car'?s? (make|model|year)[\?\.]?", "", text)
+        return text
+
     async def generate_user_message(self, user_message: str, diagnosis_result: Any) -> Dict[str, Any]:
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Generating user-facing message"}))
         await self.logger.info(f"UserInteractionAgent - Generating user-facing message for: {user_message}")
@@ -85,7 +102,7 @@ Output:
             prompt = self.prompt.format(**prompt_vars)
             # Use the LLMService for direct prompt calls
             response = await self.llm_service.generate_response(prompt)
-            await self.logger.info(f"LLM response: {response}")
+            response = self._sanitize_output(response)
             # Try to parse the response as JSON, robustly
             raw_response = response.strip()
             parsed_response = None
@@ -152,14 +169,14 @@ Output:
             try:
                 result = await self.generate_user_message(user_message, diagnosis_result)
                 # Compose a user-facing message from all fields
-                user_message_text = (
-                    f"Diagnosis: {result.get('diagnosis', '')}\n\n"
-                    f"Actionable Steps:\n" + "\n".join(f"- {step}" for step in result.get('actionable_steps', [])) + "\n\n"
-                    f"Needed Tools: {', '.join(result.get('needed_tools', []))}\n"
-                    f"Safety Note: {result.get('safety_note', '')}\n"
-                    f"Follow-up Questions: {', '.join(result.get('followup_questions', []))}\n"
+                user_message_text = [
+                    f"Diagnosis: {result.get('diagnosis', '')}\n\n",
+                    f"Actionable Steps:\n" + "\n".join(f"- {step}" for step in result.get('actionable_steps', [])) + "\n\n",
+                    f"Needed Tools: {', '.join(result.get('needed_tools', []))}\n",
+                    f"Safety Note: {result.get('safety_note', '')}\n",
+                    f"Follow-up Questions: {', '.join(result.get('followup_questions', []))}\n",
                     f"Confidence: {result.get('confidence', '')}"
-                )
+                ]
                 return {
                     "success": result.get("success", False),
                     "user_message": user_message_text,

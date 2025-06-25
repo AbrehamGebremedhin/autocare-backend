@@ -39,11 +39,11 @@ class DiagnosisAgent(BaseAgent):
             IMPORTANT:
             - You have access to the car's make, model, and year: Make: {car_make}, Model: {car_model}, Year: {car_year}.
             - Do NOT ask the user for car make, model, or year; you already have this information.
-            - Do NOT tell the user to refer to the owner's manual; use the information from the manual directly in your response.
+            - Do NOT tell the user to refer to the owner's manual or say "check your owner's manual". Instead, if the information is present in the provided owner's manual/context, extract and use it directly in your answer. If the information is not present in the provided context, state that it is not available, but do NOT refer the user to the manual.
 
             CONTEXT SOURCES:
             - Diagnosis tree: Structured symptom and issue data (see below)
-            - Owner's manual/context: Official documentation and technical details
+            - Owner's manual/context: Official documentation and technical details (provided below as context)
             - Knowledge base: Trusted reference material and prior cases
             - Online context: Recent or rare issues from the web and car-specific guides
 
@@ -97,10 +97,14 @@ class DiagnosisAgent(BaseAgent):
         Uses the new search engine unified interface.
         """
         await self._ensure_car_info()
-        # Use the new search engine to get all relevant context as LangChain Documents
+        # Always fetch latest car info from DB to ensure up-to-date values
+        car = await self.car_crud.get_car_by_id(self.car_id)
+        # Use the vector field from the car table as the owner's manual context
+        manual_context = ""
+        if car and car.get("vector"):
+            manual_context = str(car["vector"])
+        # Use the new search engine to get all relevant context as LangChain Documents (except manual)
         docs = await self.search_engine_service.search(self.car_id, user_message, top_k=10)
-        # Group by source for context assembly
-        manual_context = "\n".join([d.page_content for d in docs if d.metadata.get("source") == "owner_manual"])
         kb_context = "\n".join([d.page_content for d in docs if d.metadata.get("source") == "ground_knowledge"])
         online_context = [d.page_content for d in docs if d.metadata.get("source") == "car_guide_link"]
         return {
@@ -206,6 +210,13 @@ class DiagnosisAgent(BaseAgent):
             self.car_model = car.get('model')
             self.car_year = car.get('year')
         try:
+            # Temporary debug: check if vector data is incoming
+            if car:
+                vector_data = car.get('vector')
+                if vector_data:
+                    await self.logger.info(f"[DEBUG] Vector data present for car {self.car_id}: type={type(vector_data)}, length={len(vector_data) if hasattr(vector_data, '__len__') else 'N/A'}")
+                else:
+                    await self.logger.info(f"[DEBUG] No vector data present for car {self.car_id}")
             result = await self.diagnose(user_messages)
             return {
                 "success": result.get("success", False),

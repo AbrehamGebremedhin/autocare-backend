@@ -4,9 +4,11 @@ from app.utils.diagnosis_tree import DiagnosisTreeNode
 from typing import Any
 from app.services.llm_service import LLMService
 import asyncio
+from app.agents.base_agent import BaseAgent
 
-class TreeManagerAgent:
-    def __init__(self, root: DiagnosisTreeNode, llm_service: LLMService = None):
+class TreeManagerAgent(BaseAgent):
+    def __init__(self, root: DiagnosisTreeNode, llm_service: LLMService = None, **kwargs):
+        super().__init__(**kwargs)
         self.root = root
         self.llm_service = llm_service or LLMService()
         self.prompt = PromptTemplate(

@@ -4,9 +4,11 @@ from app.agents.diagnostic_agent import DiagnosisAgent
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.agents.user_interaction_agent import UserInteractionAgent
 from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
+from app.agents.base_agent import BaseAgent
 
-class OrchestratorAgent:
-    def __init__(self):
+class OrchestratorAgent(BaseAgent):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.agents = {
             'symptom_extraction': SymptomExtractorAgent,  # Store the class, not the instance
         }

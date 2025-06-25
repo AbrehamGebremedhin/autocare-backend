@@ -21,7 +21,6 @@ class DiagnosisAgent(BaseAgent):
     """
     def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode, car_make: str = None, car_model: str = None, car_year: str = None, search_engine_service: Optional[SearchEngineService] = None, **kwargs):
         super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year)
-        self.car_id = car_id
         self.diagnosis_tree = diagnosis_tree
         self.logger = Logger("DiagnosisAgent")
         self.llm_service = LLMService()
@@ -97,6 +96,7 @@ class DiagnosisAgent(BaseAgent):
         Retrieve owner's manual, knowledge base, and online context relevant to the user message and tree using SearchEngineService.
         Uses the new search engine unified interface.
         """
+        await self._ensure_car_info()
         # Use the new search engine to get all relevant context as LangChain Documents
         docs = await self.search_engine_service.search(self.car_id, user_message, top_k=10)
         # Group by source for context assembly
@@ -129,6 +129,13 @@ class DiagnosisAgent(BaseAgent):
         Args:
             user_messages (List[str]): List of user messages (use only the last 5).
         """
+        await self._ensure_car_info()
+        # Always fetch latest car info from DB to ensure up-to-date values
+        car = await self.car_crud.get_car_by_id(self.car_id)
+        if car:
+            self.car_make = car.get('make')
+            self.car_model = car.get('model')
+            self.car_year = car.get('year')
         try:
             # Use only the last 5 messages
             last_messages = user_messages[-5:] if isinstance(user_messages, list) else [user_messages]
@@ -141,7 +148,10 @@ class DiagnosisAgent(BaseAgent):
                 "tree_summary": tree_summary,
                 "manual_context": context["manual_context"],
                 "kb_context": context["kb_context"],
-                "online_context": "\n".join(context["online_context"])
+                "online_context": "\n".join(context["online_context"]),
+                "car_make": self.car_make or "",
+                "car_model": self.car_model or "",
+                "car_year": self.car_year or ""
             }
             await manager.broadcast(json.dumps({"type": "stage", "stage": "Invoking LLM for diagnosis"}))
             llm = self.llm_service.get_llm()
@@ -189,6 +199,12 @@ class DiagnosisAgent(BaseAgent):
         Accepts the user messages (list), runs the diagnosis, and returns the result and success status.
         Uses only the last 5 user messages.
         """
+        await self._ensure_car_info()
+        car = await self.car_crud.get_car_by_id(self.car_id)
+        if car:
+            self.car_make = car.get('make')
+            self.car_model = car.get('model')
+            self.car_year = car.get('year')
         try:
             result = await self.diagnose(user_messages)
             return {
@@ -216,6 +232,12 @@ class DiagnosisAgent(BaseAgent):
         """
         Generate diagnosis using the LLM service.
         """
+        await self._ensure_car_info()
+        car = await self.car_crud.get_car_by_id(self.car_id)
+        if car:
+            self.car_make = car.get('make')
+            self.car_model = car.get('model')
+            self.car_year = car.get('year')
         prompt = self.prompt.format(user_message=user_message, tree_summary=tree_summary, manual_context=manual_context, kb_context=kb_context, online_context=online_context)
         response = await self.llm_service.generate_response(prompt)
         response = self._sanitize_output(response)

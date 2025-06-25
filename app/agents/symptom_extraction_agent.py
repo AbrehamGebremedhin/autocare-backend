@@ -178,6 +178,13 @@ class SymptomExtractorAgent(BaseAgent):
 
     async def handle(self, task: Any) -> Any:
         await self._ensure_car_info()
+        # Always fetch latest car info from DB to ensure up-to-date values
+        car = await self.car_crud.get_car_by_id(self.car_id)
+        if car:
+            self.car_make = car.get('make')
+            self.car_model = car.get('model')
+            self.car_year = car.get('year')
+
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Minimal LLM context"}))
         """
         Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
@@ -203,10 +210,17 @@ class SymptomExtractorAgent(BaseAgent):
         user_message_concat = self._concat_user_messages(task)
         minimal_documents = [Document(page_content=user_message_concat, metadata={"type": "input_text_only"})]
         chain = create_stuff_documents_chain(llm=self.llm_service.get_llm(), prompt=self.prompt)
+        prompt_vars = {
+            "input_text": user_message_concat,
+            "context": minimal_documents,
+            "car_make": self.car_make or "",
+            "car_model": self.car_model or "",
+            "car_year": self.car_year or ""
+        }
         if hasattr(chain, "ainvoke"):
-            response = await chain.ainvoke({"input_text": user_message_concat, "context": minimal_documents})
+            response = await chain.ainvoke(prompt_vars)
         else:
-            response = chain.invoke({"input_text": user_message_concat, "context": minimal_documents})
+            response = chain.invoke(prompt_vars)
         timings['llm_minimal'] = time.perf_counter() - t_llm_min
         t_parse_min = time.perf_counter()
         try:
@@ -226,12 +240,24 @@ class SymptomExtractorAgent(BaseAgent):
                 documents.append(Document(page_content=str(context["owner_manual"]), metadata={"type": "owner_manual"}))
             for idx, text in enumerate(context.get("guide_links_text", [])):
                 documents.append(Document(page_content=text, metadata={"type": "guide_link", "index": idx}))
+            # Fetch car info again in case it changed
+            car = await self.car_crud.get_car_by_id(self.car_id)
+            if car:
+                self.car_make = car.get('make')
+                self.car_model = car.get('model')
+                self.car_year = car.get('year')
+            prompt_vars_full = {
+                "input_text": user_message_concat,
+                "context": documents,
+                "car_make": self.car_make or "",
+                "car_model": self.car_model or "",
+                "car_year": self.car_year or ""
+            }
             t_llm_full = time.perf_counter()
             if hasattr(chain, "ainvoke"):
-                response = await chain.ainvoke({"input_text": user_message_concat, "context": documents})
+                response = await chain.ainvoke(prompt_vars_full)
             else:
-                response = chain.invoke({"input_text": user_message_concat, "context": documents})
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - LLM with extended context"}))
+                response = chain.invoke(prompt_vars_full)
             timings['llm_full'] = time.perf_counter() - t_llm_full
             t_parse_full = time.perf_counter()
             try:

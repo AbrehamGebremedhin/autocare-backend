@@ -3,15 +3,17 @@ from langchain.prompts import PromptTemplate
 from app.services.llm_service import LLMService
 from app.utils.logger import Logger
 from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
+from app.agents.base_agent import BaseAgent
 import json
 import re
 import traceback
 
-class UserInteractionAgent:
+class UserInteractionAgent(BaseAgent):
     """
     Agentic RAG that takes the result from the diagnostic agent and creates a user-facing message.
     """
     def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.llm_service = LLMService()
         self.logger = Logger("UserInteractionAgent")
         self.prompt = PromptTemplate.from_template(
@@ -67,19 +69,6 @@ Output:
                 if not stack:
                     return text[start:i+1]
         return None
-
-    def _sanitize_output(self, text: str) -> str:
-        """
-        Remove or rewrite any LLM output that tells the user to refer to the owner's manual or asks for car make/model/year.
-        """
-        import re
-        text = re.sub(r"(?i)refer to (the|your) owner's manual[\.,]?", "", text)
-        text = re.sub(r"(?i)see (the|your) owner's manual[\.,]?", "", text)
-        text = re.sub(r"(?i)consult (the|your) owner's manual[\.,]?", "", text)
-        text = re.sub(r"(?i)what is (the )?car'?s? (make|model|year)[\?\.]?", "", text)
-        text = re.sub(r"(?i)please provide (the )?car'?s? (make|model|year)[\?\.]?", "", text)
-        text = re.sub(r"(?i)can you tell me (the )?car'?s? (make|model|year)[\?\.]?", "", text)
-        return text
 
     async def generate_user_message(self, user_message: str, diagnosis_result: Any) -> Dict[str, Any]:
         await manager.broadcast(json.dumps({"type": "stage", "stage": "Generating user-facing message"}))
@@ -169,14 +158,14 @@ Output:
             try:
                 result = await self.generate_user_message(user_message, diagnosis_result)
                 # Compose a user-facing message from all fields
-                user_message_text = [
-                    f"Diagnosis: {result.get('diagnosis', '')}\n\n",
-                    f"Actionable Steps:\n" + "\n".join(f"- {step}" for step in result.get('actionable_steps', [])) + "\n\n",
-                    f"Needed Tools: {', '.join(result.get('needed_tools', []))}\n",
-                    f"Safety Note: {result.get('safety_note', '')}\n",
-                    f"Follow-up Questions: {', '.join(result.get('followup_questions', []))}\n",
-                    f"Confidence: {result.get('confidence', '')}"
-                ]
+                user_message_text = {
+                    "diagnosis": result.get("diagnosis", ""),
+                    "actionable_steps": result.get("actionable_steps", []),
+                    "needed_tools": result.get("needed_tools", []),
+                    "safety_note": result.get("safety_note", ""),
+                    "followup_questions": result.get("followup_questions", []),
+                    "confidence": result.get("confidence", "")
+                }
                 return {
                     "success": result.get("success", False),
                     "user_message": user_message_text,

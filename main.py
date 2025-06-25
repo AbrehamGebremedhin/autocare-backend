@@ -88,22 +88,28 @@ class WebSocketHandler:
 
 @app.on_event("startup")
 async def startup_event():
-    # Check Milvus
-    milvus_ok, milvus_err = await check_milvus_connection()
+    # Run all checks in parallel
+    import asyncio
+    results = await asyncio.gather(
+        check_milvus_connection(),
+        check_supabase_connection(),
+        check_redis_connection(),
+        return_exceptions=True
+    )
+    milvus_ok, milvus_err = results[0] if not isinstance(results[0], Exception) else (False, str(results[0]))
+    supabase_ok, supabase_err = results[1] if not isinstance(results[1], Exception) else (False, str(results[1]))
+    redis_ok, redis_err = results[2] if not isinstance(results[2], Exception) else (False, str(results[2]))
+
     if not milvus_ok:
         await logger.error(f"Milvus connection failed: {milvus_err}")
         raise RuntimeError(f"Milvus connection failed: {milvus_err}")
     await logger.info("Milvus connection successful.")
 
-    # Check Supabase
-    supabase_ok, supabase_err = await check_supabase_connection()
     if not supabase_ok:
         await logger.error(f"Supabase connection failed: {supabase_err}")
         raise RuntimeError(f"Supabase connection failed: {supabase_err}")
     await logger.info("Supabase connection successful.")
 
-    # Check Redis
-    redis_ok, redis_err = await check_redis_connection()
     if not redis_ok:
         await logger.error(f"Redis connection failed: {redis_err}")
         raise RuntimeError(f"Redis connection failed: {redis_err}")

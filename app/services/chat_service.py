@@ -83,7 +83,7 @@ class ChatService(BaseService):
             # Add assistant response to conversation
             conversation['messages'].append({
                 'role': 'assistant',
-                'content': response_data.get('response', ''),
+                'content': response_data.get('response', ''),  # Now this is the user_message
                 'timestamp': datetime.now().isoformat(),
                 'confidence': response_data.get('confidence', 0.0),
                 'sources': response_data.get('sources', [])

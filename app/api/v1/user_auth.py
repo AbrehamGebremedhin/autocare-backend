@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Request
 from pydantic import BaseModel, EmailStr
 from app.db.base import SupabaseDBHandler, get_db_handler
 from app.schemas.User import UserBase
@@ -23,7 +23,9 @@ async def register_user(user: UserCreate, db_handler: SupabaseDBHandler = Depend
         response = db.auth.sign_up({
             "email": user.email,
             "password": user.password,
-            "phone": user.phone
+            "options": {
+                "data": {"phone": user.phone}  # Store phone in user_metadata
+            }
         })
         if hasattr(response, 'user') and response.user:
             user_data = response.user
@@ -59,5 +61,36 @@ async def logout_user(token: str, db_handler: SupabaseDBHandler = Depends(get_db
     try:
         response = db.auth.sign_out(token)
         return {"message": "Logged out successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.api_route('/auth/confirm', methods=["GET", "POST"])
+async def confirm_email(request: Request, token: str = None, type: str = 'signup', db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+    """
+    Endpoint to handle email confirmation from Supabase email link.
+    Accepts token and type from query or JSON body.
+    """
+    if not token:
+        # Try to get token and type from JSON body if not in query
+        try:
+            data = await request.json()
+            token = data.get('token')
+            type = data.get('type', 'signup')
+        except Exception:
+            pass
+    if not token:
+        raise HTTPException(status_code=422, detail="Missing token for confirmation.")
+    db = await db_handler.client
+    try:
+        response = db.auth.verify_otp({
+            "token": token,
+            "type": type
+        })
+        if hasattr(response, 'user') and response.user:
+            return {"message": "Email confirmed successfully."}
+        elif isinstance(response, dict) and response.get('user'):
+            return {"message": "Email confirmed successfully."}
+        else:
+            raise HTTPException(status_code=400, detail="Email confirmation failed.")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

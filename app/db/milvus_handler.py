@@ -12,7 +12,7 @@ class IMilvusHandler(Protocol):
 class MilvusHandler(IMilvusHandler):
     def __init__(self, host: str = None, port: str = None, collection_name: str = "Groundknowledge"):
         # Read from environment variables, fallback to defaults
-        self.host = host or os.getenv("MILVUS_HOST", "milvus")
+        self.host = host or os.getenv("MILVUS_HOST", "localhost")  # Changed default from 'milvus' to 'localhost'
         self.port = port or os.getenv("MILVUS_PORT", "19530")
         self.collection_name = collection_name
         self._connect()

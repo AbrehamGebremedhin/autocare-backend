@@ -8,6 +8,7 @@ from app.services.parser_service import ParserService
 from app.services.embedding_service import EmbeddingService
 from app.db.milvus_handler import MilvusHandler
 from app.utils.logger import get_logger_instance
+from pymilvus import utility  # <-- Add this import
 
 CAR_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'car_data')
 TABLE_NAME = "Groundknowledge"
@@ -108,6 +109,27 @@ async def main():
     parser_service = ParserService()
     embedding_service = EmbeddingService()
     milvus_handler = MilvusHandler(collection_name=TABLE_NAME)
+
+    # Check if the collection exists and how many documents it has
+    try:
+        collection_exists = utility.has_collection(TABLE_NAME)
+    except Exception as e:
+        await logger.error(f"Error checking if collection exists: {e}")
+        collection_exists = False
+
+    if collection_exists:
+        try:
+            count = milvus_handler.count_documents() if hasattr(milvus_handler, 'count_documents') else milvus_handler.count()
+        except Exception as e:
+            await logger.error(f"Error counting documents in collection: {e}")
+            count = 0
+        if count > 27000:
+            await logger.info(f"Database already loaded with {count} documents. Skipping loading.")
+            return
+        else:
+            await logger.info(f"Database exists but only has {count} documents. Proceeding to load.")
+    else:
+        await logger.info(f"Collection '{TABLE_NAME}' does not exist. Proceeding to load.")
 
     pdf_files = [os.path.join(CAR_DATA_DIR, f) for f in os.listdir(CAR_DATA_DIR) if f.lower().endswith('.pdf')]
     await logger.info(f"Found {len(pdf_files)} PDF files in {CAR_DATA_DIR}")

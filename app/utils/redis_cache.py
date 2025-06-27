@@ -4,9 +4,15 @@ import json
 from typing import Any, Optional
 from functools import wraps
 import hashlib
+from app.core.config import Settings
 
 class RedisCache:
-    def __init__(self, url: str = "redis://localhost:6379/0"):
+    def __init__(self, url: str = None):
+        if url is None:
+            settings = Settings()
+            host = settings.REDIS_HOST
+            port = settings.REDIS_PORT
+            url = f"redis://{host}:{port}/0"
         self.url = url
         self._redis = None
 

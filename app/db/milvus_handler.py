@@ -2,11 +2,13 @@
 # This module provides a handler for connecting to and operating on a local Milvus instance.
 from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 from typing import List, Dict, Any, Optional
+import os
 
 class MilvusHandler:
-    def __init__(self, host: str = "localhost", port: str = "19530", collection_name: str = "Groundknowledge"):
-        self.host = host
-        self.port = port
+    def __init__(self, host: str = None, port: str = None, collection_name: str = "Groundknowledge"):
+        # Read from environment variables, fallback to defaults
+        self.host = host or os.getenv("MILVUS_HOST", "milvus")
+        self.port = port or os.getenv("MILVUS_PORT", "19530")
         self.collection_name = collection_name
         self._connect()
         self._ensure_collection()

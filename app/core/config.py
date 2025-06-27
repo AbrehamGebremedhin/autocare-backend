@@ -27,9 +27,18 @@ class Settings(BaseSettings):
     # YouTube API key
     YOUTUBE_API_KEY: str
 
+    # Milvus settings
+    MILVUS_HOST: str = "milvus"
+    MILVUS_PORT: str = "19530"
+
+    # Redis settings
+    REDIS_HOST: str = "redis"
+    REDIS_PORT: str = "6379"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 @lru_cache()
 def get_settings() -> Settings:

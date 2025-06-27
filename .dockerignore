@@ -1,0 +1,15 @@
+# Ignore files/folders not needed in Docker image
+.git
+__pycache__/
+tests/
+docs/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+*.md
+.vscode/
+.idea/
+*.egg-info/

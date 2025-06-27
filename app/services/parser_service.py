@@ -5,6 +5,7 @@ import io
 import re
 import asyncio
 from app.utils.logger import get_logger_instance, Logger
+from app.core.interfaces import IWebSocketManager, ILogger
 
 try:
     from pypdf import PdfReader
@@ -16,7 +17,7 @@ class ParserService(BaseService):
     Service for parsing PDFs, large strings, and other documents into structured text chunks.
     Dependencies can be injected for testability and flexibility.
     """
-    def __init__(self, pdf_reader: Optional[Any] = None, logger: Optional[Logger] = None, websocket_manager=None):
+    def __init__(self, pdf_reader: Optional[Any] = None, logger: Optional[ILogger] = None, websocket_manager: IWebSocketManager = None):
         """
         Initialize the ParserService.
         Args:

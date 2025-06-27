@@ -7,12 +7,13 @@ from collections import deque
 from uuid import uuid4
 import logging
 from app.utils.diagnosis_tree import DiagnosisTreeNode
+from app.core.interfaces import IWebSocketManager
 
 class ChatService(BaseService):
     """
     ChatService with session management and direct message passing to OrchestratorAgent.
     """
-    def __init__(self, websocket_manager=None):
+    def __init__(self, websocket_manager: IWebSocketManager = None):
         super().__init__(websocket_manager=websocket_manager)
         self.orchestrator = OrchestratorAgent()
         self._conversation_cache = {}  # Cache for active conversations

@@ -2,12 +2,13 @@ from app.core.config import get_settings
 from fastapi import WebSocket
 from typing import List
 import asyncio
+from app.core.interfaces import IWebSocketManager
 
 # Load settings from config
 settings = get_settings()
 WEBSOCKET_URL = settings.WEBSOCKET_URL
 
-class ConnectionManager:
+class ConnectionManager(IWebSocketManager):
     def __init__(self):
         self.active_connections: List[WebSocket] = []
         self._lock = asyncio.Lock()

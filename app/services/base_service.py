@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from app.utils.websocket import manager
+from app.core.interfaces import IWebSocketManager
 from typing import Optional, Dict, Any
 import asyncio
 import time
@@ -9,7 +10,7 @@ class BaseService(ABC):
     """
     Abstract base class for all service classes with performance enhancements.
     """
-    def __init__(self, websocket_manager=None):
+    def __init__(self, websocket_manager: IWebSocketManager = None):
         self.websocket_manager = websocket_manager or manager
         self._cache: Dict[str, Any] = {}
         self._cache_ttl: Dict[str, float] = {}

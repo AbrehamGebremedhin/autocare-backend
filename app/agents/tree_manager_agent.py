@@ -5,10 +5,11 @@ from typing import Any
 from app.services.llm_service import LLMService
 import asyncio
 from app.agents.base_agent import BaseAgent
+from app.core.interfaces import IWebSocketManager
 
 class TreeManagerAgent(BaseAgent):
-    def __init__(self, root: DiagnosisTreeNode, llm_service: LLMService = None, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, root: DiagnosisTreeNode, llm_service: LLMService = None, websocket_manager: IWebSocketManager = None, **kwargs):
+        super().__init__(websocket_manager=websocket_manager, **kwargs)
         self.root = root
         self.llm_service = llm_service or LLMService()
         self.prompt = PromptTemplate(

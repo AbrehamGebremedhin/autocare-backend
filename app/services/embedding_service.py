@@ -4,6 +4,7 @@ from langchain_ollama import OllamaEmbeddings
 from typing import Optional, Any, List
 from app.utils.logger import get_logger_instance, Logger
 from app.utils.redis_cache import redis_cache_decorator
+from app.core.interfaces import IWebSocketManager, ILogger
 import asyncio
 import numpy as np
 
@@ -12,7 +13,7 @@ class EmbeddingService(BaseService):
     Service for generating embeddings using a locally running Ollama model (nomic-embed-text).
     Enhanced with batch processing, caching, and performance optimizations.
     """
-    def __init__(self, model_name: str = "nomic-embed-text", logger: Optional[Logger] = None, websocket_manager=None):
+    def __init__(self, model_name: str = "nomic-embed-text", logger: Optional[ILogger] = None, websocket_manager: IWebSocketManager = None):
         """
         Initialize the EmbeddingService.
         Args:

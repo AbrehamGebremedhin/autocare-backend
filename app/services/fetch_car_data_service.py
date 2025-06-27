@@ -1,5 +1,6 @@
 from app.services.base_service import BaseService
 from app.core.config import get_settings
+from app.core.interfaces import IWebSocketManager, ILogger
 from bs4 import BeautifulSoup
 import httpx
 import asyncio
@@ -10,7 +11,7 @@ class FetchCarDataService(BaseService):
     """
     Enhanced service to download files and scrape car data with connection pooling and performance optimizations.
     """
-    def __init__(self, websocket_manager=None, logger: Optional[Logger] = None):
+    def __init__(self, websocket_manager: IWebSocketManager = None, logger: Optional[ILogger] = None):
         """
         Initialize the FetchCarDataService.
         Args:

@@ -2,10 +2,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.responses import JSONResponse, PlainTextResponse
 from app.api.v1.routes import router as v1_router
 from app.utils.websocket import manager as websocket_manager
-from app.utils.logger import Logger, get_logger_instance
-from app.db.base import SupabaseDBHandler
+from app.utils.logger import Logger as AppLogger, get_logger_instance
+from app.db.base import SupabaseDBHandler as AppDBHandler
 from app.utils.redis_cache import get_redis_cache, RedisCache
 from app.utils.startup_checks import check_milvus_connection, check_supabase_connection, check_redis_connection
+from app.core.interfaces import ILogger, IDBHandler, IWebSocketManager
 from typing import Any
 from pydantic import BaseModel
 from slowapi import Limiter
@@ -13,9 +14,12 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import asyncio
 
+# Concrete implementations (adapters)
+logger: ILogger = get_logger_instance()
+db_handler: IDBHandler = AppDBHandler()
+websocket_manager: IWebSocketManager = websocket_manager
+
 app = FastAPI()
-logger = get_logger_instance()
-db_handler = SupabaseDBHandler()
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
@@ -47,20 +51,44 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return PlainTextResponse("Rate limit exceeded", status_code=429)
 
 # Dependency injection (async only, DRY)
-async def get_logger_dep() -> Logger:
+async def get_logger_dep() -> ILogger:
     return logger
 
-async def get_websocket_manager_dep() -> Any:
+async def get_websocket_manager_dep() -> IWebSocketManager:
     return websocket_manager
 
-async def get_db_handler_dep() -> SupabaseDBHandler:
+async def get_db_handler_dep() -> IDBHandler:
     return db_handler
 
+# SOLID: Startup checks as a single-responsibility class
+class StartupChecker:
+    def __init__(self, logger: ILogger):
+        self.logger = logger
+        self.checks = [
+            (check_milvus_connection, "Milvus"),
+            (check_supabase_connection, "Supabase"),
+            (check_redis_connection, "Redis"),
+        ]
+
+    async def run_all(self):
+        results = await asyncio.gather(
+            *(check() for check, _ in self.checks),
+            return_exceptions=True
+        )
+        for i, (result, (_, name)) in enumerate(zip(results, self.checks)):
+            ok, err = (result if not isinstance(result, Exception) else (False, str(result)))
+            if not ok:
+                await self.logger.error(f"{name} connection failed: {err}")
+                raise RuntimeError(f"{name} connection failed: {err}")
+            await self.logger.info(f"{name} connection successful.")
+        await self.logger.info("WebSocket manager is ready.")
+
+# SOLID: WebSocketHandler depends on abstractions
 class WebSocketHandler:
     """
     Handles WebSocket connections and messaging.
     """
-    def __init__(self, manager: Any, logger: Logger):
+    def __init__(self, manager: IWebSocketManager, logger: ILogger):
         self.manager = manager
         self.logger = logger
 
@@ -81,24 +109,8 @@ class WebSocketHandler:
 
 @app.on_event("startup")
 async def startup_event():
-    # Run all checks in parallel and unpack results cleanly
-    results = await asyncio.gather(
-        check_milvus_connection(),
-        check_supabase_connection(),
-        check_redis_connection(),
-        return_exceptions=True
-    )
-    checks = ["Milvus", "Supabase", "Redis"]
-    for i, (ok, err) in enumerate([
-        (results[0] if not isinstance(results[0], Exception) else (False, str(results[0]))),
-        (results[1] if not isinstance(results[1], Exception) else (False, str(results[1]))),
-        (results[2] if not isinstance(results[2], Exception) else (False, str(results[2])))
-    ]):
-        if not ok:
-            await logger.error(f"{checks[i]} connection failed: {err}")
-            raise RuntimeError(f"{checks[i]} connection failed: {err}")
-        await logger.info(f"{checks[i]} connection successful.")
-    await logger.info("WebSocket manager is ready.")
+    checker = StartupChecker(logger)
+    await checker.run_all()
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -114,8 +126,8 @@ async def read_root(request: Request):
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    websocket_manager: Any = Depends(get_websocket_manager_dep),
-    logger: Logger = Depends(get_logger_dep),
+    websocket_manager: IWebSocketManager = Depends(get_websocket_manager_dep),
+    logger: ILogger = Depends(get_logger_dep),
 ):
     handler = WebSocketHandler(websocket_manager, logger)
     await handler.handle(websocket)

@@ -2,16 +2,17 @@ from typing import Any
 import re
 from app.utils.logger import get_logger_instance
 from app.utils.websocket import manager
+from app.core.interfaces import ILogger, IWebSocketManager
 
 class BaseAgent:
-    def __init__(self, car_crud=None, car_id=None, car_make=None, car_model=None, car_year=None, logger_name=None):
+    def __init__(self, car_crud=None, car_id=None, car_make=None, car_model=None, car_year=None, logger_name=None, websocket_manager: IWebSocketManager = None, logger: ILogger = None):
         self.car_crud = car_crud
         self.car_id = car_id
         self.car_make = car_make
         self.car_model = car_model
         self.car_year = car_year
-        self.logger = get_logger_instance(logger_name or self.__class__.__name__)
-        self.websocket_manager = manager
+        self.logger = logger or get_logger_instance(logger_name or self.__class__.__name__)
+        self.websocket_manager = websocket_manager or manager
 
     async def _ensure_car_info(self):
         """

@@ -1,6 +1,7 @@
 from app.services.base_service import BaseService
 from langchain_ollama import OllamaLLM
 from typing import Optional, Any, Dict, Callable
+from app.core.interfaces import IWebSocketManager, ILogger
 import logging
 from app.utils.redis_cache import redis_cache
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -12,13 +13,13 @@ class LLMService(BaseService):
     Handles retries, prompt templates, Redis caching, and versioning.
     Makes it easy to swap/update LLM backends.
     """
-    def __init__(self, model_name: str = "gemma3:12b", version: str = "v1", websocket_manager=None, **default_params):
+    def __init__(self, model_name: str = "gemma3:12b", version: str = "v1", websocket_manager: IWebSocketManager = None, logger: Optional[ILogger] = None, **default_params):
         super().__init__(websocket_manager=websocket_manager)
         self.model_name = model_name
         self.version = version
         self.default_params = default_params
         self.llm = OllamaLLM(model=model_name, **default_params)
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger or logging.getLogger(__name__)
 
     def set_model(self, model_name: str, version: str = None, **params) -> None:
         self.model_name = model_name

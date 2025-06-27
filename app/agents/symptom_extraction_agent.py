@@ -18,6 +18,7 @@ from app.agents.tree_manager_agent import TreeManagerAgent
 from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
 import json
 from app.agents.base_agent import BaseAgent
+from app.core.interfaces import IWebSocketManager
 
 class SymptomExtractorAgent(BaseAgent):
     """
@@ -88,8 +89,8 @@ class SymptomExtractorAgent(BaseAgent):
         )
 
 
-    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode = None, car_make: str = None, car_model: str = None, car_year: str = None, **kwargs: Any):
-        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="SymptomExtractorAgent")
+    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode = None, car_make: str = None, car_model: str = None, car_year: str = None, websocket_manager: IWebSocketManager = None, **kwargs: Any):
+        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="SymptomExtractorAgent", websocket_manager=websocket_manager)
         self.llm_service = LLMService()
         self.prompt = self.get_prompt_template()
         self.output_parser = JsonOutputParser()

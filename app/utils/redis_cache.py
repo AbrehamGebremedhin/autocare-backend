@@ -5,8 +5,15 @@ from typing import Any, Optional
 from functools import wraps
 import hashlib
 from app.core.config import Settings
+from app.core.interfaces import Protocol
 
-class RedisCache:
+class IRedisCache(Protocol):
+    async def connect(self): ...
+    async def get(self, key: str) -> Optional[Any]: ...
+    async def set(self, key: str, value: Any, expire: int = 300): ...
+    async def delete(self, key: str): ...
+
+class RedisCache(IRedisCache):
     def __init__(self, url: str = None):
         if url is None:
             settings = Settings()

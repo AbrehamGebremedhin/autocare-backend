@@ -1,14 +1,15 @@
 from abc import ABC, abstractmethod
 from app.db.base import SupabaseDBHandler
+from app.core.interfaces import IDBHandler
 from typing import Any, Dict, Optional, List
 
 class BaseCRUD(ABC):
     """
     Abstract CRUD base class for database operations.
     """
-    def __init__(self, table_name: str):
+    def __init__(self, table_name: str, db_handler: IDBHandler = None):
         self.table_name = table_name
-        self.db_handler = SupabaseDBHandler()
+        self.db_handler = db_handler or SupabaseDBHandler()
 
     async def get_db(self):
         return await self.db_handler.client

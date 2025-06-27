@@ -9,7 +9,7 @@ from langchain.schema import Document
 import asyncio
 import numpy as np
 import traceback
-from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
+from app.core.interfaces import IWebSocketManager
 import json
 from app.services.search_engine_service import SearchEngineService
 from app.agents.base_agent import BaseAgent
@@ -18,8 +18,8 @@ class DiagnosisAgent(BaseAgent):
     """
     Agentic RAG for generating a diagnosis using the diagnosis tree, user message, and multi-source context.
     """
-    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode, car_make: str = None, car_model: str = None, car_year: str = None, search_engine_service: Optional[SearchEngineService] = None, **kwargs):
-        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="DiagnosisAgent")
+    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode, car_make: str = None, car_model: str = None, car_year: str = None, search_engine_service: Optional[SearchEngineService] = None, websocket_manager: IWebSocketManager = None, **kwargs):
+        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="DiagnosisAgent", websocket_manager=websocket_manager)
         self.diagnosis_tree = diagnosis_tree
         self.llm_service = LLMService()
         self.embedding_service = EmbeddingService()
@@ -89,7 +89,7 @@ class DiagnosisAgent(BaseAgent):
         )
 
     async def retrieve_context(self, user_message: str) -> Dict[str, Any]:
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Retrieving context"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Retrieving context"}))
         """
         Retrieve owner's manual, knowledge base, and online context relevant to the user message and tree using SearchEngineService.
         Uses the new search engine unified interface.
@@ -126,7 +126,7 @@ class DiagnosisAgent(BaseAgent):
         return str(node_to_dict(self.diagnosis_tree))
 
     async def diagnose(self, user_messages: List[str]) -> dict:
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Starting diagnosis"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Starting diagnosis"}))
         """
         Main entry: generate diagnosis using tree, last 5 user messages, and multi-source context.
         Improved error handling.
@@ -139,7 +139,7 @@ class DiagnosisAgent(BaseAgent):
             last_messages = user_messages[-5:] if isinstance(user_messages, list) else [user_messages]
             user_message_concat = "\n".join(last_messages)
             context = await self.retrieve_context(user_message_concat)
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "Context retrieved"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Context retrieved"}))
             tree_summary = self.summarize_tree()
             prompt_vars = {
                 "user_message": user_message_concat,
@@ -151,7 +151,7 @@ class DiagnosisAgent(BaseAgent):
                 "car_model": self.car_model or "",
                 "car_year": self.car_year or ""
             }
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "Invoking LLM for diagnosis"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Invoking LLM for diagnosis"}))
             llm = self.llm_service.get_llm()
             prompt = self.prompt.format(**prompt_vars)
             response = await llm.ainvoke(prompt) if hasattr(llm, "ainvoke") else llm.invoke(prompt)
@@ -160,7 +160,7 @@ class DiagnosisAgent(BaseAgent):
                 response = self._sanitize_output(response)
             elif isinstance(response, dict):
                 response = json.loads(self._sanitize_output(json.dumps(response)))
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "LLM response received"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "LLM response received"}))
             # --- Symptom extraction trigger logic ---
             need_symptom_extraction = False
             if isinstance(response, str) and ("need more symptom" in response.lower() or "provide more symptoms" in response.lower()):
@@ -232,7 +232,7 @@ class DiagnosisAgent(BaseAgent):
             }
 
     async def generate_diagnosis(self, user_message: str, tree_summary: str, manual_context: str, kb_context: str = "", online_context: str = "") -> str:
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Generating diagnosis"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Generating diagnosis"}))
         """
         Generate diagnosis using the LLM service.
         """

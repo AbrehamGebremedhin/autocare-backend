@@ -2,7 +2,7 @@ from typing import Any, Dict
 from langchain.prompts import PromptTemplate
 from app.services.llm_service import LLMService
 from app.utils.logger import Logger
-from app.utils.websocket import manager  # WebSocket manager for broadcasting stages
+from app.core.interfaces import IWebSocketManager
 from app.agents.base_agent import BaseAgent
 import json
 import re
@@ -12,8 +12,8 @@ class UserInteractionAgent(BaseAgent):
     """
     Agentic RAG that takes the result from the diagnostic agent and creates a user-facing message.
     """
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs, logger_name="UserInteractionAgent")
+    def __init__(self, websocket_manager: IWebSocketManager = None, **kwargs):
+        super().__init__(websocket_manager=websocket_manager, logger_name="UserInteractionAgent", **kwargs)
         self.llm_service = LLMService()
         self.prompt = PromptTemplate.from_template(
 """

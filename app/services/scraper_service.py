@@ -4,17 +4,18 @@ import random
 import asyncio
 from typing import Optional, List, Dict
 from app.utils.logger import get_logger_instance, Logger
+from app.core.interfaces import IWebSocketManager, ILogger
 
 class ScraperService(BaseService):
     """
     Enhanced service to scrape URLs using Crawl4AI with async capabilities, retry logic, and performance optimizations.
     """
-    def __init__(self, headless: bool = True, logger: Optional[Logger] = None, pool_size: int = 3, websocket_manager=None):
+    def __init__(self, headless: bool = True, logger: Optional[ILogger] = None, pool_size: int = 3, websocket_manager: IWebSocketManager = None):
         """
         Initialize the ScraperService with crawl4ai configuration.
         Args:
             headless (bool): Whether to run the browser in headless mode.
-            logger (Logger): Optional logger instance.
+            logger (ILogger): Optional logger instance.
             pool_size (int): Number of concurrent crawlers (used for semaphore).
             websocket_manager: Optional WebSocketManager for notifications.
         """

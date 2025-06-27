@@ -11,6 +11,7 @@ import asyncio
 import re
 from langchain_core.documents import Document
 from collections import OrderedDict
+from app.core.interfaces import IWebSocketManager
 
 class LRUCache:
     def __init__(self, capacity=32):
@@ -33,7 +34,7 @@ class SearchEngineService(BaseService):
     """
     Service for searching car-related documents and knowledge sources using vector search.
     """
-    def __init__(self, websocket_manager=None):
+    def __init__(self, websocket_manager: IWebSocketManager = None):
         super().__init__(websocket_manager=websocket_manager)
         self.embedding_service = EmbeddingService(websocket_manager=websocket_manager)
         self.parser_service = ParserService(websocket_manager=websocket_manager)

@@ -1,7 +1,7 @@
 import asyncio
 from app.db.milvus_handler import MilvusHandler
 from app.db.base import SupabaseDBHandler
-from app.utils.redis_cache import redis_cache
+from app.utils.redis_cache import redis_cache, IRedisCache
 
 async def check_milvus_connection():
     try:
@@ -23,7 +23,7 @@ async def check_supabase_connection():
     except Exception as e:
         return False, str(e)
 
-async def check_redis_connection():
+async def check_redis_connection(redis_cache: IRedisCache = redis_cache):
     try:
         conn = await redis_cache.connect()
         pong = await conn.ping()

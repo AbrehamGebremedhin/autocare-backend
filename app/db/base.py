@@ -1,8 +1,9 @@
 from supabase import create_client, Client
 from app.core.config import get_settings
 from fastapi import Depends
+from app.core.interfaces import IDBHandler
 
-class SupabaseDBHandler:
+class SupabaseDBHandler(IDBHandler):
     _instance = None
     _client = None
 

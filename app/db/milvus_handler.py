@@ -3,8 +3,13 @@
 from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 from typing import List, Dict, Any, Optional
 import os
+from app.core.interfaces import Protocol
 
-class MilvusHandler:
+class IMilvusHandler(Protocol):
+    def insert(self, data: List[Dict[str, Any]]): ...
+    # Add other method signatures as needed
+
+class MilvusHandler(IMilvusHandler):
     def __init__(self, host: str = None, port: str = None, collection_name: str = "Groundknowledge"):
         # Read from environment variables, fallback to defaults
         self.host = host or os.getenv("MILVUS_HOST", "milvus")

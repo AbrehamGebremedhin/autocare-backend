@@ -5,9 +5,9 @@ import asyncio
 from app.db.base import SupabaseDBHandler
 from pydantic import BaseModel
 from typing import get_args, get_origin, List, Dict
-from app.utils.logger import Logger
+from app.utils.logger import get_logger_instance
 
-logger = Logger(__name__)
+logger = get_logger_instance("migration").logger
 
 PY_TO_PG = {
     str: 'text',

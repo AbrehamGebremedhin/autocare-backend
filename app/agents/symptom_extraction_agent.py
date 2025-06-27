@@ -89,18 +89,17 @@ class SymptomExtractorAgent(BaseAgent):
 
 
     def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode = None, car_make: str = None, car_model: str = None, car_year: str = None, **kwargs: Any):
-        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year)
+        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="SymptomExtractorAgent")
         self.llm_service = LLMService()
         self.prompt = self.get_prompt_template()
         self.output_parser = JsonOutputParser()
         self.diagnosis_tree = diagnosis_tree
-        self.logger = Logger("SymptomExtractorAgent")
         self.tree_manager_agent = None
         if self.diagnosis_tree is not None:
             self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree, llm_service=self.llm_service)
 
     async def pre_process(self, task: Any) -> Dict[str, Any]:
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Pre-processing context"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Pre-processing context"}))
         """
         Pre-process the input task by fetching car data and relevant context.
         Args:
@@ -111,7 +110,11 @@ class SymptomExtractorAgent(BaseAgent):
         context: Dict[str, Any] = {}
         timings = {}
         t0 = time.perf_counter()
-        car = await self.car_crud.get_car_by_id(self.car_id)
+        await self._ensure_car_info()
+        if self.car_make and self.car_model and self.car_year:
+            car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year}
+        else:
+            car = None
         timings['car_fetch'] = time.perf_counter() - t0
         if not car:
             await self.logger.error(f"Car with id {self.car_id} not found.")
@@ -178,14 +181,12 @@ class SymptomExtractorAgent(BaseAgent):
 
     async def handle(self, task: Any) -> Any:
         await self._ensure_car_info()
-        # Always fetch latest car info from DB to ensure up-to-date values
-        car = await self.car_crud.get_car_by_id(self.car_id)
-        if car:
-            self.car_make = car.get('make')
-            self.car_model = car.get('model')
-            self.car_year = car.get('year')
+        if self.car_make and self.car_model and self.car_year:
+            car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year}
+        else:
+            car = None
 
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Minimal LLM context"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Minimal LLM context"}))
         """
         Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
         Uses only the LLM with minimal context first. If the result is ambiguous (not good enough),
@@ -231,7 +232,7 @@ class SymptomExtractorAgent(BaseAgent):
 
         # 2. If ambiguous, fetch context (owner manual and online data) and retry using pre_process
         if is_ambiguous(parsed_result):
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Fetching extended context"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Fetching extended context"}))
             t_context = time.perf_counter()
             context = await self.pre_process(task)
             timings['context'] = time.perf_counter() - t_context
@@ -241,11 +242,7 @@ class SymptomExtractorAgent(BaseAgent):
             for idx, text in enumerate(context.get("guide_links_text", [])):
                 documents.append(Document(page_content=text, metadata={"type": "guide_link", "index": idx}))
             # Fetch car info again in case it changed
-            car = await self.car_crud.get_car_by_id(self.car_id)
-            if car:
-                self.car_make = car.get('make')
-                self.car_model = car.get('model')
-                self.car_year = car.get('year')
+            car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year} if self.car_make and self.car_model and self.car_year else None
             prompt_vars_full = {
                 "input_text": user_message_concat,
                 "context": documents,
@@ -269,7 +266,7 @@ class SymptomExtractorAgent(BaseAgent):
             if 'timings' in context:
                 timings.update({f'context_{k}': v for k, v in context['timings'].items()})
 
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Completed"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Completed"}))
         await self.logger.info(f"handle timings: {timings}")
 
         # If still ambiguous after all attempts, ask user for more info
@@ -298,7 +295,7 @@ class SymptomExtractorAgent(BaseAgent):
 
     async def process(self, task: Any) -> Dict[str, Any]:
         await self._ensure_car_info()
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Processing request"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Processing request"}))
         """
         Accepts the incoming request, handles the extraction, and returns the processed result.
         Args:
@@ -310,11 +307,11 @@ class SymptomExtractorAgent(BaseAgent):
             result = await self.handle(task)
             success = True
         except Exception as e:
-            await manager.broadcast(json.dumps({"type": "stage", "stage": f"Symptom extraction - Error - {type(e).__name__}"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": f"Symptom extraction - Error - {type(e).__name__}"}))
             result = None
             success = False
             await self.logger.error(f"Error in process: {e}")
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Symptom extraction - Done"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Done"}))
         return {
             "result": result,
             "tree": self.diagnosis_tree,

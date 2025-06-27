@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+import asyncio
 
 app = FastAPI()
 logger = get_logger_instance()
@@ -45,23 +46,15 @@ async def generic_exception_handler(request: Request, exc: Exception):
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return PlainTextResponse("Rate limit exceeded", status_code=429)
 
-# Dependency for logger
+# Dependency injection (async only, DRY)
 async def get_logger_dep() -> Logger:
     return logger
 
-# Dependency for websocket manager
 async def get_websocket_manager_dep() -> Any:
     return websocket_manager
 
-# Dependency for db handler
 async def get_db_handler_dep() -> SupabaseDBHandler:
     return db_handler
-
-def get_logger() -> Logger:
-    return logger
-
-def get_websocket_manager() -> Any:
-    return websocket_manager
 
 class WebSocketHandler:
     """
@@ -88,33 +81,23 @@ class WebSocketHandler:
 
 @app.on_event("startup")
 async def startup_event():
-    # Run all checks in parallel
-    import asyncio
+    # Run all checks in parallel and unpack results cleanly
     results = await asyncio.gather(
         check_milvus_connection(),
         check_supabase_connection(),
         check_redis_connection(),
         return_exceptions=True
     )
-    milvus_ok, milvus_err = results[0] if not isinstance(results[0], Exception) else (False, str(results[0]))
-    supabase_ok, supabase_err = results[1] if not isinstance(results[1], Exception) else (False, str(results[1]))
-    redis_ok, redis_err = results[2] if not isinstance(results[2], Exception) else (False, str(results[2]))
-
-    if not milvus_ok:
-        await logger.error(f"Milvus connection failed: {milvus_err}")
-        raise RuntimeError(f"Milvus connection failed: {milvus_err}")
-    await logger.info("Milvus connection successful.")
-
-    if not supabase_ok:
-        await logger.error(f"Supabase connection failed: {supabase_err}")
-        raise RuntimeError(f"Supabase connection failed: {supabase_err}")
-    await logger.info("Supabase connection successful.")
-
-    if not redis_ok:
-        await logger.error(f"Redis connection failed: {redis_err}")
-        raise RuntimeError(f"Redis connection failed: {redis_err}")
-    await logger.info("Redis connection successful.")
-
+    checks = ["Milvus", "Supabase", "Redis"]
+    for i, (ok, err) in enumerate([
+        (results[0] if not isinstance(results[0], Exception) else (False, str(results[0]))),
+        (results[1] if not isinstance(results[1], Exception) else (False, str(results[1]))),
+        (results[2] if not isinstance(results[2], Exception) else (False, str(results[2])))
+    ]):
+        if not ok:
+            await logger.error(f"{checks[i]} connection failed: {err}")
+            raise RuntimeError(f"{checks[i]} connection failed: {err}")
+        await logger.info(f"{checks[i]} connection successful.")
     await logger.info("WebSocket manager is ready.")
 
 @app.on_event("shutdown")

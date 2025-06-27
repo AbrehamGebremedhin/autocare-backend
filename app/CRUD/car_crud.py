@@ -1,7 +1,7 @@
 from app.db.crud import BaseCRUD
 from app.services.fetch_car_data_service import FetchCarDataService
 from app.db.bucket_operations import SupabaseBucketManager
-from app.utils.logger import Logger
+from app.utils.logger import get_logger_instance, Logger
 from app.services.parser_service import ParserService
 from app.services.embedding_service import EmbeddingService
 from app.utils.redis_cache import get_redis_cache, RedisCache
@@ -16,7 +16,7 @@ class CarCRUD(BaseCRUD):
         self.fetch_car_data_service = FetchCarDataService()
         # Always use SupabaseBucketManager, never override from parent
         self.bucket_manager = SupabaseBucketManager()
-        self.logger = Logger()
+        self.logger = get_logger_instance("car_crud")
         self.parser_service = ParserService()
         self.embedding_service = EmbeddingService()
 

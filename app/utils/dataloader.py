@@ -7,7 +7,7 @@ import time
 from app.services.parser_service import ParserService
 from app.services.embedding_service import EmbeddingService
 from app.db.milvus_handler import MilvusHandler
-from app.utils.logger import Logger
+from app.utils.logger import get_logger_instance
 
 CAR_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'car_data')
 TABLE_NAME = "Groundknowledge"
@@ -104,7 +104,7 @@ async def process_pdf(pdf_path, parser_service, embedding_service, milvus_handle
         await logger.error(f"Error processing {pdf_path}: {repr(e)}\n{tb}")
 
 async def main():
-    logger = Logger("dataloader")
+    logger = get_logger_instance("dataloader")
     parser_service = ParserService()
     embedding_service = EmbeddingService()
     milvus_handler = MilvusHandler(collection_name=TABLE_NAME)

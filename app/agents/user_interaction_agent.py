@@ -13,9 +13,8 @@ class UserInteractionAgent(BaseAgent):
     Agentic RAG that takes the result from the diagnostic agent and creates a user-facing message.
     """
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, logger_name="UserInteractionAgent")
         self.llm_service = LLMService()
-        self.logger = Logger("UserInteractionAgent")
         self.prompt = PromptTemplate.from_template(
 """
 You are an expert automotive assistant. Your goal is to help the user diagnose and, if possible, resolve the issue themselves. Provide clear, step-by-step instructions for safe DIY troubleshooting and minor repairs. Only recommend seeing a mechanic if the issue is dangerous, requires specialized tools, or cannot be safely addressed by a typical car owner.
@@ -70,8 +69,8 @@ Output:
                     return text[start:i+1]
         return None
 
-    async def generate_user_message(self, user_message: str, diagnosis_result: Any) -> Dict[str, Any]:
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Generating user-facing message"}))
+    async def generate_user_message(self, user_message: str, diagnosis_result: Any) -> dict:
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Generating user-facing message"}))
         await self.logger.info(f"UserInteractionAgent - Generating user-facing message for: {user_message}")
         try:
             # Extract step_by_step_guide if present
@@ -118,14 +117,14 @@ Output:
                     "followup_questions": [],
                     "confidence": "Low: Could not parse response."
                 }
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "User message generated"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "User message generated"}))
             return {
                 **parsed_response,
                 "success": True,
                 "step_by_step_guide": step_by_step_guide
             }
         except Exception as e:
-            await manager.broadcast(json.dumps({"type": "stage", "stage": f"Error in user message generation - {type(e).__name__}"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": f"Error in user message generation - {type(e).__name__}"}))
             await self.logger.error(f"UserInteractionAgent error: {e}\nTraceback: {traceback.format_exc()}")
             return {
                 "diagnosis": None,

@@ -15,7 +15,7 @@ class OrchestratorAgent(BaseAgent):
         self.user_interaction_agent = UserInteractionAgent()
 
     async def route_request(self, user_request: str, user_id: str = None, context: dict = None):
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - Routing request"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Routing request"}))
         """
         Main entry point: decides which agent should handle the user request.
         """
@@ -26,16 +26,16 @@ class OrchestratorAgent(BaseAgent):
             diagnosis_tree = context.get('diagnosis_tree')  # Always use the session's current tree
         # If this is the initial message, extract symptoms
         if context and context.get('is_initial_message'):
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - Initial message, extracting symptoms"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Initial message, extracting symptoms"}))
             return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
         # For all other messages, use the current session's diagnosis_tree
         if car_id is not None:
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - Running diagnostic agent"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Running diagnostic agent"}))
             diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=diagnosis_tree)
             diagnosis_result = await diagnostic_agent.process(user_request)
             # If diagnostic agent requests symptom extraction, process with symptom extractor, then re-run diagnosis
             if isinstance(diagnosis_result, dict) and diagnosis_result.get('need_symptom_extraction'):
-                await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - Need symptom extraction after diagnosis"}))
+                await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Need symptom extraction after diagnosis"}))
                 # Run symptom extraction
                 symptom_result = await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
                 # Get updated tree if available
@@ -46,18 +46,18 @@ class OrchestratorAgent(BaseAgent):
                     updated_tree = diagnosis_tree
                 # Re-run diagnosis with updated tree
                 diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=updated_tree)
-                await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - Re-running diagnosis with updated tree"}))
+                await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Re-running diagnosis with updated tree"}))
                 diagnosis_result = await diagnostic_agent.process(user_request)
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - Running user interaction agent"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Running user interaction agent"}))
             user_response = await self.user_interaction_agent.process(user_request, diagnosis_result)
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - Done"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Done"}))
             return {
                 'response': user_response.get('user_message'),
                 'success': user_response.get('success', True),
                 'step_by_step_guide': diagnosis_result.get('step_by_step_guide')
             }
         else:
-            await manager.broadcast(json.dumps({"type": "stage", "stage": "Orchestrator - No car_id provided, cannot diagnose"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - No car_id provided, cannot diagnose"}))
             user_response = await self.user_interaction_agent.process(user_request, 'car_id is required for diagnosis.')
             return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
 

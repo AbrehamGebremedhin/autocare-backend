@@ -3,7 +3,7 @@ from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
 import random
 import asyncio
 from typing import Optional, List, Dict
-from app.utils.logger import Logger
+from app.utils.logger import get_logger_instance, Logger
 
 class ScraperService(BaseService):
     """
@@ -20,7 +20,7 @@ class ScraperService(BaseService):
         """
         super().__init__(websocket_manager=websocket_manager)
         self.headless = headless
-        self.logger = logger or Logger("ScraperService")
+        self.logger = logger or get_logger_instance("ScraperService")
         self.pool_size = pool_size
         self._max_retries = 3
         self._retry_delay = 1.0

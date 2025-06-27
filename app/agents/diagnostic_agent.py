@@ -1,5 +1,4 @@
 from typing import Any, Dict, List, Optional
-from app.utils.logger import Logger
 from app.services.llm_service import LLMService
 from app.services.embedding_service import EmbeddingService
 from app.services.scraper_service import ScraperService
@@ -20,9 +19,8 @@ class DiagnosisAgent(BaseAgent):
     Agentic RAG for generating a diagnosis using the diagnosis tree, user message, and multi-source context.
     """
     def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode, car_make: str = None, car_model: str = None, car_year: str = None, search_engine_service: Optional[SearchEngineService] = None, **kwargs):
-        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year)
+        super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="DiagnosisAgent")
         self.diagnosis_tree = diagnosis_tree
-        self.logger = Logger("DiagnosisAgent")
         self.llm_service = LLMService()
         self.embedding_service = EmbeddingService()
         self.scraper_service = ScraperService(headless=True)
@@ -97,11 +95,13 @@ class DiagnosisAgent(BaseAgent):
         Uses the new search engine unified interface.
         """
         await self._ensure_car_info()
-        # Always fetch latest car info from DB to ensure up-to-date values
-        car = await self.car_crud.get_car_by_id(self.car_id)
         # Use the vector field from the car table as the owner's manual context
         manual_context = ""
-        if car and car.get("vector"):
+        if self.car_make and self.car_model and self.car_year:
+            car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year}
+        else:
+            car = None
+        if car and hasattr(car, 'get') and car.get("vector"):
             manual_context = str(car["vector"])
         # Use the new search engine to get all relevant context as LangChain Documents (except manual)
         docs = await self.search_engine_service.search(self.car_id, user_message, top_k=10)
@@ -134,12 +134,6 @@ class DiagnosisAgent(BaseAgent):
             user_messages (List[str]): List of user messages (use only the last 5).
         """
         await self._ensure_car_info()
-        # Always fetch latest car info from DB to ensure up-to-date values
-        car = await self.car_crud.get_car_by_id(self.car_id)
-        if car:
-            self.car_make = car.get('make')
-            self.car_model = car.get('model')
-            self.car_year = car.get('year')
         try:
             # Use only the last 5 messages
             last_messages = user_messages[-5:] if isinstance(user_messages, list) else [user_messages]
@@ -186,7 +180,7 @@ class DiagnosisAgent(BaseAgent):
             }
         except Exception as e:
             tb = traceback.format_exc()
-            await manager.broadcast(json.dumps({"type": "stage", "stage": f"Error occurred - {type(e).__name__}"}))
+            await self.broadcast_stage(json.dumps({"type": "stage", "stage": f"Error occurred - {type(e).__name__}"}))
             await self.logger.error(f"DiagnosisAgent error: {e}\n{tb}")
             user_friendly = "An internal error occurred while generating the diagnosis. Please try again later."
             return {
@@ -198,21 +192,20 @@ class DiagnosisAgent(BaseAgent):
             }
 
     async def process(self, user_messages: List[str]) -> Dict[str, Any]:
-        await manager.broadcast(json.dumps({"type": "stage", "stage": "Processing diagnosis"}))
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Processing diagnosis"}))
         """
         Accepts the user messages (list), runs the diagnosis, and returns the result and success status.
         Uses only the last 5 user messages.
         """
         await self._ensure_car_info()
-        car = await self.car_crud.get_car_by_id(self.car_id)
-        if car:
-            self.car_make = car.get('make')
-            self.car_model = car.get('model')
-            self.car_year = car.get('year')
         try:
             # Temporary debug: check if vector data is incoming
-            if car:
-                vector_data = car.get('vector')
+            if self.car_make and self.car_model and self.car_year:
+                car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year}
+            else:
+                car = None
+            if car and hasattr(car, 'get'):
+                vector_data = car.get('vector') if hasattr(car, 'get') else None
                 if vector_data:
                     await self.logger.info(f"[DEBUG] Vector data present for car {self.car_id}: type={type(vector_data)}, length={len(vector_data) if hasattr(vector_data, '__len__') else 'N/A'}")
                 else:
@@ -244,11 +237,6 @@ class DiagnosisAgent(BaseAgent):
         Generate diagnosis using the LLM service.
         """
         await self._ensure_car_info()
-        car = await self.car_crud.get_car_by_id(self.car_id)
-        if car:
-            self.car_make = car.get('make')
-            self.car_model = car.get('model')
-            self.car_year = car.get('year')
         prompt = self.prompt.format(user_message=user_message, tree_summary=tree_summary, manual_context=manual_context, kb_context=kb_context, online_context=online_context)
         response = await self.llm_service.generate_response(prompt)
         response = self._sanitize_output(response)

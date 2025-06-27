@@ -4,7 +4,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 import asyncio
 from typing import Optional
-from app.utils.logger import Logger
+from app.utils.logger import get_logger_instance, Logger
 
 class QueryBuilderService(BaseService):
     """
@@ -18,7 +18,7 @@ class QueryBuilderService(BaseService):
             websocket_manager: Optional WebSocketManager for notifications.
         """
         super().__init__(websocket_manager=websocket_manager)
-        self.logger = logger or Logger("QueryBuilderService")
+        self.logger = logger or get_logger_instance("QueryBuilderService")
         settings = get_settings()
         self.gemini_api_key = settings.GEMINI_KEY
         self.gemini_model = settings.GEMINI_MODEL_1

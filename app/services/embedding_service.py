@@ -2,7 +2,7 @@ from app.services.base_service import BaseService
 from app.core.config import get_settings
 from langchain_ollama import OllamaEmbeddings
 from typing import Optional, Any, List
-from app.utils.logger import Logger
+from app.utils.logger import get_logger_instance, Logger
 from app.utils.redis_cache import redis_cache_decorator
 import asyncio
 import numpy as np
@@ -21,7 +21,7 @@ class EmbeddingService(BaseService):
             websocket_manager: Optional WebSocketManager for notifications.
         """
         super().__init__(websocket_manager=websocket_manager)
-        self.logger = logger or Logger("EmbeddingService")
+        self.logger = logger or get_logger_instance("EmbeddingService")
         self.model_name = model_name
         self.embedder = OllamaEmbeddings(model=model_name)
         self._batch_size = 50  # Optimal batch size for API calls

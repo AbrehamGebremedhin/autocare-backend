@@ -1,16 +1,16 @@
 import logging
 import asyncio
 import functools
-import typing
+from typing import Optional
 
 class Logger:
-    _instance = None
+    _instances = {}
     _lock = asyncio.Lock()
 
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+    def __new__(cls, name: str = "autocare"):
+        if name not in cls._instances:
+            cls._instances[name] = super().__new__(cls)
+        return cls._instances[name]
 
     def __init__(self, name: str = "autocare"):
         if hasattr(self, '_initialized') and self._initialized:
@@ -58,9 +58,5 @@ class Logger:
                 functools.partial(self.logger.debug, message, extra={"log_type": "debug"})
             )
 
-    @classmethod
-    async def get_logger(cls):
-        return cls._instance.logger
-
-def get_logger_instance() -> 'Logger':
-    return Logger()
+def get_logger_instance(name: Optional[str] = None) -> Logger:
+    return Logger(name or "autocare")

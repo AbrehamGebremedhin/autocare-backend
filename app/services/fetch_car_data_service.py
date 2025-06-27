@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 import httpx
 import asyncio
 from typing import Optional, List, Dict
-from app.utils.logger import Logger
+from app.utils.logger import get_logger_instance, Logger
 
 class FetchCarDataService(BaseService):
     """
@@ -18,7 +18,7 @@ class FetchCarDataService(BaseService):
             logger: Optional logger instance.
         """
         super().__init__(websocket_manager=websocket_manager)
-        self.logger = logger or Logger("FetchCarDataService")
+        self.logger = logger or get_logger_instance("FetchCarDataService")
         settings = get_settings()
         self.BASE_URL = settings.BASE_URL
         self._client_pool = None

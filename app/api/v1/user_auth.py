@@ -6,22 +6,12 @@ from app.core.config import get_settings
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
 from app.CRUD.user_crud import UserCRUD
-import logging
+from app.utils.logger import get_logger_instance
 
 router = APIRouter()
 user_crud = UserCRUD()
 
-# Set up logger for this module
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Optional: Add a console handler if not already configured globally
-if not logger.hasHandlers():
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+logger = get_logger_instance("user_auth").logger
 
 class UserCreate(BaseModel):
     email: EmailStr

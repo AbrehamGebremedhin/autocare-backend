@@ -4,7 +4,7 @@ import os
 import io
 import re
 import asyncio
-from app.utils.logger import Logger
+from app.utils.logger import get_logger_instance, Logger
 
 try:
     from pypdf import PdfReader
@@ -27,7 +27,7 @@ class ParserService(BaseService):
             ImportError: If no PDF reader is available.
         """
         super().__init__(websocket_manager=websocket_manager)
-        self.logger = logger or Logger("ParserService")
+        self.logger = logger or get_logger_instance("ParserService")
         self.pdf_reader = pdf_reader or PdfReader
         if self.pdf_reader is None:
             raise ImportError("pypdf is required for PDF parsing. Please install with 'pip install pypdf'.")

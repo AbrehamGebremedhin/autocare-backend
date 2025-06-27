@@ -18,9 +18,8 @@ import logging
 import signal
 import sys
 from datetime import datetime
-from app.utils.logger import get_logger_instance
 
-# Set up logging
+# Set up logging for this script only (no log_type required)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -28,7 +27,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = get_logger_instance("websocket-tester").logger
+logger = logging.getLogger("websocket-tester")
 
 # Flag to control the main loop
 running = True

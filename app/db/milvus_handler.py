@@ -104,6 +104,9 @@ class MilvusHandler(IMilvusHandler):
                 record["content_chunk"] = record["content_chunk"][:8192] if len(record["content_chunk"]) > 8192 else record["content_chunk"]
 
     def search(self, query_vector: List[float], top_k: int = 5, filter_expr: Optional[str] = None):
+        # Ensure the collection is loaded before searching
+        if not self.collection.has_loaded():
+            self.collection.load()
         search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
         results = self.collection.search(
             data=[query_vector],

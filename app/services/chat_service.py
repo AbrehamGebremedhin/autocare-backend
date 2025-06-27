@@ -22,8 +22,16 @@ class ChatService(BaseService):
         self._response_times = deque(maxlen=100)  # Track last 100 response times
         self.logger = logging.getLogger(__name__)
 
-    def _get_conversation(self, user_id: str) -> Dict:
+    def _get_conversation(self, user_id: str, session: Optional[Dict] = None) -> Dict:
         now = datetime.now()
+        if session:
+            # Use the provided session (from DB)
+            if 'last_updated' not in session:
+                session['last_updated'] = now
+            if len(session['messages']) > self._max_conversation_length:
+                session['messages'] = session['messages'][-self._max_conversation_length:]
+            self._conversation_cache[user_id] = session
+            return session
         if user_id in self._conversation_cache:
             conversation = self._conversation_cache[user_id]
             last_updated = conversation.get('last_updated', now)
@@ -47,13 +55,14 @@ class ChatService(BaseService):
         return conversation
 
     @BaseService.cache_result(ttl_seconds=300)
-    async def send_message(self, user_id: str, message: str, context: Optional[Dict] = None) -> Dict[str, Any]:
+    async def send_message(self, user_id: str, message: str, context: Optional[Dict] = None, session: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Send a message from a user and return the response from the OrchestratorAgent.
         Args:
             user_id: Unique identifier for the user
             message: User's message
             context: Optional context information (car details, symptoms, etc.)
+            session: Optional loaded session from DB
         Returns:
             Dict containing response, confidence, sources, and metadata
         """
@@ -62,8 +71,15 @@ class ChatService(BaseService):
         try:
             await self._rate_limit()  # Apply rate limiting
             
-            conversation = self._get_conversation(user_id)
+            conversation = self._get_conversation(user_id, session=session)
             is_initial = len(conversation['messages']) == 0
+            # Ensure conversation['context'] is a dict
+            if not isinstance(conversation.get('context'), dict):
+                import json as _json
+                try:
+                    conversation['context'] = _json.loads(conversation['context'])
+                except Exception:
+                    conversation['context'] = {}
             # Add user message to conversation
             conversation['messages'].append({
                 'role': 'user',
@@ -89,7 +105,10 @@ class ChatService(BaseService):
                 'confidence': response_data.get('confidence', 0.0),
                 'sources': response_data.get('sources', [])
             })
-            conversation['last_updated'] = datetime.now()
+            # Convert datetime fields to isoformat before saving
+            conversation['last_updated'] = datetime.now().isoformat()
+            if isinstance(conversation.get('created_at'), datetime):
+                conversation['created_at'] = conversation['created_at'].isoformat()
             self._conversation_cache[user_id] = conversation
             response_time = (datetime.now() - start_time).total_seconds()
             self._response_times.append(response_time)
@@ -98,7 +117,7 @@ class ChatService(BaseService):
             return response_data
             
         except Exception as e:
-            await self.logger.error(f"Error in send_message for user {user_id}: {e}")
+            self.logger.error(f"Error in send_message for user {user_id}: {e}")
             return {
                 'response': "I'm experiencing some technical difficulties. Please try again in a moment.",
                 'confidence': 0.0,

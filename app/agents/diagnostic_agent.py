@@ -95,13 +95,10 @@ class DiagnosisAgent(BaseAgent):
         Uses the new search engine unified interface.
         """
         await self._ensure_car_info()
-        # Use the vector field from the car table as the owner's manual context
+        # Fetch the full car object from the DB to get the vector
+        car = await self.car_crud.get_car_by_id(self.car_id) if self.car_crud and self.car_id else None
         manual_context = ""
-        if self.car_make and self.car_model and self.car_year:
-            car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year}
-        else:
-            car = None
-        if car and hasattr(car, 'get') and car.get("vector"):
+        if car and car.get("vector"):
             manual_context = str(car["vector"])
         # Use the new search engine to get all relevant context as LangChain Documents (except manual)
         docs = await self.search_engine_service.search(self.car_id, user_message, top_k=10)
@@ -199,13 +196,10 @@ class DiagnosisAgent(BaseAgent):
         """
         await self._ensure_car_info()
         try:
-            # Temporary debug: check if vector data is incoming
-            if self.car_make and self.car_model and self.car_year:
-                car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year}
-            else:
-                car = None
-            if car and hasattr(car, 'get'):
-                vector_data = car.get('vector') if hasattr(car, 'get') else None
+            # Fetch the full car object from the DB to check for vector data
+            car = await self.car_crud.get_car_by_id(self.car_id) if self.car_crud and self.car_id else None
+            if car:
+                vector_data = car.get('vector')
                 if vector_data:
                     await self.logger.info(f"[DEBUG] Vector data present for car {self.car_id}: type={type(vector_data)}, length={len(vector_data) if hasattr(vector_data, '__len__') else 'N/A'}")
                 else:

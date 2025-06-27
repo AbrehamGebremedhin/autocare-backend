@@ -101,33 +101,20 @@ async def send_message_in_session(session_id: str, request: ChatSessionMessageRe
         if not sessions:
             raise HTTPException(status_code=404, detail="Session not found")
         session = sessions[0]
-        messages = session.get('messages', [])
-        user_message = {
-            'role': 'user',
-            'content': request.message,
-            'timestamp': datetime.now().isoformat(),
-            'context': request.context,
-            'is_initial': len(messages) == 0
-        }
-        messages.append(user_message)
-        # Use chat_service to generate assistant response
+        # Use chat_service to generate assistant response and update conversation
         response = await chat_service.send_message(
             user_id=session.get('user_id'),
             message=request.message,
-            context=request.context
+            context=request.context,
+            session=session
         )
-        assistant_message = {
-            'role': 'assistant',
-            'content': response.get('response', ''),
-            'timestamp': datetime.now().isoformat(),
-            'confidence': response.get('confidence', 1.0),
-            'sources': response.get('sources', [])
-        }
-        messages.append(assistant_message)
-        session['messages'] = messages
-        session['updated_at'] = datetime.now().isoformat()
-        await chat_session_crud.update({'id': session_id}, {'messages': messages, 'updated_at': session['updated_at']})
-        return {"messages": messages}
+        # Update the session in the DB with the new messages and updated_at
+        updated_session = chat_service._get_conversation(session.get('user_id'), session=session)
+        await chat_session_crud.update({'id': session_id}, {
+            'messages': updated_session['messages'],
+            'updated_at': updated_session.get('last_updated', datetime.now().isoformat())
+        })
+        return {"messages": updated_session['messages']}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

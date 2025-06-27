@@ -33,6 +33,17 @@ class MilvusHandler(IMilvusHandler):
             schema = CollectionSchema(fields, description="Ground knowledge chunks")
             Collection(self.collection_name, schema)
         self.collection = Collection(self.collection_name)
+        # Ensure index exists on the vector field
+        if "vector" in [f.name for f in self.collection.schema.fields]:
+            if not self.collection.indexes:
+                self.collection.create_index(
+                    field_name="vector",
+                    index_params={
+                        "index_type": "IVF_FLAT",  # or "HNSW", "IVF_SQ8", etc.
+                        "metric_type": "L2",
+                        "params": {"nlist": 128}
+                    }
+                )
 
     def insert(self, data: List[Dict[str, Any]]):
         # Data should be a list of dicts with keys matching the schema
@@ -105,8 +116,7 @@ class MilvusHandler(IMilvusHandler):
 
     def search(self, query_vector: List[float], top_k: int = 5, filter_expr: Optional[str] = None):
         # Ensure the collection is loaded before searching
-        if not self.collection.has_loaded():
-            self.collection.load()
+        self.collection.load()
         search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
         results = self.collection.search(
             data=[query_vector],

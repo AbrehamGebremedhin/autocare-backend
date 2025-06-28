@@ -24,12 +24,27 @@ class ChatService(BaseService):
 
     def _get_conversation(self, user_id: str, session: Optional[Dict] = None) -> Dict:
         now = datetime.now()
+        from app.schemas.Chat_Session import ChatSession
         if session:
             # Use the provided session (from DB)
             if 'last_updated' not in session:
                 session['last_updated'] = now
             if len(session['messages']) > self._max_conversation_length:
                 session['messages'] = session['messages'][-self._max_conversation_length:]
+            # --- Ensure diagnosis_tree is a DiagnosisTreeNode ---
+            ctx = session.get('context', {})
+            if ctx and isinstance(ctx, dict):
+                tree = ctx.get('diagnosis_tree')
+                if isinstance(tree, (dict, list)):
+                    # If it's a list, take the first element (legacy), else use as dict
+                    tree_data = tree[0] if isinstance(tree, list) and tree else tree
+                    try:
+                        ctx['diagnosis_tree'] = ChatSession.deserialize_diagnosis_tree(tree_data)
+                    except Exception:
+                        # fallback: create new root
+                        from app.utils.diagnosis_tree import DiagnosisTreeNode
+                        ctx['diagnosis_tree'] = DiagnosisTreeNode(issue_name='root', likelyhood=1.0)
+                session['context'] = ctx
             self._conversation_cache[user_id] = session
             return session
         if user_id in self._conversation_cache:

@@ -108,6 +108,9 @@ class DiagnosisAgent(BaseAgent):
             - Owner's manual/context: {manual_context}
             - Knowledge base: {kb_context}
             - Online context: {online_context}
+
+            Ensure the JSON is valid and well-formed. Do NOT include any additional text, markdown, or explanations outside the JSON object.
+            Return ONLY a valid JSON object as specified above. Do NOT include any extra text, markdown, explanations outside the JSON or surrounded by backticks.
             """
         )
 
@@ -183,6 +186,14 @@ class DiagnosisAgent(BaseAgent):
             # Sanitize output
             if isinstance(response, str):
                 response = self._sanitize_output(response)
+                # Remove markdown/code block wrappers if present
+                response = response.strip()
+                if response.startswith('```json'):
+                    response = response[len('```json'):].strip()
+                if response.startswith('```'):
+                    response = response[len('```'):].strip()
+                if response.endswith('```'):
+                    response = response[:-3].strip()
             elif isinstance(response, dict):
                 response = json.loads(self._sanitize_output(json.dumps(response)))
             await self.broadcast_stage(json.dumps({"type": "stage", "stage": "LLM response received"}))

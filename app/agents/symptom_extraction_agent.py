@@ -87,6 +87,8 @@ class SymptomExtractorAgent(BaseAgent):
             """
 
             Carefully analyze the symptoms and context, leveraging your expertise, and list all plausible issues as described above.
+            Ensure the JSON is valid and well-formed. Do NOT include any additional text, markdown, or explanations outside the JSON object.
+            Return ONLY a valid JSON object as specified above. Do NOT include any extra text, markdown, explanations outside the JSON or surrounded by backticks.
             """
         )
 

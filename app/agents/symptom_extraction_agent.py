@@ -20,6 +20,7 @@ import json
 from app.agents.base_agent import BaseAgent
 from app.core.interfaces import IWebSocketManager
 from app.utils.message_types import MessageSource
+from app.utils.monitoring import monitor_and_handle
 
 class SymptomExtractorAgent(BaseAgent):
     """
@@ -295,6 +296,7 @@ class SymptomExtractorAgent(BaseAgent):
 
         return [self._sanitize_output(json.dumps(issue)) if isinstance(issue, dict) else self._sanitize_output(str(issue)) for issue in parsed_result] if isinstance(parsed_result, list) else parsed_result
 
+    @monitor_and_handle("SymptomExtractorAgent")
     async def process(self, user_message: str, websocket=None, session_id=None):
         try:
             if websocket:

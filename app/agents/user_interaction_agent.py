@@ -5,6 +5,7 @@ from app.utils.logger import Logger
 from app.core.interfaces import IWebSocketManager
 from app.agents.base_agent import BaseAgent
 from app.utils.message_types import MessageSource
+from app.utils.monitoring import monitor_and_handle
 import json
 import re
 import traceback
@@ -149,6 +150,7 @@ Output:
         """
         return self.llm_service.get_llm()
 
+    @monitor_and_handle("UserInteractionAgent")
     async def process(self, user_message: str, diagnosis_result: Any, websocket=None, session_id=None) -> dict:
         """
         Accepts the user message and diagnosis result, generates a user-facing message, and returns the result with success status and error handling.

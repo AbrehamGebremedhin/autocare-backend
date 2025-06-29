@@ -6,6 +6,7 @@ from app.agents.user_interaction_agent import UserInteractionAgent
 from app.core.interfaces import IWebSocketManager
 from app.agents.base_agent import BaseAgent
 from app.utils.message_types import MessageSource
+from app.utils.monitoring import monitor_and_handle
 
 class OrchestratorAgent(BaseAgent):
     def __init__(self, websocket_manager: IWebSocketManager = None, **kwargs):
@@ -107,6 +108,7 @@ class OrchestratorAgent(BaseAgent):
             return self.agents[from_agent].provide_info(info_type)
         return f'Dummy info for {info_type}'
 
+    @monitor_and_handle("OrchestratorAgent")
     async def process(self, user_request: str, user_id: str = None, context: dict = None) -> dict:
         """
         Standard entry point for all orchestrator interactions.

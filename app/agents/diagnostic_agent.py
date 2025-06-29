@@ -14,6 +14,7 @@ import json
 from app.services.search_engine_service import SearchEngineService
 from app.agents.base_agent import BaseAgent
 from app.utils.message_types import MessageSource
+from app.utils.monitoring import monitor_and_handle
 
 class DiagnosisAgent(BaseAgent):
     """
@@ -189,6 +190,7 @@ class DiagnosisAgent(BaseAgent):
                 "user_message": user_friendly
             }
 
+    @monitor_and_handle("DiagnosisAgent")
     async def process(self, user_message: str, websocket=None, session_id=None):
         await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Processing diagnosis"}))
         """

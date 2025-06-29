@@ -48,16 +48,17 @@ class DiagnosisAgent(BaseAgent):
             - Online context: Recent or rare issues from the web and car-specific guides
 
             INSTRUCTIONS:
-            1. Carefully analyze the last 5 user messages (provided below, most recent last) and the diagnosis tree to identify likely root causes.
-            2. Attribute supporting evidence to each context source (owner's manual, knowledge base, online, tree).
+            1. Carefully analyze the last 5 user messages (provided below, most recent last) and the diagnosis tree to identify all plausible root causes, including common, rare, and edge-case scenarios.
+            2. For each scenario, attribute supporting evidence to each context source (owner's manual, knowledge base, online, tree), and cite specific knowledge base entries or document snippets when possible.
             3. Clearly explain your reasoning, referencing specific evidence from each source.
             4. If information is missing or ambiguous, explicitly state what additional details are needed and ask the user for this information in a clear, friendly way.
             5. Provide a detailed, step-by-step troubleshooting and repair guide for the user, including safety precautions, required tools, and what to check at each step.
-            6. If multiple possible causes exist, explain how to distinguish between them and what to check first.
+            6. If multiple possible causes exist, provide a comparative table or list of possible diagnoses, with distinguishing features, pros/cons, and what to check to rule each in or out.
             7. If the problem is urgent or could cause further damage, highlight this and advise the user accordingly.
             8. Always include actionable next steps, and if the user should consult a professional mechanic, say so.
             9. Consider the conversation context and progression from the last 5 user messages.
             10. If the diagnosis tree exists, mention other possible causes from the tree that may be relevant as "Other Possible Causes" in your output, especially if they have not been ruled out by the current symptoms.
+            11. Always include a section for "Uncommon but Important Scenarios" if any rare or edge-case issues are plausible.
 
             OUTPUT (JSON):
             {{
@@ -70,12 +71,32 @@ class DiagnosisAgent(BaseAgent):
                 ],
                 "recommendations": ["Step 1...", "Step 2...", "..."],
                 "step_by_step_guide": ["Step 1: ...", "Step 2: ...", "..."],
+                "alternative_diagnoses": [
+                    {{
+                        "name": "...",
+                        "likelihood": "High/Medium/Low",
+                        "distinguishing_features": ["..."],
+                        "evidence_from_knowledge_base": ["..."],
+                        "actionable_steps": ["..."],
+                        "notes": "..."
+                    }}
+                ],
+                "uncommon_but_important_scenarios": [
+                    {{
+                        "name": "...",
+                        "description": "...",
+                        "likelihood": "Low/Medium",
+                        "evidence": "..."
+                    }}
+                ],
                 "missing_information": ["..."],
                 "next_steps": ["..."],
                 "other_possible_causes": ["..."],
                 "confidence": "High/Medium/Low"
             }}
             - The 'step_by_step_guide' field must be a clear, numbered, step-by-step guide for the user to follow to fix the problem, separate from general recommendations.
+            - The 'alternative_diagnoses' field must include all plausible alternative scenarios, with distinguishing features and evidence.
+            - The 'uncommon_but_important_scenarios' field must include rare or edge-case issues that should not be overlooked.
             - If the problem cannot be fixed by the user, explain why and what to do instead.
 
             INPUT:
@@ -102,9 +123,14 @@ class DiagnosisAgent(BaseAgent):
         manual_context = ""
         if car and car.get("vector"):
             manual_context = str(car["vector"])
-        # Use the new search engine to get all relevant context as LangChain Documents (except manual)
-        docs = await self.search_engine_service.search(self.car_id, user_message, top_k=10)
-        kb_context = "\n".join([d.page_content for d in docs if d.metadata.get("source") == "ground_knowledge"])
+        # Use the new search engine to get a broader set of relevant context as LangChain Documents (except manual)
+        # Fetch more documents for richer context (e.g., top_k=40)
+        docs = await self.search_engine_service.search(self.car_id, user_message, top_k=40)
+        # Cluster or summarize the most relevant knowledge base entries to avoid token overload
+        kb_docs = [d.page_content for d in docs if d.metadata.get("source") == "ground_knowledge"]
+        # Summarize or select the most diverse 10-15 entries
+        kb_context = "\n---\n".join(kb_docs[:15])
+        # Optionally, you could implement clustering here for more diversity
         online_context = [d.page_content for d in docs if d.metadata.get("source") == "car_guide_link"]
         return {
             "manual_context": manual_context,
@@ -164,15 +190,40 @@ class DiagnosisAgent(BaseAgent):
             need_symptom_extraction = False
             if isinstance(response, str) and ("need more symptom" in response.lower() or "provide more symptoms" in response.lower()):
                 need_symptom_extraction = True
-            # Try to parse the response as JSON and extract the step_by_step_guide
+            # Try to parse the response as JSON and extract the step_by_step_guide and other fields
+            parsed_response = None
             step_by_step_guide = None
             try:
-                parsed = json.loads(response) if isinstance(response, str) else response
-                step_by_step_guide = parsed.get("step_by_step_guide")
-            except Exception:
-                step_by_step_guide = None
+                parsed_response = json.loads(response) if isinstance(response, str) else response
+                step_by_step_guide = parsed_response.get("step_by_step_guide")
+            except Exception as e:
+                await self.logger.error(f"[diagnosis] Failed to parse LLM response as JSON: {e}\nRaw response: {response}")
+                parsed_response = None
+            # Ensure all expected fields are present for downstream use
+            default_response = {
+                "diagnosis_summary": "Could not parse response.",
+                "supporting_evidence": [],
+                "recommendations": [],
+                "step_by_step_guide": [],
+                "alternative_diagnoses": [],
+                "uncommon_but_important_scenarios": [],
+                "missing_information": [],
+                "next_steps": [],
+                "other_possible_causes": [],
+                "confidence": "Low: Could not parse response."
+            }
+            if not parsed_response or not isinstance(parsed_response, dict):
+                parsed_response = default_response
+                step_by_step_guide = []
+            else:
+                # Fill in any missing fields with defaults
+                for k, v in default_response.items():
+                    if k not in parsed_response:
+                        parsed_response[k] = v
+                # step_by_step_guide for legacy downstream use
+                step_by_step_guide = parsed_response.get("step_by_step_guide", [])
             return {
-                "diagnosis": response,
+                "diagnosis": parsed_response,
                 "success": True,
                 "need_symptom_extraction": need_symptom_extraction,
                 "step_by_step_guide": step_by_step_guide

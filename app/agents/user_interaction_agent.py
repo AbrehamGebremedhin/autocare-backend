@@ -87,9 +87,55 @@ Output:
                     step_by_step_guide = parsed.get('step_by_step_guide')
                 except Exception:
                     step_by_step_guide = None
+            # --- NEW: Unpack and merge rich diagnosis fields ---
+            merged_diagnosis = ""
+            merged_actionable_steps = []
+            merged_needed_tools = []
+            merged_safety_note = ""
+            merged_followup_questions = []
+            merged_confidence = ""
+            if isinstance(diagnosis_result, dict):
+                # Main summary
+                main_diag = diagnosis_result.get("diagnosis_summary") or diagnosis_result.get("diagnosis") or ""
+                merged_diagnosis += main_diag
+                # Add alternative diagnoses
+                alt_diags = diagnosis_result.get("alternative_diagnoses", [])
+                if alt_diags:
+                    merged_diagnosis += "\n\nOther possible scenarios to consider:"
+                    for alt in alt_diags:
+                        name = alt.get("name", "Unknown")
+                        likelihood = alt.get("likelihood", "")
+                        features = ", ".join(alt.get("distinguishing_features", []))
+                        notes = alt.get("notes", "")
+                        merged_diagnosis += f"\n- {name} (Likelihood: {likelihood})"
+                        if features:
+                            merged_diagnosis += f". Distinguishing features: {features}."
+                        if notes:
+                            merged_diagnosis += f" {notes}"
+                        # Optionally add actionable steps for each alt
+                        alt_steps = alt.get("actionable_steps", [])
+                        if alt_steps:
+                            merged_actionable_steps.append(f"If {name}: " + "; ".join(alt_steps))
+                # Add uncommon but important scenarios
+                uncommon = diagnosis_result.get("uncommon_but_important_scenarios", [])
+                if uncommon:
+                    merged_diagnosis += "\n\nUncommon but important scenarios:"
+                    for u in uncommon:
+                        merged_diagnosis += f"\n- {u.get('name', 'Unknown')}: {u.get('description', '')} (Likelihood: {u.get('likelihood', '')})"
+                # Add main actionable steps
+                main_steps = diagnosis_result.get("step_by_step_guide") or diagnosis_result.get("actionable_steps") or []
+                if isinstance(main_steps, list):
+                    merged_actionable_steps = main_steps + merged_actionable_steps
+                # Merge other fields
+                merged_needed_tools = diagnosis_result.get("needed_tools", [])
+                merged_safety_note = diagnosis_result.get("safety_note", "")
+                merged_followup_questions = diagnosis_result.get("followup_questions", [])
+                merged_confidence = diagnosis_result.get("confidence", diagnosis_result.get("confidence", ""))
+            else:
+                merged_diagnosis = str(diagnosis_result)
             prompt_vars = {
                 "user_message": user_message,
-                "diagnosis_result": str(diagnosis_result)
+                "diagnosis_result": merged_diagnosis
             }
             prompt = self.prompt.format(**prompt_vars)
             # Use the LLMService for direct prompt calls
@@ -114,12 +160,12 @@ Output:
             if not parsed_response:
                 await self.logger.error(f"[error] - Using fallback response. Raw LLM response: {raw_response}")
                 parsed_response = {
-                    "diagnosis": "Could not parse response.",
-                    "actionable_steps": [],
-                    "needed_tools": [],
-                    "safety_note": "",
-                    "followup_questions": [],
-                    "confidence": "Low: Could not parse response."
+                    "diagnosis": merged_diagnosis or "Could not parse response.",
+                    "actionable_steps": merged_actionable_steps,
+                    "needed_tools": merged_needed_tools,
+                    "safety_note": merged_safety_note,
+                    "followup_questions": merged_followup_questions,
+                    "confidence": merged_confidence or "Low: Could not parse response."
                 }
             # Serialize datetimes before sending to websocket or returning
             parsed_response = serialize_datetimes(parsed_response)

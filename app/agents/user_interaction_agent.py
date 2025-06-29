@@ -20,38 +20,71 @@ class UserInteractionAgent(BaseAgent):
         self.llm_service = LLMService()
         self.prompt = PromptTemplate.from_template(
             """
-            You are an expert automotive assistant. Your goal is to help the user diagnose and, if possible, resolve the issue themselves. Provide clear, step-by-step instructions for safe DIY troubleshooting and minor repairs. Only recommend seeing a mechanic if the issue is dangerous, requires specialized tools, or cannot be safely addressed by a typical car owner.
+            You are an expert automotive assistant specializing in empowering DIY car repair enthusiasts. Your primary mission is to transform complex automotive diagnostic information into clear, actionable guidance that enables users to successfully diagnose and repair their vehicles themselves.
 
-            Always include safety warnings before any potentially hazardous steps. Use simple language and explain technical terms. Do NOT recommend visiting a mechanic unless absolutely necessary. Try to empower the user to understand and address the problem first.
+            Your users are motivated DIY enthusiasts who want to:
+            - Understand what's wrong with their car at a technical level
+            - Learn how to fix it themselves with detailed guidance
+            - Save money by doing their own repairs
+            - Build their automotive knowledge and skills
+            - Only seek professional help when absolutely necessary
+
+            CORE APPROACH:
+            - Assume the user wants to do the repair themselves
+            - Provide detailed technical explanations that build confidence
+            - Break down complex procedures into manageable steps
+            - Include professional tips and tricks
+            - Explain the reasoning behind each step
+            - Provide multiple approaches when possible
+            - Focus on practical, hands-on guidance
 
             IMPORTANT:
-            - Do NOT ask the user for car make, model, or year; you already have this information.
-            - Do NOT tell the user to refer to the owner's manual; use the information from the manual directly in your response.
+            - Do NOT ask for car make, model, or year; this information is already available
+            - Do NOT refer users to manuals; extract and use information directly
+            - Present complex diagnostic data in an organized, accessible format
+            - Prioritize practical DIY solutions over professional recommendations
+            - Build user confidence through detailed explanations
 
-            Given the user's message and the diagnostic result, generate a clear, empathetic, and actionable message for the user.
+            Transform the comprehensive diagnostic result into practical DIY guidance that empowers the user to successfully complete their own repairs.
 
-            Return your response as a JSON object with the following fields:
-            - diagnosis: A detailed diagnosis of the main issue of the problem.
-            - actionable_steps: A list of clear, step-by-step next actions or recommendations for the user, including what to check or do first.
-            - needed_tools: A list of tools or materials the user will need to perform the steps (if any).
-            - safety_note: Important safety warnings or notes relevant to the steps.
-            - followup_questions: A list of follow-up questions for the user if more information is needed, or an empty list if not.
-            - confidence: Your confidence in the diagnosis (e.g., High, Medium, Low) and a brief explanation.
+            Return your response as a JSON object with the following DIY-focused fields:
+            - technical_diagnosis: Detailed technical explanation of the problem for DIY understanding
+            - primary_repair_procedure: The most likely repair approach with complete details
+            - diy_difficulty_assessment: Honest assessment of difficulty level and what's involved
+            - required_tools_and_parts: Comprehensive tool and parts list with specifications
+            - step_by_step_repair_guide: Detailed repair instructions with professional insights
+            - alternative_approaches: Other ways to tackle the problem if the primary approach doesn't work
+            - diagnostic_verification: How to confirm the diagnosis before starting repairs
+            - cost_and_time_analysis: Realistic cost and time expectations vs professional service
+            - safety_protocols: Specific safety measures for this repair (not generic warnings)
+            - troubleshooting_guide: What to do when things don't go as expected
+            - quality_verification: How to test and verify the repair was successful
+            - learning_insights: Technical knowledge gained from this repair that applies elsewhere
+            - upgrade_opportunities: Performance or reliability improvements possible during repair
+            - maintenance_prevention: How to prevent this problem from recurring
 
             Input:
             - User message: {user_message}
             - Diagnosis result: {diagnosis_result}
 
             Output:
-            {{"diagnosis": "...",
-            "actionable_steps": ["...", "..."],
-            "needed_tools": ["...", "..."],
-            "safety_note": "...",
-            "followup_questions": ["...", "..."],
-            "confidence": "..."
+            {{"technical_diagnosis": "...",
+            "primary_repair_procedure": {{"name": "...", "difficulty": "...", "overview": "..."}},
+            "diy_difficulty_assessment": {{"level": "...", "challenges": ["..."], "success_factors": ["..."]}},
+            "required_tools_and_parts": {{"tools": [{{...}}], "parts": [{{...}}], "consumables": [{{...}}]}},
+            "step_by_step_repair_guide": [{{...}}],
+            "alternative_approaches": [{{...}}],
+            "diagnostic_verification": [{{...}}],
+            "cost_and_time_analysis": {{"diy_cost": "...", "shop_cost": "...", "time_required": "...", "savings": "..."}},
+            "safety_protocols": [{{...}}],
+            "troubleshooting_guide": [{{...}}],
+            "quality_verification": [{{...}}],
+            "learning_insights": [{{...}}],
+            "upgrade_opportunities": [{{...}}],
+            "maintenance_prevention": [{{...}}]
             }}
-            Ensure the JSON is valid and well-formed. Do NOT include any additional text, markdown, or explanations outside the JSON object.
-            Return ONLY a valid JSON object as specified above. Do NOT include any extra text, markdown, explanations outside the JSON or surrounded by backticks.
+            Ensure the JSON is valid and well-formed. Focus on empowering DIY repair success.
+            Return ONLY a valid JSON object. Do NOT include any extra text, markdown, explanations outside the JSON or surrounded by backticks.
             """
         )
 
@@ -89,50 +122,103 @@ class UserInteractionAgent(BaseAgent):
                     step_by_step_guide = parsed.get('step_by_step_guide')
                 except Exception:
                     step_by_step_guide = None
-            # --- NEW: Unpack and merge rich diagnosis fields ---
+            # --- Enhanced DIY-Focused: Unpack and merge rich diagnosis fields ---
             merged_diagnosis = ""
-            merged_actionable_steps = []
-            merged_needed_tools = []
-            merged_safety_note = ""
-            merged_followup_questions = []
-            merged_confidence = ""
+            merged_repair_procedures = []
+            merged_tools_and_parts = {"tools": [], "parts": [], "consumables": []}
+            merged_diagnostic_procedures = []
+            merged_system_education = {}
+            merged_cost_breakdown = {}
+            merged_safety_protocols = []
+            merged_quality_assurance = []
+            merged_maintenance_schedule = {}
+            
             if isinstance(diagnosis_result, dict):
-                # Main summary
+                # Main technical summary
                 main_diag = diagnosis_result.get("diagnosis_summary") or diagnosis_result.get("diagnosis") or ""
                 merged_diagnosis += main_diag
-                # Add alternative diagnoses
+                
+                # Add system education for better understanding
+                system_edu = diagnosis_result.get("system_education", {})
+                if system_edu:
+                    merged_diagnosis += "\n\n**🔧 TECHNICAL BACKGROUND:**"
+                    if system_edu.get("affected_system"):
+                        merged_diagnosis += f"\n**System:** {system_edu.get('affected_system')}"
+                    if system_edu.get("how_it_works"):
+                        merged_diagnosis += f"\n**How it works:** {system_edu.get('how_it_works')}"
+                    if system_edu.get("common_failure_modes"):
+                        merged_diagnosis += f"\n**Common failures:** {', '.join(system_edu.get('common_failure_modes', []))}"
+                    merged_system_education = system_edu
+                
+                # Add supporting evidence with DIY insights
+                evidence = diagnosis_result.get("supporting_evidence", [])
+                if evidence:
+                    merged_diagnosis += "\n\n**📚 SUPPORTING EVIDENCE:**"
+                    for ev in evidence:
+                        source = ev.get("source", "Unknown")
+                        evidence_text = ev.get("evidence", "")
+                        diy_tips = ev.get("diy_tips", "")
+                        specific_details = ev.get("specific_details", "")
+                        
+                        if evidence_text:
+                            merged_diagnosis += f"\n• **{source.title()}:** {evidence_text}"
+                            if specific_details:
+                                merged_diagnosis += f" | Details: {specific_details}"
+                            if diy_tips:
+                                merged_diagnosis += f" | DIY Tip: {diy_tips}"
+                
+                # Process DIY repair procedures
+                repair_procedures = diagnosis_result.get("diy_repair_procedures", [])
+                for proc in repair_procedures:
+                    proc_info = {
+                        "name": proc.get("procedure_name", "Repair Procedure"),
+                        "difficulty": proc.get("difficulty_level", "Unknown"),
+                        "time": proc.get("estimated_time", "Unknown"),
+                        "steps": proc.get("detailed_steps", []),
+                        "troubleshooting": proc.get("troubleshooting", [])
+                    }
+                    merged_repair_procedures.append(proc_info)
+                    
+                    # Merge tools and parts
+                    if proc.get("required_tools"):
+                        merged_tools_and_parts["tools"].extend(proc.get("required_tools", []))
+                    if proc.get("required_parts"):
+                        merged_tools_and_parts["parts"].extend(proc.get("required_parts", []))
+                
+                # Process alternative diagnoses with repair focus
                 alt_diags = diagnosis_result.get("alternative_diagnoses", [])
                 if alt_diags:
-                    merged_diagnosis += "\n\nOther possible scenarios to consider:"
+                    merged_diagnosis += "\n\n**🔍 ALTERNATIVE DIAGNOSES:**"
                     for alt in alt_diags:
                         name = alt.get("name", "Unknown")
                         likelihood = alt.get("likelihood", "")
-                        features = ", ".join(alt.get("distinguishing_features", []))
-                        notes = alt.get("notes", "")
-                        merged_diagnosis += f"\n- {name} (Likelihood: {likelihood})"
-                        if features:
-                            merged_diagnosis += f". Distinguishing features: {features}."
-                        if notes:
-                            merged_diagnosis += f" {notes}"
-                        # Optionally add actionable steps for each alt
-                        alt_steps = alt.get("actionable_steps", [])
-                        if alt_steps:
-                            merged_actionable_steps.append(f"If {name}: " + "; ".join(alt_steps))
-                # Add uncommon but important scenarios
-                uncommon = diagnosis_result.get("uncommon_but_important_scenarios", [])
-                if uncommon:
-                    merged_diagnosis += "\n\nUncommon but important scenarios:"
-                    for u in uncommon:
-                        merged_diagnosis += f"\n- {u.get('name', 'Unknown')}: {u.get('description', '')} (Likelihood: {u.get('likelihood', '')})"
-                # Add main actionable steps
-                main_steps = diagnosis_result.get("step_by_step_guide") or diagnosis_result.get("actionable_steps") or []
-                if isinstance(main_steps, list):
-                    merged_actionable_steps = main_steps + merged_actionable_steps
-                # Merge other fields
-                merged_needed_tools = diagnosis_result.get("needed_tools", [])
-                merged_safety_note = diagnosis_result.get("safety_note", "")
-                merged_followup_questions = diagnosis_result.get("followup_questions", [])
-                merged_confidence = diagnosis_result.get("confidence", diagnosis_result.get("confidence", ""))
+                        repair_approach = alt.get("repair_approach", "")
+                        difficulty = alt.get("difficulty_assessment", "")
+                        cost = alt.get("cost_estimate", "")
+                        
+                        merged_diagnosis += f"\n\n• **{name}** (Likelihood: {likelihood})"
+                        if repair_approach:
+                            merged_diagnosis += f"\n  Repair approach: {repair_approach}"
+                        if difficulty:
+                            merged_diagnosis += f"\n  DIY difficulty: {difficulty}"
+                        if cost:
+                            merged_diagnosis += f"\n  Estimated cost: {cost}"
+                
+                # Merge diagnostic procedures
+                merged_diagnostic_procedures = diagnosis_result.get("diagnostic_procedures", [])
+                
+                # Merge cost breakdown
+                merged_cost_breakdown = diagnosis_result.get("cost_breakdown", {})
+                
+                # Merge safety protocols
+                merged_safety_protocols = diagnosis_result.get("safety_protocols", [])
+                
+                # Merge quality assurance
+                merged_quality_assurance = diagnosis_result.get("quality_assurance", [])
+                
+                # Merge maintenance schedule
+                merged_maintenance_schedule = diagnosis_result.get("maintenance_schedule", {})
+                
             else:
                 merged_diagnosis = str(diagnosis_result)
             prompt_vars = {
@@ -162,12 +248,20 @@ class UserInteractionAgent(BaseAgent):
             if not parsed_response:
                 await self.logger.error(f"[error] - Using fallback response. Raw LLM response: {raw_response}")
                 parsed_response = {
-                    "diagnosis": merged_diagnosis or "Could not parse response.",
-                    "actionable_steps": merged_actionable_steps,
-                    "needed_tools": merged_needed_tools,
-                    "safety_note": merged_safety_note,
-                    "followup_questions": merged_followup_questions,
-                    "confidence": merged_confidence or "Low: Could not parse response."
+                    "technical_diagnosis": merged_diagnosis or "Could not parse response.",
+                    "primary_repair_procedure": {"name": "Unknown", "difficulty": "Unknown", "overview": "Unable to determine repair procedure"},
+                    "diy_difficulty_assessment": {"level": "Unknown", "challenges": [], "success_factors": []},
+                    "required_tools_and_parts": merged_tools_and_parts,
+                    "step_by_step_repair_guide": [],
+                    "alternative_approaches": [],
+                    "diagnostic_verification": merged_diagnostic_procedures,
+                    "cost_and_time_analysis": merged_cost_breakdown,
+                    "safety_protocols": merged_safety_protocols,
+                    "troubleshooting_guide": [],
+                    "quality_verification": merged_quality_assurance,
+                    "learning_insights": [],
+                    "upgrade_opportunities": [],
+                    "maintenance_prevention": merged_maintenance_schedule
                 }
             # Serialize datetimes before sending to websocket or returning
             parsed_response = serialize_datetimes(parsed_response)
@@ -226,14 +320,22 @@ class UserInteractionAgent(BaseAgent):
         for attempt in range(max_retries + 1):
             try:
                 result = await self.generate_user_message(user_message, diagnosis_result, websocket=websocket, session_id=session_id)
-                # Compose a user-facing message from all fields
+                # Compose a comprehensive DIY-focused user message from all fields
                 user_message_text = {
-                    "diagnosis": result.get("diagnosis", ""),
-                    "actionable_steps": result.get("actionable_steps", []),
-                    "needed_tools": result.get("needed_tools", []),
-                    "safety_note": result.get("safety_note", ""),
-                    "followup_questions": result.get("followup_questions", []),
-                    "confidence": result.get("confidence", "")
+                    "technical_diagnosis": result.get("technical_diagnosis", ""),
+                    "primary_repair_procedure": result.get("primary_repair_procedure", {}),
+                    "diy_difficulty_assessment": result.get("diy_difficulty_assessment", {}),
+                    "required_tools_and_parts": result.get("required_tools_and_parts", {}),
+                    "step_by_step_repair_guide": result.get("step_by_step_repair_guide", []),
+                    "alternative_approaches": result.get("alternative_approaches", []),
+                    "diagnostic_verification": result.get("diagnostic_verification", []),
+                    "cost_and_time_analysis": result.get("cost_and_time_analysis", {}),
+                    "safety_protocols": result.get("safety_protocols", []),
+                    "troubleshooting_guide": result.get("troubleshooting_guide", []),
+                    "quality_verification": result.get("quality_verification", []),
+                    "learning_insights": result.get("learning_insights", []),
+                    "upgrade_opportunities": result.get("upgrade_opportunities", []),
+                    "maintenance_prevention": result.get("maintenance_prevention", {})
                 }
                 return {
                     "success": result.get("success", False),

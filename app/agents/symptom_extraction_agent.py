@@ -98,7 +98,14 @@ class SymptomExtractorAgent(BaseAgent):
         self.llm_service = LLMService()
         self.prompt = self.get_prompt_template()
         self.output_parser = JsonOutputParser()
-        self.diagnosis_tree = diagnosis_tree
+        
+        # Initialize diagnosis tree if not provided
+        if diagnosis_tree is None:
+            from app.utils.diagnosis_tree_factory import get_diagnosis_tree
+            self.diagnosis_tree = get_diagnosis_tree(issue_name='root', likelyhood=1.0)
+        else:
+            self.diagnosis_tree = diagnosis_tree
+            
         self.tree_manager_agent = None
         if self.diagnosis_tree is not None:
             self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree, llm_service=self.llm_service)
@@ -296,7 +303,13 @@ class SymptomExtractorAgent(BaseAgent):
             self.tree_manager_agent.prune_tree()
             self.tree_manager_agent.sort_tree()
 
-        return [self._sanitize_output(json.dumps(issue)) if isinstance(issue, dict) else self._sanitize_output(str(issue)) for issue in parsed_result] if isinstance(parsed_result, list) else parsed_result
+        processed_result = [self._sanitize_output(json.dumps(issue)) if isinstance(issue, dict) else self._sanitize_output(str(issue)) for issue in parsed_result] if isinstance(parsed_result, list) else parsed_result
+        
+        # Return both the result and the updated diagnosis tree
+        return {
+            'symptoms': processed_result,
+            'diagnosis_tree': self.diagnosis_tree if self.diagnosis_tree is not None else None
+        }
 
     @monitor_and_handle("SymptomExtractorAgent")
     async def process(self, user_message: str, websocket=None, session_id=None):
@@ -306,7 +319,16 @@ class SymptomExtractorAgent(BaseAgent):
             result = await self.handle(user_message)
             if websocket:
                 await self.send_ws_result(websocket, "Symptom extraction complete", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id, details=result)
-            return {"result": result}
+            
+            # Return both symptoms and updated diagnosis tree
+            if isinstance(result, dict) and 'symptoms' in result:
+                return {
+                    "result": result['symptoms'],
+                    "diagnosis_tree": result['diagnosis_tree']
+                }
+            else:
+                # Fallback for backwards compatibility
+                return {"result": result, "diagnosis_tree": self.diagnosis_tree}
         except Exception as e:
             if websocket:
                 await self.send_ws_error(websocket, "Error during symptom extraction", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id, details={"error": str(e)})

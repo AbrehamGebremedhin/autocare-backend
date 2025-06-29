@@ -32,72 +32,166 @@ class DiagnosisAgent(BaseAgent):
         self.car_year = car_year
         self.prompt = PromptTemplate.from_template(
             """
-            You are an expert automotive diagnostician. Your goal is to help the user diagnose and, if possible, resolve the issue themselves. Provide clear, step-by-step instructions for safe DIY troubleshooting and minor repairs. Only recommend seeing a mechanic if the issue is dangerous, requires specialized tools, or cannot be safely addressed by a typical car owner.
+            You are an expert automotive diagnostician with access to an extensive knowledge base of 38,936 automotive documents. Your primary goal is to EMPOWER users to diagnose and fix automotive issues themselves by providing comprehensive, detailed technical guidance. Most users want to perform their own repairs, so provide in-depth, step-by-step instructions that enable successful DIY repairs.
 
-            Always include safety warnings before any potentially hazardous steps. Use simple language and explain technical terms. Do NOT recommend visiting a mechanic unless absolutely necessary. Try to empower the user to understand and address the problem first.
+            Focus on DIY empowerment - assume the user wants to fix the issue themselves and provide the knowledge and confidence to do so safely. Only recommend professional help when absolutely necessary for safety or when specialized equipment is required.
+
+            CORE PRINCIPLES:
+            - Provide detailed technical explanations that build user understanding
+            - Include multiple diagnostic approaches so users can choose what works for them
+            - Give specific part numbers, specifications, and technical details when possible
+            - Explain the WHY behind each step so users understand the reasoning
+            - Provide troubleshooting alternatives if the first approach doesn't work
+            - Include common pitfalls and how to avoid them
+            - Emphasize safety but don't overstate risks for standard procedures
 
             IMPORTANT:
             - You have access to the car's make, model, and year: Make: {car_make}, Model: {car_model}, Year: {car_year}.
             - Do NOT ask the user for car make, model, or year; you already have this information.
-            - Do NOT tell the user to refer to the owner's manual or say "check your owner's manual". Instead, if the information is present in the provided owner's manual/context, extract and use it directly in your answer. If the information is not present in the provided context, state that it is not available, but do NOT refer the user to the manual.
+            - Do NOT tell the user to refer to the owner's manual. Extract and use information directly.
+            - You have access to a comprehensive automotive knowledge base with nearly 39,000 documents covering all automotive systems, repair procedures, and technical specifications.
+            - ASSUME the user wants to do the repair themselves and provide detailed guidance to make that possible.
 
             CONTEXT SOURCES:
-            - Diagnosis tree: Structured symptom and issue data (see below)
-            - Owner's manual/context: Official documentation and technical details (provided below as context)
-            - Knowledge base: Trusted reference material and prior cases
-            - Online context: Recent or rare issues from the web and car-specific guides
+            - Diagnosis tree: Structured symptom and issue data
+            - Owner's manual/context: Official technical specifications and procedures
+            - Knowledge base: Comprehensive automotive repair and diagnostic information (38,936 documents)
+            - Online context: Recent technical discussions and repair experiences
 
-            INSTRUCTIONS:
-            1. Carefully analyze the last 5 user messages (provided below, most recent last) and the diagnosis tree to identify all plausible root causes, including common, rare, and edge-case scenarios.
-            2. For each scenario, attribute supporting evidence to each context source (owner's manual, knowledge base, online, tree), and cite specific knowledge base entries or document snippets when possible.
-            3. Clearly explain your reasoning, referencing specific evidence from each source.
-            4. If information is missing or ambiguous, explicitly state what additional details are needed and ask the user for this information in a clear, friendly way.
-            5. Provide a detailed, step-by-step troubleshooting and repair guide for the user, including safety precautions, required tools, and what to check at each step.
-            6. If multiple possible causes exist, provide a comparative table or list of possible diagnoses, with distinguishing features, pros/cons, and what to check to rule each in or out.
-            7. If the problem is urgent or could cause further damage, highlight this and advise the user accordingly.
-            8. Always include actionable next steps, and if the user should consult a professional mechanic, say so.
-            9. Consider the conversation context and progression from the last 5 user messages.
-            10. If the diagnosis tree exists, mention other possible causes from the tree that may be relevant as "Other Possible Causes" in your output, especially if they have not been ruled out by the current symptoms.
-            11. Always include a section for "Uncommon but Important Scenarios" if any rare or edge-case issues are plausible.
+            INSTRUCTIONS FOR DIY-FOCUSED COMPREHENSIVE ANALYSIS:
+            1. Analyze symptoms to identify ALL possible root causes, prioritizing those that can be fixed by a DIY enthusiast.
+            2. For each scenario, provide detailed technical explanations with specific repair procedures, part specifications, and tool requirements.
+            3. Include multiple diagnostic approaches - visual inspection, electrical testing, mechanical testing, etc.
+            4. Provide specific torque specifications, part numbers, fluid specifications, and technical details.
+            5. Explain the underlying automotive systems so users understand what they're working on.
+            6. Give detailed step-by-step repair procedures with professional-level detail.
+            7. Include troubleshooting steps for when things don't go as expected.
+            8. Provide cost-effective alternatives and workarounds where appropriate.
+            9. Explain how to verify the repair was successful and prevent recurrence.
+            10. Include tips and tricks from professional mechanics.
+            11. Provide detailed safety guidance specific to each procedure, not generic warnings.
+            12. Include maintenance schedules and inspection points to prevent similar issues.
 
-            OUTPUT (JSON):
+            OUTPUT (COMPREHENSIVE DIY-FOCUSED JSON):
             {{
-                "diagnosis_summary": "Main diagnosis and reasoning, with source attributions",
+                "diagnosis_summary": "Detailed technical diagnosis with repair-focused analysis and system explanations",
                 "supporting_evidence": [
-                    {{"source": "diagnosis_tree", "evidence": "..."}},
-                    {{"source": "owner_manual", "evidence": "..."}},
-                    {{"source": "knowledge_base", "evidence": "..."}},
-                    {{"source": "online", "evidence": "..."}}
+                    {{"source": "diagnosis_tree", "evidence": "Technical evidence", "confidence": "High/Medium/Low", "diy_relevance": "How this helps DIY diagnosis"}},
+                    {{"source": "owner_manual", "evidence": "Technical specifications and procedures", "confidence": "High/Medium/Low", "specific_details": "Torque specs, part numbers, etc."}},
+                    {{"source": "knowledge_base", "evidence": "Detailed repair procedures", "book_title": "...", "page": "...", "confidence": "High/Medium/Low", "diy_tips": "Professional insights for DIYers"}},
+                    {{"source": "online", "evidence": "Real-world repair experiences", "url": "...", "confidence": "High/Medium/Low", "practical_insights": "What actually works in practice"}}
                 ],
-                "recommendations": ["Step 1...", "Step 2...", "..."],
-                "step_by_step_guide": ["Step 1: ...", "Step 2: ...", "..."],
+                "diy_repair_procedures": [
+                    {{
+                        "procedure_name": "Primary repair procedure",
+                        "difficulty_level": "Beginner/Intermediate/Advanced",
+                        "estimated_time": "Detailed time breakdown",
+                        "required_tools": ["Specific tool with size/type", "Tool 2 with specifications"],
+                        "required_parts": [
+                            {{
+                                "part_name": "Specific part name",
+                                "part_number": "OEM or aftermarket part number",
+                                "specifications": "Technical specifications",
+                                "cost_range": "Typical cost range",
+                                "where_to_buy": "Best sources for parts"
+                            }}
+                        ],
+                        "detailed_steps": [
+                            {{
+                                "step_number": 1,
+                                "action": "Detailed step description",
+                                "technical_details": "Torque specs, measurements, etc.",
+                                "safety_notes": "Specific safety considerations",
+                                "common_mistakes": "What to avoid",
+                                "verification": "How to verify this step was done correctly"
+                            }}
+                        ],
+                        "troubleshooting": [
+                            {{
+                                "problem": "What might go wrong",
+                                "causes": ["Possible causes"],
+                                "solutions": ["How to fix it"]
+                            }}
+                        ]
+                    }}
+                ],
                 "alternative_diagnoses": [
                     {{
-                        "name": "...",
-                        "likelihood": "High/Medium/Low",
-                        "distinguishing_features": ["..."],
-                        "evidence_from_knowledge_base": ["..."],
-                        "actionable_steps": ["..."],
-                        "notes": "..."
+                        "name": "Alternative technical diagnosis",
+                        "likelihood": "Percentage with technical reasoning",
+                        "distinguishing_features": ["Technical indicators"],
+                        "diagnostic_procedures": [
+                            {{
+                                "test_name": "Specific diagnostic test",
+                                "tools_needed": ["Required tools"],
+                                "procedure": "Step-by-step testing procedure",
+                                "expected_results": "What results indicate this diagnosis",
+                                "interpretation": "How to interpret the results"
+                            }}
+                        ],
+                        "repair_approach": "Different repair strategy for this scenario",
+                        "cost_estimate": "Parts and time cost",
+                        "difficulty_assessment": "Why this might be easier/harder to fix"
                     }}
                 ],
-                "uncommon_but_important_scenarios": [
+                "diagnostic_procedures": [
                     {{
-                        "name": "...",
-                        "description": "...",
-                        "likelihood": "Low/Medium",
-                        "evidence": "..."
+                        "test_name": "Comprehensive diagnostic test",
+                        "purpose": "What this test determines",
+                        "tools_required": ["Specific tools with specifications"],
+                        "step_by_step_procedure": ["Detailed testing steps"],
+                        "normal_values": "Expected readings/results",
+                        "interpretation_guide": "How to interpret different results",
+                        "next_steps_based_on_results": "What to do based on what you find"
                     }}
                 ],
-                "missing_information": ["..."],
-                "next_steps": ["..."],
-                "other_possible_causes": ["..."],
-                "confidence": "High/Medium/Low"
+                "system_education": {{
+                    "affected_system": "Primary automotive system involved",
+                    "how_it_works": "Technical explanation of system operation",
+                    "common_failure_modes": ["How this system typically fails"],
+                    "preventive_maintenance": ["How to prevent future problems"],
+                    "related_components": ["Other parts that might be affected"],
+                    "upgrade_opportunities": ["Performance or reliability improvements possible"]
+                }},
+                "cost_breakdown": {{
+                    "parts_cost": "Detailed parts cost analysis",
+                    "tool_investment": "One-time tool costs if tools need to be purchased",
+                    "shop_cost_comparison": "What this would cost at a shop vs DIY",
+                    "cost_saving_tips": ["How to reduce costs while maintaining quality"]
+                }},
+                "safety_protocols": [
+                    {{
+                        "procedure": "Specific repair procedure",
+                        "safety_equipment": ["Required safety gear"],
+                        "environmental_considerations": ["Workspace requirements"],
+                        "specific_hazards": ["Procedure-specific risks"],
+                        "emergency_procedures": ["What to do if something goes wrong"]
+                    }}
+                ],
+                "quality_assurance": [
+                    {{
+                        "checkpoint": "What to verify",
+                        "testing_procedure": "How to test the repair",
+                        "success_criteria": "How to know it's working correctly",
+                        "common_issues": "Problems that might still exist"
+                    }}
+                ],
+                "maintenance_schedule": {{
+                    "immediate_follow_up": ["What to check in first week/month"],
+                    "ongoing_maintenance": ["Regular maintenance to prevent recurrence"],
+                    "inspection_points": ["What to monitor long-term"],
+                    "replacement_intervals": ["When to replace preventively"]
+                }},
+                "professional_consultation_indicators": [
+                    {{
+                        "scenario": "Specific situation requiring professional help",
+                        "why_professional_needed": "Technical reason why DIY isn't recommended",
+                        "what_to_tell_mechanic": "How to communicate the issue effectively",
+                        "estimated_shop_cost": "What to expect to pay"
+                    }}
+                ],
+                "confidence": "Technical confidence assessment with detailed reasoning"
             }}
-            - The 'step_by_step_guide' field must be a clear, numbered, step-by-step guide for the user to follow to fix the problem, separate from general recommendations.
-            - The 'alternative_diagnoses' field must include all plausible alternative scenarios, with distinguishing features and evidence.
-            - The 'uncommon_but_important_scenarios' field must include rare or edge-case issues that should not be overlooked.
-            - If the problem cannot be fixed by the user, explain why and what to do instead.
 
             INPUT:
             - Car make: {car_make}
@@ -106,11 +200,11 @@ class DiagnosisAgent(BaseAgent):
             - User messages (last 5, most recent last): {user_message}
             - Diagnosis tree: {tree_summary}
             - Owner's manual/context: {manual_context}
-            - Knowledge base: {kb_context}
+            - Knowledge base (from 38,936 documents): {kb_context}
             - Online context: {online_context}
 
-            Ensure the JSON is valid and well-formed. Do NOT include any additional text, markdown, or explanations outside the JSON object.
-            Return ONLY a valid JSON object as specified above. Do NOT include any extra text, markdown, explanations outside the JSON or surrounded by backticks.
+            Ensure the JSON is valid and well-formed. Provide comprehensive technical details that enable successful DIY repairs.
+            Return ONLY a valid JSON object. Do NOT include any extra text, markdown, or explanations outside the JSON.
             """
         )
 
@@ -127,14 +221,58 @@ class DiagnosisAgent(BaseAgent):
         if car and car.get("vector"):
             manual_context = str(car["vector"])
         # Use the new search engine to get a broader set of relevant context as LangChain Documents (except manual)
-        # Fetch more documents for richer context (e.g., top_k=40)
-        docs = await self.search_engine_service.search(self.car_id, user_message, top_k=40)
-        # Cluster or summarize the most relevant knowledge base entries to avoid token overload
-        kb_docs = [d.page_content for d in docs if d.metadata.get("source") == "ground_knowledge"]
-        # Summarize or select the most diverse 10-15 entries
-        kb_context = "\n---\n".join(kb_docs[:15])
-        # Optionally, you could implement clustering here for more diversity
-        online_context = [d.page_content for d in docs if d.metadata.get("source") == "car_guide_link"]
+        # Fetch more documents for richer context - increased to leverage the 38936 documents
+        docs = await self.search_engine_service.search(self.car_id, user_message, top_k=80)
+        
+        # Separate and process knowledge base docs more comprehensively
+        kb_docs = [d for d in docs if d.metadata.get("source") == "ground_knowledge"]
+        
+        # Create rich knowledge base context with source attribution
+        kb_context_parts = []
+        for i, doc in enumerate(kb_docs[:25]):  # Increased from 15 to 25 for richer context
+            book_title = doc.metadata.get("book_title", "Unknown Source")
+            page_num = doc.metadata.get("page_number", "N/A")
+            content = doc.page_content
+            kb_context_parts.append(f"[Source: {book_title}, Page: {page_num}]\n{content}")
+        
+        kb_context = "\n\n---KNOWLEDGE BASE ENTRY---\n\n".join(kb_context_parts)
+        
+        # Enhanced online context processing
+        online_docs = [d for d in docs if d.metadata.get("source") == "car_guide_link"]
+        online_context = []
+        for doc in online_docs:
+            url = doc.metadata.get("url", "Unknown URL")
+            content = doc.page_content
+            online_context.append(f"[Online Source: {url}]\n{content}")
+            
+        # Additional context searches for specific automotive areas
+        additional_searches = [
+            f"{user_message} symptoms causes diagnosis",
+            f"{self.car_make} {self.car_model} {self.car_year} common problems",
+            f"automotive troubleshooting {user_message}",
+            f"repair guide {user_message}"
+        ]
+        
+        # Perform additional targeted searches for comprehensive coverage
+        additional_docs = []
+        for search_query in additional_searches:
+            extra_docs = await self.search_engine_service.vector_search_ground_knowledge(search_query, top_k=15)
+            additional_docs.extend(extra_docs)
+        
+        # Add additional context from targeted searches
+        if additional_docs:
+            additional_context_parts = []
+            seen_content = set()  # Avoid duplicates
+            for doc in additional_docs:
+                content = doc.get("chunk", "")
+                if content and content not in seen_content:
+                    book_title = doc.get("book_title", "Unknown Source")
+                    page_num = doc.get("page_number", "N/A")
+                    additional_context_parts.append(f"[Additional Source: {book_title}, Page: {page_num}]\n{content}")
+                    seen_content.add(content)
+            
+            if additional_context_parts:
+                kb_context += "\n\n---ADDITIONAL RELEVANT KNOWLEDGE---\n\n" + "\n\n---\n\n".join(additional_context_parts[:15])
         return {
             "manual_context": manual_context,
             "kb_context": kb_context,
@@ -145,10 +283,14 @@ class DiagnosisAgent(BaseAgent):
         """
         Summarize the diagnosis tree for LLM input.
         """
+        if self.diagnosis_tree is None:
+            return "No diagnosis tree available."
+            
         def node_to_dict(node):
             return {
-                "name": getattr(node, "name", None),
-                "likelihood": getattr(node, "likelihood", None),
+                "issue_name": getattr(node, "issue_name", "Unknown"),
+                "likelyhood": getattr(node, "likelyhood", 0.0),
+                "data": getattr(node, "data", None),
                 "children": [node_to_dict(child) for child in getattr(node, "children", [])]
             }
         return str(node_to_dict(self.diagnosis_tree))
@@ -214,13 +356,15 @@ class DiagnosisAgent(BaseAgent):
             default_response = {
                 "diagnosis_summary": "Could not parse response.",
                 "supporting_evidence": [],
-                "recommendations": [],
-                "step_by_step_guide": [],
+                "diy_repair_procedures": [],
                 "alternative_diagnoses": [],
-                "uncommon_but_important_scenarios": [],
-                "missing_information": [],
-                "next_steps": [],
-                "other_possible_causes": [],
+                "diagnostic_procedures": [],
+                "system_education": {},
+                "cost_breakdown": {},
+                "safety_protocols": [],
+                "quality_assurance": [],
+                "maintenance_schedule": {},
+                "professional_consultation_indicators": [],
                 "confidence": "Low: Could not parse response."
             }
             if not parsed_response or not isinstance(parsed_response, dict):

@@ -129,29 +129,43 @@ class SearchEngineService(BaseService):
         self._embedding_cache.set(cache_key, results)
         return results
 
-    async def vector_search_ground_knowledge(self, query: str, top_k: int = 24) -> List[Dict[str, Any]]:
+    async def vector_search_ground_knowledge(self, query: str, top_k: int = 50) -> List[Dict[str, Any]]:
         """
         Perform a vector search on ground knowledge for the query using Milvus.
+        Enhanced to retrieve more comprehensive results from the 38,936 document knowledge base.
         """
         query_embedding = await self.embedding_service.embed_text(query)
-        milvus_results = self.milvus_handler.search(query_embedding, top_k=top_k)
+        # Increase search results to leverage the large knowledge base more effectively
+        milvus_results = self.milvus_handler.search(query_embedding, top_k=min(top_k, 100))
+        
         results = []
         scores = []
+        seen_content = set()  # Avoid duplicates
+        
         for hits in milvus_results:
             for hit in hits:
+                content = hit.entity.get("content_chunk", "")
+                # Skip very short or duplicate content
+                if len(content.strip()) < 50 or content in seen_content:
+                    continue
+                    
                 results.append({
                     "source": "ground_knowledge",
-                    "chunk": hit.entity.get("content_chunk", ""),
+                    "chunk": content,
                     "score": float(hit.distance),
                     "metadata": hit.entity.get("metadata", {}),
                     "book_title": hit.entity.get("book_title", ""),
                     "page_number": hit.entity.get("page_number", None),
+                    "id": hit.entity.get("id", ""),
                 })
                 scores.append(float(hit.distance))
+                seen_content.add(content)
+        
         # Normalize scores (L2: lower is better)
         norm_scores = self.score_normalizer(scores, reverse=True)
         for i, norm_score in enumerate(norm_scores):
             results[i]["score"] = norm_score
+        
         # Sort by normalized score (higher is better)
         results = sorted(results, key=lambda x: x["score"], reverse=True)
         return results[:top_k]
@@ -192,44 +206,70 @@ class SearchEngineService(BaseService):
         ]
         return results
 
-    async def search(self, car_id: str, query: str, top_k: int = 12) -> List[Document]:
+    async def search(self, car_id: str, query: str, top_k: int = 80) -> List[Document]:
         """
         Perform a comprehensive search using owner's manual, ground knowledge, and car guide links.
+        Enhanced to leverage the 38,936 document knowledge base more effectively.
         Returns a list of LangChain Document objects.
         """
-        # Run all three searches in parallel
-        manual_task = self.embed_and_vector_search(await self.download_owner_manual(car_id), query, top_k=top_k)
-        ground_task = self.vector_search_ground_knowledge(query, top_k=top_k)
-        links_task = self.scrape_and_vector_search_links(car_id, query, top_k=top_k)
+        # Run all three searches in parallel with increased limits for knowledge base
+        manual_path = await self.download_owner_manual(car_id)
+        manual_task = self.embed_and_vector_search(manual_path, query, top_k=max(15, top_k//4)) if manual_path else asyncio.create_task(asyncio.sleep(0, result=[]))
+        ground_task = self.vector_search_ground_knowledge(query, top_k=max(60, int(top_k * 0.75)))  # Focus on knowledge base
+        links_task = self.scrape_and_vector_search_links(car_id, query, top_k=max(5, top_k//15))
+        
         manual_results, ground_results, link_results = await asyncio.gather(manual_task, ground_task, links_task)
+        
         # Tag each result with its source type for normalization
         all_results = []
+        
+        # Prioritize manual results slightly
         for r in (manual_results or []):
             r['similarity_type'] = 'cosine'
+            r['source_priority'] = 1.1  # Slight boost for manual
             all_results.append(r)
+            
+        # Knowledge base results (main focus)
         for r in (ground_results or []):
             r['similarity_type'] = 'l2'
+            r['source_priority'] = 1.0
             all_results.append(r)
+            
+        # Online results
         for r in (link_results or []):
             r['similarity_type'] = 'cosine'
+            r['source_priority'] = 0.9  # Slightly lower priority
             all_results.append(r)
-        # Unify all scores to cosine-like (higher is better)
+        
+        # Unify all scores to cosine-like (higher is better) and apply source priority
         for r in all_results:
             if r['similarity_type'] == 'l2':
                 # Invert L2 so higher is better
                 r['score'] = 1.0 - r['score']
+            # Apply source priority
+            r['score'] *= r.get('source_priority', 1.0)
+        
         # Normalize all scores together
         scores = [r['score'] for r in all_results]
         norm_scores = self.score_normalizer(scores, reverse=False)
         for i, norm_score in enumerate(norm_scores):
             all_results[i]['score'] = norm_score
+        
         # Sort by normalized score (higher is better)
         all_results = sorted(all_results, key=lambda x: x.get("score", 0), reverse=True)
-        # Convert to LangChain Document objects
-        documents = [
-            Document(page_content=doc.pop("chunk"), metadata=doc)
-            for doc in all_results[:top_k]
-        ]
+        
+        # Convert to LangChain Document objects, ensuring diversity
+        documents = []
+        seen_chunks = set()
+        for doc in all_results:
+            chunk = doc.get("chunk", "")
+            # Skip very similar content to ensure diversity
+            if len(chunk) > 50 and chunk not in seen_chunks:
+                documents.append(Document(page_content=chunk, metadata={k: v for k, v in doc.items() if k != "chunk"}))
+                seen_chunks.add(chunk)
+                if len(documents) >= top_k:
+                    break
+        
         return documents
 
     async def perform_action(self, *args, websocket=None, session_id=None, **kwargs) -> Any:
@@ -239,7 +279,7 @@ class SearchEngineService(BaseService):
         """
         car_id = kwargs.get("car_id")
         query = kwargs.get("query")
-        top_k = kwargs.get("top_k", 72)
+        top_k = kwargs.get("top_k", 80)  # Increased default to leverage knowledge base better
         if websocket:
             await self.send_ws_stage(websocket, "Search started", MessageSource.CHAT_SERVICE, session_id=session_id, details={"car_id": car_id, "query": query})
         if not car_id or not query:

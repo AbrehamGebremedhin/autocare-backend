@@ -47,6 +47,14 @@ class UserInteractionAgent(BaseAgent):
 
             Transform the comprehensive diagnostic result into practical DIY guidance that empowers the user to successfully complete their own repairs.
 
+            CRITICAL: Always include relevant follow-up questions to gather more information for better diagnosis and repair guidance. Consider:
+            - Clarifying symptoms or timing
+            - Understanding user's experience level
+            - Confirming environmental factors
+            - Gathering repair history details
+            - Assessing available tools/workspace
+            - Understanding urgency and constraints
+
             Return your response as a JSON object with the following DIY-focused fields:
             - technical_diagnosis: Detailed technical explanation of the problem for DIY understanding
             - primary_repair_procedure: The most likely repair approach with complete details
@@ -62,6 +70,7 @@ class UserInteractionAgent(BaseAgent):
             - learning_insights: Technical knowledge gained from this repair that applies elsewhere
             - upgrade_opportunities: Performance or reliability improvements possible during repair
             - maintenance_prevention: How to prevent this problem from recurring
+            - followup_questions: Array of specific questions to gather more diagnostic information and improve repair guidance
 
             Input:
             - User message: {user_message}
@@ -75,13 +84,16 @@ class UserInteractionAgent(BaseAgent):
             "step_by_step_repair_guide": [{{...}}],
             "alternative_approaches": [{{...}}],
             "diagnostic_verification": [{{...}}],
-            "cost_and_time_analysis": {{"diy_cost": "...", "shop_cost": "...", "time_required": "...", "savings": "..."}},
             "safety_protocols": [{{...}}],
             "troubleshooting_guide": [{{...}}],
             "quality_verification": [{{...}}],
             "learning_insights": [{{...}}],
             "upgrade_opportunities": [{{...}}],
-            "maintenance_prevention": [{{...}}]
+            "maintenance_prevention": [{{...}}],
+            "followup_questions": [
+                {{"question": "...", "purpose": "...", "category": "symptom_clarification|experience_level|environmental_factors|repair_history|tools_workspace|urgency_constraints"}},
+                {{"question": "...", "purpose": "...", "category": "..."}}
+            ]
             }}
             Ensure the JSON is valid and well-formed. Focus on empowering DIY repair success.
             Return ONLY a valid JSON object. Do NOT include any extra text, markdown, explanations outside the JSON or surrounded by backticks.
@@ -127,8 +139,6 @@ class UserInteractionAgent(BaseAgent):
             merged_repair_procedures = []
             merged_tools_and_parts = {"tools": [], "parts": [], "consumables": []}
             merged_diagnostic_procedures = []
-            merged_system_education = {}
-            merged_cost_breakdown = {}
             merged_safety_protocols = []
             merged_quality_assurance = []
             merged_maintenance_schedule = {}
@@ -207,9 +217,6 @@ class UserInteractionAgent(BaseAgent):
                 # Merge diagnostic procedures
                 merged_diagnostic_procedures = diagnosis_result.get("diagnostic_procedures", [])
                 
-                # Merge cost breakdown
-                merged_cost_breakdown = diagnosis_result.get("cost_breakdown", {})
-                
                 # Merge safety protocols
                 merged_safety_protocols = diagnosis_result.get("safety_protocols", [])
                 
@@ -255,14 +262,55 @@ class UserInteractionAgent(BaseAgent):
                     "step_by_step_repair_guide": [],
                     "alternative_approaches": [],
                     "diagnostic_verification": merged_diagnostic_procedures,
-                    "cost_and_time_analysis": merged_cost_breakdown,
                     "safety_protocols": merged_safety_protocols,
                     "troubleshooting_guide": [],
                     "quality_verification": merged_quality_assurance,
                     "learning_insights": [],
                     "upgrade_opportunities": [],
-                    "maintenance_prevention": merged_maintenance_schedule
+                    "maintenance_prevention": merged_maintenance_schedule,
+                    "followup_questions": [
+                        {"question": "Can you provide more details about when this problem occurs?", "purpose": "Better understand symptom timing", "category": "symptom_clarification"},
+                        {"question": "What is your experience level with car repairs?", "purpose": "Tailor repair instructions appropriately", "category": "experience_level"}
+                    ]
                 }
+            
+            # Ensure followup_questions is always present
+            if "followup_questions" not in parsed_response or not parsed_response["followup_questions"]:
+                # Generate default follow-up questions based on diagnosis content
+                default_questions = []
+                
+                # Check if we need more symptom clarification
+                if "diagnosis" in str(diagnosis_result).lower() and len(user_message.split()) < 10:
+                    default_questions.append({
+                        "question": "Can you describe the symptoms in more detail - when do they occur and what exactly happens?",
+                        "purpose": "Get more specific symptom information for accurate diagnosis",
+                        "category": "symptom_clarification"
+                    })
+                
+                # Check experience level
+                if "repair" in str(diagnosis_result).lower() or "fix" in str(diagnosis_result).lower():
+                    default_questions.append({
+                        "question": "What's your experience level with automotive repairs?",
+                        "purpose": "Customize repair instructions to your skill level",
+                        "category": "experience_level"
+                    })
+                
+                # Check for tools/workspace
+                if any(tool_word in str(diagnosis_result).lower() for tool_word in ["tool", "wrench", "socket", "jack"]):
+                    default_questions.append({
+                        "question": "Do you have access to basic automotive tools and a suitable workspace?",
+                        "purpose": "Ensure you have necessary equipment before starting",
+                        "category": "tools_workspace"
+                    })
+                
+                # Check urgency
+                default_questions.append({
+                    "question": "How urgent is this repair - are you able to drive the car safely right now?",
+                    "purpose": "Assess safety and prioritize repair approach",
+                    "category": "urgency_constraints"
+                })
+                
+                parsed_response["followup_questions"] = default_questions[:3]  # Limit to 3 questions
             # Serialize datetimes before sending to websocket or returning
             parsed_response = serialize_datetimes(parsed_response)
             if websocket:
@@ -283,7 +331,10 @@ class UserInteractionAgent(BaseAgent):
                 "actionable_steps": [],
                 "needed_tools": [],
                 "safety_note": "",
-                "followup_questions": [],
+                "followup_questions": [
+                    {"question": "Can you provide more details about the symptoms you're experiencing?", "purpose": "Better understand the problem", "category": "symptom_clarification"},
+                    {"question": "When did this problem first start occurring?", "purpose": "Understand problem timeline", "category": "symptom_clarification"}
+                ],
                 "confidence": "Low: Exception occurred.",
                 "success": False,
                 "step_by_step_guide": None
@@ -329,17 +380,18 @@ class UserInteractionAgent(BaseAgent):
                     "step_by_step_repair_guide": result.get("step_by_step_repair_guide", []),
                     "alternative_approaches": result.get("alternative_approaches", []),
                     "diagnostic_verification": result.get("diagnostic_verification", []),
-                    "cost_and_time_analysis": result.get("cost_and_time_analysis", {}),
                     "safety_protocols": result.get("safety_protocols", []),
                     "troubleshooting_guide": result.get("troubleshooting_guide", []),
                     "quality_verification": result.get("quality_verification", []),
                     "learning_insights": result.get("learning_insights", []),
                     "upgrade_opportunities": result.get("upgrade_opportunities", []),
-                    "maintenance_prevention": result.get("maintenance_prevention", {})
+                    "maintenance_prevention": result.get("maintenance_prevention", {}),
+                    "followup_questions": result.get("followup_questions", [])
                 }
                 return {
                     "success": result.get("success", False),
                     "user_message": user_message_text,
+                    "followup_questions": result.get("followup_questions", []),  # Also include at top level for backwards compatibility
                     "error": None,
                     "error_type": None
                 }
@@ -351,6 +403,10 @@ class UserInteractionAgent(BaseAgent):
                     return {
                         "success": False,
                         "user_message": "",
+                        "followup_questions": [
+                            {"question": "Could you please describe the problem you're experiencing with your car?", "purpose": "Get basic problem description", "category": "symptom_clarification"},
+                            {"question": "When did this issue first occur?", "purpose": "Understand problem timeline", "category": "symptom_clarification"}
+                        ],
                         "error": str(e),
                         "error_type": type(e).__name__
                     }

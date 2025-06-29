@@ -6,6 +6,7 @@ import logging
 from app.utils.redis_cache import redis_cache
 from tenacity import retry, stop_after_attempt, wait_fixed
 from string import Template
+from app.utils.message_types import MessageSource
 
 class LLMService(BaseService):
     """
@@ -48,21 +49,29 @@ class LLMService(BaseService):
         else:
             return await loop.run_in_executor(None, lambda: self.llm.invoke(prompt, **params))
 
-    async def generate_response(self, prompt: str, stream: bool = False, use_cache: bool = True, **kwargs) -> str:
+    async def generate_response(self, prompt: str, stream: bool = False, use_cache: bool = True, websocket=None, session_id=None, **kwargs) -> str:
         await self._rate_limit()
         params = {**self.default_params, **kwargs}
         cache_key = self._cache_key(prompt, params)
         if use_cache:
             cached = await redis_cache.get(cache_key)
             if cached:
+                if websocket:
+                    await self.send_ws_info(websocket, "LLM cache hit", MessageSource.CHAT_SERVICE, session_id=session_id, details={"cache_key": cache_key})
                 return cached
         try:
+            if websocket:
+                await self.send_ws_progress(websocket, "LLM generating response", MessageSource.CHAT_SERVICE, 0.5, session_id=session_id)
             response = await self._call_llm(prompt, params, stream=stream)
             if use_cache:
                 await redis_cache.set(cache_key, response)
+            if websocket:
+                await self.send_ws_result(websocket, "LLM response ready", MessageSource.CHAT_SERVICE, session_id=session_id, details={"response": response})
             return response
         except Exception as e:
             self.logger.error(f"LLMService error: {e}")
+            if websocket:
+                await self.send_ws_error(websocket, f"LLMService error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
             return f"Error: {e}"
 
     async def generate_response_with_template(self, template: str, variables: dict, **kwargs) -> str:

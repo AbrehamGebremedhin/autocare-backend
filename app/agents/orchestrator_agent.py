@@ -5,6 +5,7 @@ from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.agents.user_interaction_agent import UserInteractionAgent
 from app.core.interfaces import IWebSocketManager
 from app.agents.base_agent import BaseAgent
+from app.utils.message_types import MessageSource
 
 class OrchestratorAgent(BaseAgent):
     def __init__(self, websocket_manager: IWebSocketManager = None, **kwargs):
@@ -14,8 +15,8 @@ class OrchestratorAgent(BaseAgent):
         }
         self.user_interaction_agent = UserInteractionAgent()
 
-    async def route_request(self, user_request: str, user_id: str = None, context: dict = None):
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Routing request"}))
+    async def route_request(self, user_request: str, user_id: str = None, context: dict = None, websocket=None, session_id=None):
+        await self.send_ws_stage(websocket, "Orchestrator - Routing request", MessageSource.ORCHESTRATOR, session_id=session_id)
         """
         Main entry point: decides which agent should handle the user request.
         """
@@ -26,38 +27,34 @@ class OrchestratorAgent(BaseAgent):
             diagnosis_tree = context.get('diagnosis_tree')  # Always use the session's current tree
         # If this is the initial message, extract symptoms
         if context and context.get('is_initial_message'):
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Initial message, extracting symptoms"}))
-            return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
+            await self.send_ws_stage(websocket, "Orchestrator - Initial message, extracting symptoms", MessageSource.ORCHESTRATOR, session_id=session_id)
+            return await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree, websocket=websocket, session_id=session_id)
         # For all other messages, use the current session's diagnosis_tree
         if car_id is not None:
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Running diagnostic agent"}))
+            await self.send_ws_stage(websocket, "Orchestrator - Running diagnostic agent", MessageSource.ORCHESTRATOR, session_id=session_id)
             diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=diagnosis_tree)
-            diagnosis_result = await diagnostic_agent.process(user_request)
+            diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
             # If diagnostic agent requests symptom extraction, process with symptom extractor, then re-run diagnosis
             if isinstance(diagnosis_result, dict) and diagnosis_result.get('need_symptom_extraction'):
-                await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Need symptom extraction after diagnosis"}))
+                await self.send_ws_stage(websocket, "Orchestrator - Need symptom extraction after diagnosis", MessageSource.ORCHESTRATOR, session_id=session_id)
                 # Run symptom extraction
-                symptom_result = await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree)
+                symptom_result = await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree, websocket=websocket, session_id=session_id)
                 # Get updated tree if available
-                updated_tree = None
-                if isinstance(symptom_result, dict) and 'tree' in symptom_result:
-                    updated_tree = symptom_result['tree']
-                else:
-                    updated_tree = diagnosis_tree
+                updated_tree = symptom_result['tree'] if isinstance(symptom_result, dict) and 'tree' in symptom_result else diagnosis_tree
                 # Re-run diagnosis with updated tree
                 diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=updated_tree)
-                await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Re-running diagnosis with updated tree"}))
-                diagnosis_result = await diagnostic_agent.process(user_request)
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Running user interaction agent"}))
+                await self.send_ws_stage(websocket, "Orchestrator - Re-running diagnosis with updated tree", MessageSource.ORCHESTRATOR, session_id=session_id)
+                diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
+            await self.send_ws_stage(websocket, "Orchestrator - Running user interaction agent", MessageSource.ORCHESTRATOR, session_id=session_id)
             user_response = await self.user_interaction_agent.process(user_request, diagnosis_result)
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - Done"}))
+            await self.send_ws_stage(websocket, "Orchestrator - Done", MessageSource.ORCHESTRATOR, session_id=session_id)
             return {
                 'response': user_response.get('user_message'),
                 'success': user_response.get('success', True),
                 'step_by_step_guide': diagnosis_result.get('step_by_step_guide')
             }
         else:
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Orchestrator - No car_id provided, cannot diagnose"}))
+            await self.send_ws_stage(websocket, "Orchestrator - No car_id provided, cannot diagnose", MessageSource.ORCHESTRATOR, session_id=session_id)
             user_response = await self.user_interaction_agent.process(user_request, 'car_id is required for diagnosis.')
             return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
 
@@ -66,7 +63,7 @@ class OrchestratorAgent(BaseAgent):
         keywords = ['symptom', 'diagnosis', 'extract']
         return not any(k in user_request.lower() for k in keywords)
 
-    async def _handle_with_agent(self, agent_key: str, request: str, car_id=None, diagnosis_tree=None):
+    async def _handle_with_agent(self, agent_key: str, request: str, car_id=None, diagnosis_tree=None, websocket=None, session_id=None):
         agent_class = self.agents.get(agent_key)
         if not agent_class:
             user_response = await self.user_interaction_agent.process(request, f'Agent {agent_key} not found.')
@@ -76,7 +73,7 @@ class OrchestratorAgent(BaseAgent):
         else:
             user_response = await self.user_interaction_agent.process(request, 'car_id is required for symptom extraction.')
             return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
-        process_result = await agent.process(request)
+        process_result = await agent.process(request, websocket=websocket, session_id=session_id)
         result = process_result.get('result')
         success = process_result.get('success', True)
         if isinstance(result, dict) and result.get('need_more_info'):

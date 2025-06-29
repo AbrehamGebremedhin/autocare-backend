@@ -13,6 +13,7 @@ from app.core.interfaces import IWebSocketManager
 import json
 from app.services.search_engine_service import SearchEngineService
 from app.agents.base_agent import BaseAgent
+from app.utils.message_types import MessageSource
 
 class DiagnosisAgent(BaseAgent):
     """
@@ -188,7 +189,7 @@ class DiagnosisAgent(BaseAgent):
                 "user_message": user_friendly
             }
 
-    async def process(self, user_messages: List[str]) -> Dict[str, Any]:
+    async def process(self, user_message: str, websocket=None, session_id=None):
         await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Processing diagnosis"}))
         """
         Accepts the user messages (list), runs the diagnosis, and returns the result and success status.
@@ -196,6 +197,8 @@ class DiagnosisAgent(BaseAgent):
         """
         await self._ensure_car_info()
         try:
+            if websocket:
+                await self.send_ws_stage(websocket, "Diagnosis started", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id)
             # Fetch the full car object from the DB to check for vector data
             car = await self.car_crud.get_car_by_id(self.car_id) if self.car_crud and self.car_id else None
             if car:
@@ -204,7 +207,9 @@ class DiagnosisAgent(BaseAgent):
                     await self.logger.info(f"[DEBUG] Vector data present for car {self.car_id}: type={type(vector_data)}, length={len(vector_data) if hasattr(vector_data, '__len__') else 'N/A'}")
                 else:
                     await self.logger.info(f"[DEBUG] No vector data present for car {self.car_id}")
-            result = await self.diagnose(user_messages)
+            result = await self.diagnose(user_message)
+            if websocket:
+                await self.send_ws_result(websocket, "Diagnosis complete", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id, details=result)
             return {
                 "success": result.get("success", False),
                 "result": result.get("diagnosis"),
@@ -217,6 +222,8 @@ class DiagnosisAgent(BaseAgent):
             tb = traceback.format_exc()
             await self.logger.error(f"Process error: {e}\n{tb}")
             user_friendly = "An unexpected error occurred while processing your request. Please try again later."
+            if websocket:
+                await self.send_ws_error(websocket, user_friendly, MessageSource.DIAGNOSTIC_AGENT, session_id=session_id, details={"error": str(e)})
             return {
                 "success": False,
                 "result": None,

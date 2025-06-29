@@ -8,6 +8,7 @@ from uuid import uuid4
 import logging
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.core.interfaces import IWebSocketManager
+from app.utils.message_types import MessageSource
 
 class ChatService(BaseService):
     """
@@ -70,7 +71,7 @@ class ChatService(BaseService):
         return conversation
 
     @BaseService.cache_result(ttl_seconds=300)
-    async def send_message(self, user_id: str, message: str, context: Optional[Dict] = None, session: Optional[Dict] = None) -> Dict[str, Any]:
+    async def send_message(self, user_id: str, message: str, context: Optional[Dict] = None, session: Optional[Dict] = None, websocket=None) -> Dict[str, Any]:
         """
         Send a message from a user and return the response from the OrchestratorAgent.
         Args:
@@ -78,11 +79,11 @@ class ChatService(BaseService):
             message: User's message
             context: Optional context information (car details, symptoms, etc.)
             session: Optional loaded session from DB
+            websocket: Optional WebSocket for direct messaging
         Returns:
             Dict containing response, confidence, sources, and metadata
         """
         start_time = datetime.now()
-        
         try:
             await self._rate_limit()  # Apply rate limiting
             
@@ -111,6 +112,9 @@ class ChatService(BaseService):
                 context['is_initial_message'] = True
             # Always pass the session's diagnosis tree in context
             context['diagnosis_tree'] = conversation['context'].get('diagnosis_tree')
+            # Send progress message
+            if websocket:
+                await self.send_ws_progress(websocket, "Processing user message", MessageSource.CHAT_SERVICE, 0.1, session_id=conversation['id'])
             response_data = await self.orchestrator.route_request(message, user_id, context)
             # Add assistant response to conversation
             conversation['messages'].append({
@@ -129,10 +133,14 @@ class ChatService(BaseService):
             self._response_times.append(response_time)
             response_data['response_time'] = response_time
             response_data['conversation_length'] = len(conversation['messages'])
+            # Send result message
+            if websocket:
+                await self.send_ws_result(websocket, "Response ready", MessageSource.CHAT_SERVICE, session_id=conversation['id'], details=response_data)
             return response_data
-            
         except Exception as e:
             self.logger.error(f"Error in send_message for user {user_id}: {e}")
+            if websocket:
+                await self.send_ws_error(websocket, "Error processing message", MessageSource.CHAT_SERVICE, session_id=None, details={"error": str(e)})
             return {
                 'response': "I'm experiencing some technical difficulties. Please try again in a moment.",
                 'confidence': 0.0,

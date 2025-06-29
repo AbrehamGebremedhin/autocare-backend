@@ -6,6 +6,7 @@ import httpx
 import asyncio
 from typing import Optional, List, Dict
 from app.utils.logger import get_logger_instance, Logger
+from app.utils.message_types import MessageSource
 
 class FetchCarDataService(BaseService):
     """
@@ -207,7 +208,7 @@ class FetchCarDataService(BaseService):
                 wait_time = self._retry_delay * (2 ** attempt)
                 await asyncio.sleep(wait_time)
 
-    async def perform_action(self, make: str, model: str, year: int):
+    async def perform_action(self, make: str, model: str, year: int, websocket=None, session_id=None):
         """
         Performs the complete car data fetching action: building URLs, scraping links, and downloading PDFs.
         Enhanced with parallel processing for improved performance.
@@ -220,7 +221,17 @@ class FetchCarDataService(BaseService):
         Raises:
             Exception: If any step fails.
         """
-        return await self.run_with_notification(self._perform_action_impl, make, model, year)
+        if websocket:
+            await self.send_ws_stage(websocket, "Car data fetch started", MessageSource.CHAT_SERVICE, session_id=session_id, details={"make": make, "model": model, "year": year})
+        try:
+            result = await self.run_with_notification(self._perform_action_impl, make, model, year)
+            if websocket:
+                await self.send_ws_result(websocket, "Car data fetch complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_links": len(result) if result else 0})
+            return result
+        except Exception as e:
+            if websocket:
+                await self.send_ws_error(websocket, f"FetchCarDataService.perform_action error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
+            raise
 
     async def _perform_action_impl(self, make: str, model: str, year: int):
         try:

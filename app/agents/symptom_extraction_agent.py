@@ -19,6 +19,7 @@ from app.utils.websocket import manager  # WebSocket manager for broadcasting st
 import json
 from app.agents.base_agent import BaseAgent
 from app.core.interfaces import IWebSocketManager
+from app.utils.message_types import MessageSource
 
 class SymptomExtractorAgent(BaseAgent):
     """
@@ -294,30 +295,18 @@ class SymptomExtractorAgent(BaseAgent):
 
         return [self._sanitize_output(json.dumps(issue)) if isinstance(issue, dict) else self._sanitize_output(str(issue)) for issue in parsed_result] if isinstance(parsed_result, list) else parsed_result
 
-    async def process(self, task: Any) -> Dict[str, Any]:
-        await self._ensure_car_info()
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Processing request"}))
-        """
-        Accepts the incoming request, handles the extraction, and returns the processed result.
-        Args:
-            task (str): The input text describing symptoms/issues.
-        Returns:
-            Dict[str, Any]: Contains the result, tree instance, and success status.
-        """
+    async def process(self, user_message: str, websocket=None, session_id=None):
         try:
-            result = await self.handle(task)
-            success = True
+            if websocket:
+                await self.send_ws_stage(websocket, "Symptom extraction started", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id)
+            result = await self.handle(user_message)
+            if websocket:
+                await self.send_ws_result(websocket, "Symptom extraction complete", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id, details=result)
+            return {"result": result}
         except Exception as e:
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": f"Symptom extraction - Error - {type(e).__name__}"}))
-            result = None
-            success = False
-            await self.logger.error(f"Error in process: {e}")
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Done"}))
-        return {
-            "result": result,
-            "tree": self.diagnosis_tree,
-            "success": success
-        }
+            if websocket:
+                await self.send_ws_error(websocket, "Error during symptom extraction", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id, details={"error": str(e)})
+            raise
 
     async def extract_symptoms(self, input_text: Any, context: str = "") -> List[Dict[str, Any]]:
         await self._ensure_car_info()

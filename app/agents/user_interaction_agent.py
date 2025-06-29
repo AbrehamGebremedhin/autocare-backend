@@ -4,6 +4,7 @@ from app.services.llm_service import LLMService
 from app.utils.logger import Logger
 from app.core.interfaces import IWebSocketManager
 from app.agents.base_agent import BaseAgent
+from app.utils.message_types import MessageSource
 import json
 import re
 import traceback
@@ -69,8 +70,9 @@ Output:
                     return text[start:i+1]
         return None
 
-    async def generate_user_message(self, user_message: str, diagnosis_result: Any) -> dict:
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Generating user-facing message"}))
+    async def generate_user_message(self, user_message: str, diagnosis_result: Any, websocket=None, session_id=None) -> dict:
+        if websocket:
+            await self.send_ws_stage(websocket, "Generating user-facing message", MessageSource.CHAT_SERVICE, session_id=session_id)
         await self.logger.info(f"UserInteractionAgent - Generating user-facing message for: {user_message}")
         try:
             # Extract step_by_step_guide if present
@@ -117,6 +119,8 @@ Output:
                     "followup_questions": [],
                     "confidence": "Low: Could not parse response."
                 }
+            if websocket:
+                await self.send_ws_result(websocket, "User message generated", MessageSource.CHAT_SERVICE, session_id=session_id, details=parsed_response)
             await self.broadcast_stage(json.dumps({"type": "stage", "stage": "User message generated"}))
             return {
                 **parsed_response,
@@ -124,6 +128,8 @@ Output:
                 "step_by_step_guide": step_by_step_guide
             }
         except Exception as e:
+            if websocket:
+                await self.send_ws_error(websocket, f"Error in user message generation - {type(e).__name__}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
             await self.broadcast_stage(json.dumps({"type": "stage", "stage": f"Error in user message generation - {type(e).__name__}"}))
             await self.logger.error(f"UserInteractionAgent error: {e}\nTraceback: {traceback.format_exc()}")
             return {
@@ -143,7 +149,7 @@ Output:
         """
         return self.llm_service.get_llm()
 
-    async def process(self, user_message: str, diagnosis_result: Any) -> dict:
+    async def process(self, user_message: str, diagnosis_result: Any, websocket=None, session_id=None) -> dict:
         """
         Accepts the user message and diagnosis result, generates a user-facing message, and returns the result with success status and error handling.
         Args:
@@ -163,11 +169,10 @@ Output:
                 return [serialize(i) for i in obj]
             return obj
         diagnosis_result = serialize(diagnosis_result)
-
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
-                result = await self.generate_user_message(user_message, diagnosis_result)
+                result = await self.generate_user_message(user_message, diagnosis_result, websocket=websocket, session_id=session_id)
                 # Compose a user-facing message from all fields
                 user_message_text = {
                     "diagnosis": result.get("diagnosis", ""),
@@ -186,6 +191,8 @@ Output:
             except Exception as e:
                 await self.logger.error(f"Process error (attempt {attempt+1}): {e}")
                 if attempt == max_retries:
+                    if websocket:
+                        await self.send_ws_error(websocket, f"Error in user message generation - {type(e).__name__}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
                     return {
                         "success": False,
                         "user_message": "",

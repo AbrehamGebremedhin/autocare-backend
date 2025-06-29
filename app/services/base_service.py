@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 import asyncio
 import time
 from functools import wraps
+from app.utils.message_types import MessageType, MessageSource
 
 class BaseService(ABC):
     """
@@ -107,6 +108,30 @@ class BaseService(ABC):
         except Exception as exc:
             await self.notify_task("task_failed", detail=str(exc))
             raise
+
+    async def send_ws_info(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_info(websocket, content, source, session_id, details)
+
+    async def send_ws_error(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_error(websocket, content, source, session_id, details)
+
+    async def send_ws_progress(self, websocket, content, source: MessageSource, progress: float, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_progress(websocket, content, source, progress, session_id, details)
+
+    async def send_ws_stage(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_stage(websocket, content, source, session_id, details)
+
+    async def send_ws_result(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_result(websocket, content, source, session_id, details)
+
+    async def send_ws_debug(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_debug(websocket, content, source, session_id, details)
 
     @abstractmethod
     async def perform_action(self, *args, **kwargs):

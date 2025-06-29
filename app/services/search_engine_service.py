@@ -12,6 +12,7 @@ import re
 from langchain_core.documents import Document
 from collections import OrderedDict
 from app.core.interfaces import IWebSocketManager
+from app.utils.message_types import MessageSource
 
 class LRUCache:
     def __init__(self, capacity=32):
@@ -231,7 +232,7 @@ class SearchEngineService(BaseService):
         ]
         return documents
 
-    async def perform_action(self, *args, **kwargs) -> Any:
+    async def perform_action(self, *args, websocket=None, session_id=None, **kwargs) -> Any:
         """
         Implementation of the abstract method from BaseService.
         Expects 'car_id' and 'query' in kwargs.
@@ -239,9 +240,21 @@ class SearchEngineService(BaseService):
         car_id = kwargs.get("car_id")
         query = kwargs.get("query")
         top_k = kwargs.get("top_k", 72)
+        if websocket:
+            await self.send_ws_stage(websocket, "Search started", MessageSource.CHAT_SERVICE, session_id=session_id, details={"car_id": car_id, "query": query})
         if not car_id or not query:
+            if websocket:
+                await self.send_ws_error(websocket, "car_id and query are required", MessageSource.CHAT_SERVICE, session_id=session_id)
             raise ValueError("car_id and query are required")
-        return await self.search(car_id, query, top_k=top_k)
+        try:
+            result = await self.search(car_id, query, top_k=top_k)
+            if websocket:
+                await self.send_ws_result(websocket, "Search complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_results": len(result)})
+            return result
+        except Exception as e:
+            if websocket:
+                await self.send_ws_error(websocket, f"SearchEngineService.perform_action error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
+            raise
 
     async def aclose(self):
         """

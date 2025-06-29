@@ -6,6 +6,7 @@ import re
 import asyncio
 from app.utils.logger import get_logger_instance, Logger
 from app.core.interfaces import IWebSocketManager, ILogger
+from app.utils.message_types import MessageSource
 
 try:
     from pypdf import PdfReader
@@ -269,7 +270,7 @@ class ParserService(BaseService):
                 full_text += page.extract_text() or ""
             return await self.chunk_text(full_text, chunk_size)
 
-    async def perform_action(self, file_path: str = None, pdf_bytes: bytes = None, text: str = None, chunk_size: int = 1000, **kwargs) -> List[str]:
+    async def perform_action(self, file_path: str = None, pdf_bytes: bytes = None, text: str = None, chunk_size: int = 1000, websocket=None, session_id=None, **kwargs) -> List[str]:
         """
         Perform parsing action based on input type.
         Args:
@@ -280,7 +281,17 @@ class ParserService(BaseService):
         Returns:
             List[str]: Parsed and chunked text
         """
-        return await self.run_with_notification(self._perform_action_impl, file_path, pdf_bytes, text, chunk_size, **kwargs)
+        if websocket:
+            await self.send_ws_stage(websocket, "Parsing started", MessageSource.CHAT_SERVICE, session_id=session_id, details={"file_path": file_path, "text_len": len(text) if text else None})
+        try:
+            result = await self.run_with_notification(self._perform_action_impl, file_path, pdf_bytes, text, chunk_size, **kwargs)
+            if websocket:
+                await self.send_ws_result(websocket, "Parsing complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_chunks": len(result)})
+            return result
+        except Exception as e:
+            if websocket:
+                await self.send_ws_error(websocket, f"ParserService.perform_action error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
+            raise
 
     async def _perform_action_impl(self, file_path: str = None, pdf_bytes: bytes = None, text: str = None, chunk_size: int = 1000, **kwargs) -> List[str]:
         """

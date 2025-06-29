@@ -6,6 +6,7 @@ from app.services.llm_service import LLMService
 import asyncio
 from app.agents.base_agent import BaseAgent
 from app.core.interfaces import IWebSocketManager
+from app.utils.message_types import MessageSource
 
 class TreeManagerAgent(BaseAgent):
     def __init__(self, root: DiagnosisTreeNode, llm_service: LLMService = None, websocket_manager: IWebSocketManager = None, **kwargs):
@@ -40,10 +41,14 @@ class TreeManagerAgent(BaseAgent):
         node = self.root.find(parent_name)
         return node if node else self.root
 
-    async def add_symptom(self, symptom: str, likelyhood: float, data: Any = None):
+    async def add_symptom(self, symptom: str, likelyhood: float, data: Any = None, websocket=None, session_id=None):
+        if websocket:
+            await self.send_ws_stage(websocket, f"Adding symptom '{symptom}' to tree", MessageSource.ORCHESTRATOR, session_id=session_id)
         parent_node = await self.decide_parent_for_symptom(symptom)
         new_node = DiagnosisTreeNode(issue_name=symptom, likelyhood=likelyhood, data=data)
         parent_node.add_child(new_node)
+        if websocket:
+            await self.send_ws_result(websocket, f"Symptom '{symptom}' added", MessageSource.ORCHESTRATOR, session_id=session_id, details={"symptom": symptom, "likelyhood": likelyhood})
         return new_node
 
     def prune_tree(self, threshold: float = 0.3):

@@ -3,6 +3,7 @@ import re
 from app.utils.logger import get_logger_instance
 from app.utils.websocket import manager
 from app.core.interfaces import ILogger, IWebSocketManager
+from app.utils.message_types import MessageType, MessageSource
 
 class BaseAgent:
     def __init__(self, car_crud=None, car_id=None, car_make=None, car_model=None, car_year=None, logger_name=None, websocket_manager: IWebSocketManager = None, logger: ILogger = None):
@@ -40,3 +41,27 @@ class BaseAgent:
 
     async def broadcast_stage(self, stage: str):
         await self.websocket_manager.broadcast(stage)
+
+    async def send_ws_info(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_info(websocket, content, source, session_id, details)
+
+    async def send_ws_error(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_error(websocket, content, source, session_id, details)
+
+    async def send_ws_progress(self, websocket, content, source: MessageSource, progress: float, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_progress(websocket, content, source, progress, session_id, details)
+
+    async def send_ws_stage(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_stage(websocket, content, source, session_id, details)
+
+    async def send_ws_result(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_result(websocket, content, source, session_id, details)
+
+    async def send_ws_debug(self, websocket, content, source: MessageSource, session_id=None, details=None):
+        if self.websocket_manager:
+            await self.websocket_manager.send_debug(websocket, content, source, session_id, details)

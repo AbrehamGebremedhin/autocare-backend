@@ -5,6 +5,7 @@ import asyncio
 from typing import Optional, List, Dict
 from app.utils.logger import get_logger_instance, Logger
 from app.core.interfaces import IWebSocketManager, ILogger
+from app.utils.message_types import MessageSource
 
 class ScraperService(BaseService):
     """
@@ -180,7 +181,7 @@ class ScraperService(BaseService):
             await self.logger.error(f"extract_page_info error for {url}: {e}")
             return {'url': url, 'error': str(e)}
 
-    async def perform_action(self, links: list, limit: int = 2, concurrency: int = 3) -> list:
+    async def perform_action(self, links: list, limit: int = 2, concurrency: int = 3, websocket=None, session_id=None) -> list:
         """
         Scrape a list of links with optimized parallel processing and error handling.
         Args:
@@ -190,7 +191,17 @@ class ScraperService(BaseService):
         Returns:
             list: List of extracted page info dicts.
         """
-        return await self.run_with_notification(self._perform_action_impl, links, limit, concurrency)
+        if websocket:
+            await self.send_ws_stage(websocket, "Scraping started", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_links": len(links)})
+        try:
+            results = await self.run_with_notification(self._perform_action_impl, links, limit, concurrency)
+            if websocket:
+                await self.send_ws_result(websocket, "Scraping complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_results": len(results)})
+            return results
+        except Exception as e:
+            if websocket:
+                await self.send_ws_error(websocket, f"ScraperService.perform_action error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
+            raise
 
     async def _perform_action_impl(self, links: list, limit: int = 2, concurrency: int = 3) -> list:
         """

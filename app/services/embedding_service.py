@@ -5,6 +5,7 @@ from typing import Optional, Any, List
 from app.utils.logger import get_logger_instance, Logger
 from app.utils.redis_cache import redis_cache_decorator
 from app.core.interfaces import IWebSocketManager, ILogger
+from app.utils.message_types import MessageSource
 import asyncio
 import numpy as np
 
@@ -42,7 +43,7 @@ class EmbeddingService(BaseService):
                 await asyncio.sleep(wait_time)
 
     @BaseService.cache_result(ttl_seconds=3600)  # Cache embeddings for 1 hour
-    async def embed_text(self, text: str) -> List[float]:
+    async def embed_text(self, text: str, websocket=None, session_id=None) -> List[float]:
         """
         Generate an embedding for a single text string with caching.
         Args:
@@ -56,17 +57,22 @@ class EmbeddingService(BaseService):
             await self._rate_limit()
             import asyncio
             loop = asyncio.get_event_loop()
-            # Use OllamaEmbeddings' embed_query method
+            if websocket:
+                await self.send_ws_progress(websocket, "Embedding text", MessageSource.CHAT_SERVICE, 0.2, session_id=session_id, details={"text": text[:30]})
             result = await loop.run_in_executor(
                 None, lambda: self.embedder.embed_query(text)
             )
+            if websocket:
+                await self.send_ws_result(websocket, "Text embedding complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"embedding_dim": len(result)})
             return result
         except Exception as e:
             await self.logger.error(f"EmbeddingService.embed_text error: {e}")
+            if websocket:
+                await self.send_ws_error(websocket, f"EmbeddingService.embed_text error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
             raise
 
     @redis_cache_decorator(expire=1800)  # Cache for 30 minutes
-    async def embed_texts_batch(self, texts: List[str], batch_size: Optional[int] = None) -> List[List[float]]:
+    async def embed_texts_batch(self, texts: List[str], batch_size: Optional[int] = None, websocket=None, session_id=None) -> List[List[float]]:
         """
         Generate embeddings for a list of text strings with optimized batching.
         Args:
@@ -88,7 +94,8 @@ class EmbeddingService(BaseService):
             for i in range(0, len(texts), batch_size):
                 batch = texts[i:i + batch_size]
                 await self._rate_limit()
-                
+                if websocket:
+                    await self.send_ws_progress(websocket, f"Embedding batch {i//batch_size+1}", MessageSource.CHAT_SERVICE, min(0.9, (i+batch_size)/max(1,len(texts))), session_id=session_id, details={"batch": i//batch_size+1})
                 batch_result = await self._retry_with_backoff(
                     lambda b=batch: asyncio.get_event_loop().run_in_executor(
                         None, lambda: self.embedder.embed_documents(b)
@@ -100,9 +107,13 @@ class EmbeddingService(BaseService):
                 if i + batch_size < len(texts):
                     await asyncio.sleep(0.1)
             
+            if websocket:
+                await self.send_ws_result(websocket, "Batch text embedding complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_batches": (len(texts)+batch_size-1)//batch_size})
             return results
         except Exception as e:
             await self.logger.error(f"EmbeddingService.embed_texts_batch error: {e}")
+            if websocket:
+                await self.send_ws_error(websocket, f"EmbeddingService.embed_texts_batch error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
             raise
 
     async def embed_texts(self, texts: list) -> List[List[float]]:

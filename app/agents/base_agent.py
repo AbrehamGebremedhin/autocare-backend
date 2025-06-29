@@ -43,25 +43,37 @@ class BaseAgent:
         await self.websocket_manager.broadcast(stage)
 
     async def send_ws_info(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
+        if websocket is not None:
+            from app.utils.json_utils import serialize_datetimes
+            details = serialize_datetimes(details)
             await self.websocket_manager.send_info(websocket, content, source, session_id, details)
 
     async def send_ws_error(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
+        if websocket is not None:
+            from app.utils.json_utils import serialize_datetimes
+            details = serialize_datetimes(details)
             await self.websocket_manager.send_error(websocket, content, source, session_id, details)
 
     async def send_ws_progress(self, websocket, content, source: MessageSource, progress: float, session_id=None, details=None):
-        if self.websocket_manager:
+        if websocket is not None:
+            from app.utils.json_utils import serialize_datetimes
+            details = serialize_datetimes(details)
             await self.websocket_manager.send_progress(websocket, content, source, progress, session_id, details)
 
     async def send_ws_stage(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
+        if websocket is not None:
+            from app.utils.json_utils import serialize_datetimes
+            details = serialize_datetimes(details)
             await self.websocket_manager.send_stage(websocket, content, source, session_id, details)
 
     async def send_ws_result(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
+        if websocket is not None:
+            from app.utils.json_utils import serialize_datetimes
+            details = serialize_datetimes(details)
             await self.websocket_manager.send_result(websocket, content, source, session_id, details)
 
     async def send_ws_debug(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
+        if websocket is not None:
+            from app.utils.json_utils import serialize_datetimes
+            details = serialize_datetimes(details)
             await self.websocket_manager.send_debug(websocket, content, source, session_id, details)

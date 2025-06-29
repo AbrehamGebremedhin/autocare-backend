@@ -6,6 +6,7 @@ from app.core.interfaces import IWebSocketManager
 from app.agents.base_agent import BaseAgent
 from app.utils.message_types import MessageSource
 from app.utils.monitoring import monitor_and_handle
+from app.utils.json_utils import serialize_datetimes
 import json
 import re
 import traceback
@@ -120,6 +121,8 @@ Output:
                     "followup_questions": [],
                     "confidence": "Low: Could not parse response."
                 }
+            # Serialize datetimes before sending to websocket or returning
+            parsed_response = serialize_datetimes(parsed_response)
             if websocket:
                 await self.send_ws_result(websocket, "User message generated", MessageSource.CHAT_SERVICE, session_id=session_id, details=parsed_response)
             await self.broadcast_stage(json.dumps({"type": "stage", "stage": "User message generated"}))

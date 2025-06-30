@@ -262,6 +262,3 @@ class ScraperService(BaseService):
                 await asyncio.sleep(0.5)
         
         return results
-
-    # Removed __del__ destructor. Use explicit async cleanup methods instead.
-    # Call `await service.cleanup()` when shutting down the app or event loop.

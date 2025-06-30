@@ -1,12 +1,26 @@
-from typing import Any
+from typing import Any, Optional
 import re
 from app.utils.logger import get_logger_instance
 from app.utils.websocket import manager
 from app.core.interfaces import ILogger, IWebSocketManager
 from app.utils.message_types import MessageType, MessageSource
+import abc
 
-class BaseAgent:
-    def __init__(self, car_crud=None, car_id=None, car_make=None, car_model=None, car_year=None, logger_name=None, websocket_manager: IWebSocketManager = None, logger: ILogger = None):
+class BaseAgent(abc.ABC):
+    def __init__(
+        self,
+        car_crud: Optional[Any] = None,
+        car_id: Optional[str] = None,
+        car_make: Optional[str] = None,
+        car_model: Optional[str] = None,
+        car_year: Optional[str] = None,
+        logger_name: Optional[str] = None,
+        websocket_manager: Optional[IWebSocketManager] = None,
+        logger: Optional[ILogger] = None
+    ):
+        """
+        Base class for all agents. Handles car info, logging, and websocket communication.
+        """
         self.car_crud = car_crud
         self.car_id = car_id
         self.car_make = car_make
@@ -15,7 +29,7 @@ class BaseAgent:
         self.logger = logger or get_logger_instance(logger_name or self.__class__.__name__)
         self.websocket_manager = websocket_manager or manager
 
-    async def _ensure_car_info(self):
+    async def _ensure_car_info(self) -> None:
         """
         Ensure car_make, car_model, and car_year are set by fetching from DB if missing.
         """
@@ -39,41 +53,50 @@ class BaseAgent:
         text = re.sub(r"(?i)can you tell me (the )?car'?s? (make|model|year)[\?\.]?", "", text)
         return text
 
-    async def broadcast_stage(self, stage: str):
+    async def send_ws_message(self, websocket: Any, method: str, content: str, source: MessageSource, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
+        """
+        Generic method to send a websocket message using the specified method name.
+        """
+        if websocket is not None:
+            from app.utils.json_utils import serialize_datetimes
+            details = serialize_datetimes(details)
+            ws_method = getattr(self.websocket_manager, method, None)
+            if ws_method:
+                await ws_method(websocket, content, source, session_id, details)
+
+    async def broadcast_stage(self, stage: str) -> None:
         await self.websocket_manager.broadcast(stage)
 
-    async def send_ws_info(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if websocket is not None:
-            from app.utils.json_utils import serialize_datetimes
-            details = serialize_datetimes(details)
-            await self.websocket_manager.send_info(websocket, content, source, session_id, details)
+    async def send_ws_info(self, websocket: Any, content: str, source: MessageSource, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
+        await self.send_ws_message(websocket, 'send_info', content, source, session_id, details)
 
-    async def send_ws_error(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if websocket is not None:
-            from app.utils.json_utils import serialize_datetimes
-            details = serialize_datetimes(details)
-            await self.websocket_manager.send_error(websocket, content, source, session_id, details)
+    async def send_ws_error(self, websocket: Any, content: str, source: MessageSource, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
+        await self.send_ws_message(websocket, 'send_error', content, source, session_id, details)
 
-    async def send_ws_progress(self, websocket, content, source: MessageSource, progress: float, session_id=None, details=None):
+    async def send_ws_progress(self, websocket: Any, content: str, source: MessageSource, progress: float, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
         if websocket is not None:
             from app.utils.json_utils import serialize_datetimes
             details = serialize_datetimes(details)
             await self.websocket_manager.send_progress(websocket, content, source, progress, session_id, details)
 
-    async def send_ws_stage(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if websocket is not None:
-            from app.utils.json_utils import serialize_datetimes
-            details = serialize_datetimes(details)
-            await self.websocket_manager.send_stage(websocket, content, source, session_id, details)
+    async def send_ws_stage(self, websocket: Any, content: str, source: MessageSource, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
+        await self.send_ws_message(websocket, 'send_stage', content, source, session_id, details)
 
-    async def send_ws_result(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if websocket is not None:
-            from app.utils.json_utils import serialize_datetimes
-            details = serialize_datetimes(details)
-            await self.websocket_manager.send_result(websocket, content, source, session_id, details)
+    async def send_ws_result(self, websocket: Any, content: str, source: MessageSource, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
+        await self.send_ws_message(websocket, 'send_result', content, source, session_id, details)
 
-    async def send_ws_debug(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if websocket is not None:
-            from app.utils.json_utils import serialize_datetimes
-            details = serialize_datetimes(details)
-            await self.websocket_manager.send_debug(websocket, content, source, session_id, details)
+    async def send_ws_debug(self, websocket: Any, content: str, source: MessageSource, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
+        await self.send_ws_message(websocket, 'send_debug', content, source, session_id, details)
+
+    @abc.abstractmethod
+    async def process(self, *args, **kwargs) -> Any:
+        """
+        Abstract method to be implemented by all agents for their main processing logic.
+        """
+        pass
+
+    def close(self) -> None:
+        """
+        Optional cleanup method for agents to override if needed.
+        """
+        pass

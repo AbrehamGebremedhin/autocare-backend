@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from langchain.prompts import PromptTemplate
 from app.services.llm_service import LLMService
 from app.utils.logger import Logger
@@ -17,10 +17,13 @@ class UserInteractionAgent(BaseAgent):
     """
     def __init__(
         self,
-        websocket_manager: IWebSocketManager = None,
-        llm_service: LLMService = None,
+        websocket_manager: Optional[IWebSocketManager] = None,
+        llm_service: Optional[LLMService] = None,
         **kwargs
     ):
+        """
+        Initialize the UserInteractionAgent with dependency injection for testability.
+        """
         super().__init__(websocket_manager=websocket_manager, logger_name="UserInteractionAgent", **kwargs)
         self.llm_service = llm_service or LLMService()
         self.prompt = PromptTemplate.from_template(
@@ -415,3 +418,9 @@ class UserInteractionAgent(BaseAgent):
                         "error": str(e),
                         "error_type": type(e).__name__
                     }
+
+    def close(self) -> None:
+        """
+        Optional cleanup method for the agent.
+        """
+        pass

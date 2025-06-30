@@ -24,16 +24,19 @@ class DiagnosisAgent(BaseAgent):
         self,
         car_id: str,
         diagnosis_tree: DiagnosisTreeNode,
-        car_make: str = None,
-        car_model: str = None,
-        car_year: str = None,
+        car_make: Optional[str] = None,
+        car_model: Optional[str] = None,
+        car_year: Optional[str] = None,
         search_engine_service: Optional[SearchEngineService] = None,
-        websocket_manager: IWebSocketManager = None,
+        websocket_manager: Optional[IWebSocketManager] = None,
         llm_service: Optional[LLMService] = None,
         embedding_service: Optional[EmbeddingService] = None,
         scraper_service: Optional[ScraperService] = None,
         **kwargs
     ):
+        """
+        Initialize the DiagnosisAgent with all dependencies injected for testability.
+        """
         super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="DiagnosisAgent", websocket_manager=websocket_manager)
         self.diagnosis_tree = diagnosis_tree
         self.llm_service = llm_service or LLMService()
@@ -469,3 +472,9 @@ class DiagnosisAgent(BaseAgent):
         For advanced LangChain integrations (e.g., chains), use this accessor.
         """
         return self.llm_service.get_llm()
+
+    def close(self) -> None:
+        """
+        Optional cleanup method for the agent.
+        """
+        pass

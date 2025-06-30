@@ -96,17 +96,20 @@ class SymptomExtractorAgent(BaseAgent):
     def __init__(
         self,
         car_id: str,
-        diagnosis_tree: DiagnosisTreeNode = None,
-        car_make: str = None,
-        car_model: str = None,
-        car_year: str = None,
-        websocket_manager: IWebSocketManager = None,
+        diagnosis_tree: Optional[DiagnosisTreeNode] = None,
+        car_make: Optional[str] = None,
+        car_model: Optional[str] = None,
+        car_year: Optional[str] = None,
+        websocket_manager: Optional[IWebSocketManager] = None,
         llm_service: Optional[LLMService] = None,
         embedding_service: Optional[EmbeddingService] = None,
         scraper_service: Optional[ScraperService] = None,
         tree_manager_agent: Optional[TreeManagerAgent] = None,
         **kwargs: Any
     ):
+        """
+        Initialize the SymptomExtractorAgent with all dependencies injected for testability.
+        """
         super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="SymptomExtractorAgent", websocket_manager=websocket_manager)
         self.llm_service = llm_service or LLMService()
         self.prompt = self.get_prompt_template()
@@ -129,7 +132,6 @@ class SymptomExtractorAgent(BaseAgent):
             self.tree_manager_agent = None
 
     async def pre_process(self, task: Any) -> Dict[str, Any]:
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Pre-processing context"}))
         """
         Pre-process the input task by fetching car data and relevant context.
         Args:
@@ -137,6 +139,7 @@ class SymptomExtractorAgent(BaseAgent):
         Returns:
             Dict[str, Any]: Context dictionary including manuals and scraped data.
         """
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Pre-processing context"}))
         context: Dict[str, Any] = {}
         timings = {}
         t0 = time.perf_counter()
@@ -210,13 +213,6 @@ class SymptomExtractorAgent(BaseAgent):
         return context
 
     async def handle(self, task: Any) -> Any:
-        await self._ensure_car_info()
-        if self.car_make and self.car_model and self.car_year:
-            car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year}
-        else:
-            car = None
-
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Minimal LLM context"}))
         """
         Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
         Uses only the LLM with minimal context first. If the result is ambiguous (not good enough),
@@ -330,7 +326,16 @@ class SymptomExtractorAgent(BaseAgent):
         }
 
     @monitor_and_handle("SymptomExtractorAgent")
-    async def process(self, user_message: str, websocket=None, session_id=None):
+    async def process(self, user_message: str, websocket=None, session_id=None) -> Any:
+        """
+        Main entry point for symptom extraction. Handles websocket communication and error reporting.
+        Args:
+            user_message (str): The user's message describing symptoms.
+            websocket: Optional websocket connection for real-time updates.
+            session_id: Optional session identifier.
+        Returns:
+            Dict[str, Any]: Extracted symptoms and updated diagnosis tree.
+        """
         try:
             if websocket:
                 await self.send_ws_stage(websocket, "Symptom extraction started", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id)
@@ -353,7 +358,6 @@ class SymptomExtractorAgent(BaseAgent):
             raise
 
     async def extract_symptoms(self, input_text: Any, context: str = "") -> List[Dict[str, Any]]:
-        await self._ensure_car_info()
         """
         Extract symptoms from the input text using the LLM service.
         Args:
@@ -362,6 +366,7 @@ class SymptomExtractorAgent(BaseAgent):
         Returns:
             List[Dict[str, Any]]: Parsed JSON array of extracted symptoms.
         """
+        await self._ensure_car_info()
         user_message_concat = self._concat_user_messages(input_text)
         prompt = self.prompt.format(input_text=user_message_concat, context=context)
         response = await self.llm_service.generate_response(prompt)
@@ -388,3 +393,9 @@ class SymptomExtractorAgent(BaseAgent):
         For advanced LangChain integrations (e.g., chains), use this accessor.
         """
         return self.llm_service.get_llm()
+
+    def close(self) -> None:
+        """
+        Optional cleanup method for the agent.
+        """
+        pass

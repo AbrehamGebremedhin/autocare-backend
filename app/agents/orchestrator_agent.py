@@ -8,16 +8,23 @@ from app.core.interfaces import IWebSocketManager
 from app.agents.base_agent import BaseAgent
 from app.utils.message_types import MessageSource
 from app.utils.monitoring import monitor_and_handle
+from typing import Optional
 
 class OrchestratorAgent(BaseAgent):
+    """
+    Orchestrates the flow between agents for end-to-end diagnosis and user interaction.
+    """
     def __init__(
         self,
-        websocket_manager: IWebSocketManager = None,
+        websocket_manager: Optional[IWebSocketManager] = None,
         symptom_extractor_agent_class=SymptomExtractorAgent,
         diagnosis_agent_class=DiagnosisAgent,
-        user_interaction_agent: UserInteractionAgent = None,
+        user_interaction_agent: Optional[UserInteractionAgent] = None,
         **kwargs
     ):
+        """
+        Initialize the OrchestratorAgent with agent class dependencies for testability.
+        """
         super().__init__(websocket_manager=websocket_manager, **kwargs)
         self.agents = {
             'symptom_extraction': symptom_extractor_agent_class,  # Store the class, not the instance
@@ -187,3 +194,10 @@ class OrchestratorAgent(BaseAgent):
                 'result': user_response.get('user_message'),
                 'success': False
             }
+    
+    def close(self) -> None:
+        """
+        Optional cleanup method for the agent.
+        """
+        if hasattr(self.user_interaction_agent, 'close'):
+            self.user_interaction_agent.close()

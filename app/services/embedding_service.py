@@ -14,21 +14,34 @@ class EmbeddingService(BaseService):
     Service for generating embeddings using a locally running Ollama model (nomic-embed-text).
     Enhanced with batch processing, caching, and performance optimizations.
     """
-    def __init__(self, model_name: str = "nomic-embed-text", logger: Optional[ILogger] = None, websocket_manager: IWebSocketManager = None):
+    def __init__(
+        self,
+        model_name: str = "nomic-embed-text",
+        logger: Optional[ILogger] = None,
+        websocket_manager: IWebSocketManager = None,
+        embedder: Optional[Any] = None,
+        batch_size: int = 50,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+    ):
         """
         Initialize the EmbeddingService.
         Args:
             model_name: Name of the Ollama model to use for embeddings.
             logger: Optional logger instance.
             websocket_manager: Optional WebSocketManager for notifications.
+            embedder: Optional custom embedder instance.
+            batch_size: Batch size for API calls.
+            max_retries: Max retries for API calls.
+            retry_delay: Delay between retries.
         """
         super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or get_logger_instance("EmbeddingService")
         self.model_name = model_name
-        self.embedder = OllamaEmbeddings(model=model_name)
-        self._batch_size = 50  # Optimal batch size for API calls
-        self._max_retries = 3
-        self._retry_delay = 1.0
+        self.embedder = embedder or OllamaEmbeddings(model=model_name)
+        self._batch_size = batch_size  # Optimal batch size for API calls
+        self._max_retries = max_retries
+        self._retry_delay = retry_delay
 
     async def _retry_with_backoff(self, func, *args, **kwargs):
         """Retry a function with exponential backoff."""

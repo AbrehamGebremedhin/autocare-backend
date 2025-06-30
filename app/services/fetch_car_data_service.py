@@ -12,20 +12,32 @@ class FetchCarDataService(BaseService):
     """
     Enhanced service to download files and scrape car data with connection pooling and performance optimizations.
     """
-    def __init__(self, websocket_manager: IWebSocketManager = None, logger: Optional[ILogger] = None):
+    def __init__(
+        self,
+        websocket_manager: IWebSocketManager = None,
+        logger: Optional[ILogger] = None,
+        client_pool: Optional[httpx.AsyncClient] = None,
+        base_url: Optional[str] = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+    ):
         """
         Initialize the FetchCarDataService.
         Args:
             websocket_manager: Optional WebSocketManager for notifications.
             logger: Optional logger instance.
+            client_pool: Optional HTTP client pool.
+            base_url: Optional base URL for car data.
+            max_retries: Max retries for HTTP requests.
+            retry_delay: Delay between retries.
         """
         super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or get_logger_instance("FetchCarDataService")
         settings = get_settings()
-        self.BASE_URL = settings.BASE_URL
-        self._client_pool = None
-        self._max_retries = 3
-        self._retry_delay = 1.0
+        self.BASE_URL = base_url or settings.BASE_URL
+        self._client_pool = client_pool
+        self._max_retries = max_retries
+        self._retry_delay = retry_delay
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with connection pooling."""

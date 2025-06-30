@@ -18,7 +18,12 @@ class ParserService(BaseService):
     Service for parsing PDFs, large strings, and other documents into structured text chunks.
     Dependencies can be injected for testability and flexibility.
     """
-    def __init__(self, pdf_reader: Optional[Any] = None, logger: Optional[ILogger] = None, websocket_manager: IWebSocketManager = None):
+    def __init__(
+        self,
+        pdf_reader: Optional[Any] = None,
+        logger: Optional[ILogger] = None,
+        websocket_manager: IWebSocketManager = None
+    ):
         """
         Initialize the ParserService.
         Args:

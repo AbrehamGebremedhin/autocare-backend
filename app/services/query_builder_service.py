@@ -10,23 +10,35 @@ class QueryBuilderService(BaseService):
     """
     Service to build optimized queries for search engines, YouTube, and vector search using Gemini API via LangChain.
     """
-    def __init__(self, logger: Optional[Logger] = None, websocket_manager=None):
+    def __init__(
+        self,
+        logger: Optional[Logger] = None,
+        websocket_manager=None,
+        gemini_api_key: Optional[str] = None,
+        gemini_model: Optional[str] = None,
+        llm: Optional[ChatGoogleGenerativeAI] = None,
+        prompts: Optional[dict] = None,
+    ):
         """
         Initialize the QueryBuilderService.
         Args:
             logger (Logger): Optional logger instance.
             websocket_manager: Optional WebSocketManager for notifications.
+            gemini_api_key: Optional Gemini API key.
+            gemini_model: Optional Gemini model name.
+            llm: Optional custom LLM instance.
+            prompts: Optional custom prompts dict.
         """
         super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or get_logger_instance("QueryBuilderService")
         settings = get_settings()
-        self.gemini_api_key = settings.GEMINI_KEY
-        self.gemini_model = settings.GEMINI_MODEL_1
-        self.llm = ChatGoogleGenerativeAI(
+        self.gemini_api_key = gemini_api_key or settings.GEMINI_KEY
+        self.gemini_model = gemini_model or settings.GEMINI_MODEL_1
+        self.llm = llm or ChatGoogleGenerativeAI(
             model=self.gemini_model,
             google_api_key=self.gemini_api_key
         )
-        self.prompts = {
+        self.prompts = prompts or {
             "search_engine": ChatPromptTemplate.from_template(
                 """
                 As an expert search query optimizer, analyze the user query: '{query}'

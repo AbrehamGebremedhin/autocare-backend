@@ -14,14 +14,23 @@ class ChatService(BaseService):
     """
     ChatService with session management and direct message passing to OrchestratorAgent.
     """
-    def __init__(self, websocket_manager: IWebSocketManager = None):
+    def __init__(
+        self,
+        websocket_manager: IWebSocketManager = None,
+        orchestrator: Optional[OrchestratorAgent] = None,
+        logger: Optional[logging.Logger] = None,
+        conversation_cache: Optional[dict] = None,
+        response_times: Optional[deque] = None,
+        max_conversation_length: int = 20,
+        conversation_ttl: int = 3600,
+    ):
         super().__init__(websocket_manager=websocket_manager)
-        self.orchestrator = OrchestratorAgent()
-        self._conversation_cache = {}  # Cache for active conversations
-        self._max_conversation_length = 20  # Maximum messages to keep in memory
-        self._conversation_ttl = 3600  # 1 hour TTL for conversations
-        self._response_times = deque(maxlen=100)  # Track last 100 response times
-        self.logger = logging.getLogger(__name__)
+        self.orchestrator = orchestrator or OrchestratorAgent()
+        self._conversation_cache = conversation_cache or {}  # Cache for active conversations
+        self._max_conversation_length = max_conversation_length  # Maximum messages to keep in memory
+        self._conversation_ttl = conversation_ttl  # 1 hour TTL for conversations
+        self._response_times = response_times or deque(maxlen=100)  # Track last 100 response times
+        self.logger = logger or logging.getLogger(__name__)
 
     def _get_conversation(self, user_id: str, session: Optional[Dict] = None) -> Dict:
         now = datetime.now()

@@ -35,17 +35,28 @@ class SearchEngineService(BaseService):
     """
     Service for searching car-related documents and knowledge sources using vector search.
     """
-    def __init__(self, websocket_manager: IWebSocketManager = None):
+    def __init__(
+        self,
+        websocket_manager: IWebSocketManager = None,
+        embedding_service: Optional[EmbeddingService] = None,
+        parser_service: Optional[ParserService] = None,
+        scraper_service: Optional[ScraperService] = None,
+        milvus_handler: Optional[MilvusHandler] = None,
+        car_crud: Optional[CarCRUD] = None,
+        bucket_manager: Optional[SupabaseBucketManager] = None,
+        manual_path_cache: Optional[LRUCache] = None,
+        embedding_cache: Optional[LRUCache] = None,
+    ):
         super().__init__(websocket_manager=websocket_manager)
-        self.embedding_service = EmbeddingService(websocket_manager=websocket_manager)
-        self.parser_service = ParserService(websocket_manager=websocket_manager)
-        self.scraper_service = ScraperService(websocket_manager=websocket_manager)
-        self.milvus_handler = MilvusHandler()
-        self.car_crud = CarCRUD()
-        self.bucket_manager = SupabaseBucketManager()
+        self.embedding_service = embedding_service or EmbeddingService(websocket_manager=websocket_manager)
+        self.parser_service = parser_service or ParserService(websocket_manager=websocket_manager)
+        self.scraper_service = scraper_service or ScraperService(websocket_manager=websocket_manager)
+        self.milvus_handler = milvus_handler or MilvusHandler()
+        self.car_crud = car_crud or CarCRUD()
+        self.bucket_manager = bucket_manager or SupabaseBucketManager()
         # Caches
-        self._manual_path_cache = LRUCache(capacity=32)
-        self._embedding_cache = LRUCache(capacity=32)
+        self._manual_path_cache = manual_path_cache or LRUCache(capacity=32)
+        self._embedding_cache = embedding_cache or LRUCache(capacity=32)
 
     async def download_owner_manual(self, car_id: str) -> Optional[str]:
         """

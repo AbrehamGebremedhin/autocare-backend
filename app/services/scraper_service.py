@@ -11,7 +11,16 @@ class ScraperService(BaseService):
     """
     Enhanced service to scrape URLs using Crawl4AI with async capabilities, retry logic, and performance optimizations.
     """
-    def __init__(self, headless: bool = True, logger: Optional[ILogger] = None, pool_size: int = 3, websocket_manager: IWebSocketManager = None):
+    def __init__(
+        self,
+        headless: bool = True,
+        logger: Optional[ILogger] = None,
+        pool_size: int = 3,
+        websocket_manager: IWebSocketManager = None,
+        crawler: Optional[AsyncWebCrawler] = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+    ):
         """
         Initialize the ScraperService with crawl4ai configuration.
         Args:
@@ -19,14 +28,17 @@ class ScraperService(BaseService):
             logger (ILogger): Optional logger instance.
             pool_size (int): Number of concurrent crawlers (used for semaphore).
             websocket_manager: Optional WebSocketManager for notifications.
+            crawler: Optional custom crawler instance.
+            max_retries: Max retries for crawling.
+            retry_delay: Delay between retries.
         """
         super().__init__(websocket_manager=websocket_manager)
         self.headless = headless
         self.logger = logger or get_logger_instance("ScraperService")
         self.pool_size = pool_size
-        self._max_retries = 3
-        self._retry_delay = 1.0
-        self.crawler = None
+        self._max_retries = max_retries
+        self._retry_delay = retry_delay
+        self.crawler = crawler
 
     async def _get_crawler_config(self) -> dict:
         """

@@ -13,6 +13,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import asyncio
+from app.agents.global_agents import orchestrator_agent
 
 # Concrete implementations (adapters)
 logger: ILogger = get_logger_instance()
@@ -115,6 +116,15 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     await logger.info("WebSocket manager is shutting down.")
+    # Cleanup: close DB, Redis, WebSocket manager, and global agents if possible
+    if hasattr(db_handler, "close") and callable(getattr(db_handler, "close")):
+        await db_handler.close()
+    if hasattr(websocket_manager, "close") and callable(getattr(websocket_manager, "close")):
+        await websocket_manager.close()
+    if hasattr(logger, "close") and callable(getattr(logger, "close")):
+        await logger.close()
+    if hasattr(orchestrator_agent, "close") and callable(getattr(orchestrator_agent, "close")):
+        orchestrator_agent.close()
 
 app.include_router(v1_router, prefix="/api/v1")
 

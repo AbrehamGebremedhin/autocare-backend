@@ -85,6 +85,13 @@ class TreeManagerAgent(BaseAgent):
         for node in self.root.traverse():
             node.sort_children_by_likelyhood()
 
+    async def process(self, *args, **kwargs) -> None:
+        """
+        Dummy process method to satisfy BaseAgent's abstract method requirement.
+        TreeManagerAgent does not use a process entry point.
+        """
+        pass
+
     def close(self) -> None:
         """
         Optional cleanup method for the agent.

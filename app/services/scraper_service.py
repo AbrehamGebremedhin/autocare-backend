@@ -99,7 +99,8 @@ class ScraperService(BaseService):
                 await self.crawler.close()
                 self.crawler = None
             except Exception as e:
-                await self.logger.error(f"Error during crawler cleanup: {e}")
+                if hasattr(self, 'logger') and self.logger:
+                    await self.logger.exception(f"Error during crawler cleanup: {e}")
 
     async def extract_page_info_with_retry(self, url: str) -> dict:
         """
@@ -118,7 +119,8 @@ class ScraperService(BaseService):
                     return result
             except Exception as e:
                 if attempt == self._max_retries - 1:
-                    await self.logger.error(f"Final attempt failed for {url}: {e}")
+                    if hasattr(self, 'logger') and self.logger:
+                        await self.logger.exception(f"Final attempt failed for {url}: {e}")
                     return {'url': url, 'error': str(e)}
                 
                 wait_time = self._retry_delay * (2 ** attempt)
@@ -190,7 +192,8 @@ class ScraperService(BaseService):
             }
             
         except Exception as e:
-            await self.logger.error(f"extract_page_info error for {url}: {e}")
+            if hasattr(self, 'logger') and self.logger:
+                await self.logger.exception(f"extract_page_info error for {url}: {e}")
             return {'url': url, 'error': str(e)}
 
     async def perform_action(self, links: list, limit: int = 2, concurrency: int = 3, websocket=None, session_id=None) -> list:
@@ -211,6 +214,8 @@ class ScraperService(BaseService):
                 await self.send_ws_result(websocket, "Scraping complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_results": len(results)})
             return results
         except Exception as e:
+            if hasattr(self, 'logger') and self.logger:
+                await self.logger.exception(f"ScraperService.perform_action error: {e}")
             if websocket:
                 await self.send_ws_error(websocket, f"ScraperService.perform_action error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
             raise
@@ -246,7 +251,8 @@ class ScraperService(BaseService):
             
             for result in batch_results:
                 if isinstance(result, Exception):
-                    await self.logger.error(f"Batch processing error: {result}")
+                    if hasattr(self, 'logger') and self.logger:
+                        await self.logger.exception(f"Batch processing error: {result}")
                     results.append({'url': 'unknown', 'error': str(result)})
                 else:
                     results.append(result)
@@ -257,10 +263,5 @@ class ScraperService(BaseService):
         
         return results
 
-    def __del__(self):
-        """Destructor to ensure cleanup."""
-        try:
-            if self.crawler:
-                asyncio.create_task(self.cleanup())
-        except Exception:
-            pass
+    # Removed __del__ destructor. Use explicit async cleanup methods instead.
+    # Call `await service.cleanup()` when shutting down the app or event loop.

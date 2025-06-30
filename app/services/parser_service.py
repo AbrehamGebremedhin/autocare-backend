@@ -57,7 +57,8 @@ class ParserService(BaseService):
                 full_text += page.extract_text() or ""
             return await self.chunk_text(full_text, chunk_size)
         except Exception as e:
-            await self.logger.error(f"ParserService.parse_pdf error: {e}")
+            if hasattr(self, 'logger') and self.logger:
+                await self.logger.exception(f"ParserService.parse_pdf error: {e}")
             raise
 
     async def parse_string(self, text: str, chunk_size: int = 1000) -> List[str]:
@@ -74,7 +75,8 @@ class ParserService(BaseService):
         try:
             return await self.chunk_text(text, chunk_size)
         except Exception as e:
-            await self.logger.error(f"ParserService.parse_string error: {e}")
+            if hasattr(self, 'logger') and self.logger:
+                await self.logger.exception(f"ParserService.parse_string error: {e}")
             raise
 
     async def chunk_text(self, text: str, chunk_size: int = 1000) -> List[str]:
@@ -104,7 +106,8 @@ class ParserService(BaseService):
                 chunks.append(current_chunk.strip())
             return chunks
         except Exception as e:
-            await self.logger.error(f"ParserService.chunk_text error: {e}")
+            if hasattr(self, 'logger') and self.logger:
+                await self.logger.exception(f"ParserService.chunk_text error: {e}")
             raise
 
     async def chunk_text_optimized(self, text: str, chunk_size: int = 1000) -> List[str]:

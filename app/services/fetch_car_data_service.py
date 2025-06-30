@@ -4,6 +4,7 @@ from app.core.interfaces import IWebSocketManager, ILogger
 from bs4 import BeautifulSoup
 import httpx
 import asyncio
+import aiofiles
 from typing import Optional, List, Dict
 from app.utils.logger import get_logger_instance, Logger
 from app.utils.message_types import MessageSource
@@ -202,8 +203,8 @@ class FetchCarDataService(BaseService):
                 
                 response = await client.get(url)
                 if response.status_code == 200 and 'application/pdf' in response.headers.get('Content-Type', ''):
-                    with open(output_path, 'wb') as f:
-                        f.write(response.content)
+                    async with aiofiles.open(output_path, 'wb') as f:
+                        await f.write(response.content)
                     await self.notify_websocket(f"PDF downloaded successfully: {output_path}")
                     return
                 else:

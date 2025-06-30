@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional
 import os
 import asyncio
 import re
+import aiofiles
 from langchain_core.documents import Document
 from collections import OrderedDict
 from app.core.interfaces import IWebSocketManager
@@ -74,16 +75,23 @@ class SearchEngineService(BaseService):
         # owner_manual_url is expected to be in the format 'bucket_name/path/to/file.pdf'
         try:
             bucket_name, file_path = owner_manual_url.split('/', 1)
-        except Exception:
+        except Exception as e:
+            if hasattr(self, 'logger') and self.logger:
+                self.logger.exception(f"Error splitting owner_manual_url: {owner_manual_url}")
             return None
         local_path = f"car_data/{car_id}_manual.pdf"
         # Download the file from Supabase if not already present locally
         if not os.path.exists(local_path):
-            file_bytes = await self.bucket_manager.download_file(bucket_name, file_path)
-            if not file_bytes:
+            try:
+                file_bytes = await self.bucket_manager.download_file(bucket_name, file_path)
+                if not file_bytes:
+                    return None
+                async with aiofiles.open(local_path, 'wb') as f:
+                    await f.write(file_bytes)
+            except Exception as e:
+                if hasattr(self, 'logger') and self.logger:
+                    self.logger.exception(f"Error downloading or saving manual for car_id {car_id}: {e}")
                 return None
-            with open(local_path, 'wb') as f:
-                f.write(file_bytes)
         self._manual_path_cache.set(car_id, local_path)
         return local_path
 
@@ -122,8 +130,8 @@ class SearchEngineService(BaseService):
         if static_data is not None:
             chunks, chunk_embeddings = static_data
         else:
-            with open(content_path, 'rb') as f:
-                pdf_bytes = f.read()
+            async with aiofiles.open(content_path, 'rb') as f:
+                pdf_bytes = await f.read()
             chunks = await self.parser_service.parse_pdf_bytes_optimized(pdf_bytes, chunk_size=chunk_size)
             if not chunks:
                 return []
@@ -303,6 +311,8 @@ class SearchEngineService(BaseService):
                 await self.send_ws_result(websocket, "Search complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_results": len(result)})
             return result
         except Exception as e:
+            if hasattr(self, 'logger') and self.logger:
+                self.logger.exception(f"SearchEngineService.perform_action error: {e}")
             if websocket:
                 await self.send_ws_error(websocket, f"SearchEngineService.perform_action error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
             raise

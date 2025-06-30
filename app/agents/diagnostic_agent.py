@@ -20,12 +20,25 @@ class DiagnosisAgent(BaseAgent):
     """
     Agentic RAG for generating a diagnosis using the diagnosis tree, user message, and multi-source context.
     """
-    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode, car_make: str = None, car_model: str = None, car_year: str = None, search_engine_service: Optional[SearchEngineService] = None, websocket_manager: IWebSocketManager = None, **kwargs):
+    def __init__(
+        self,
+        car_id: str,
+        diagnosis_tree: DiagnosisTreeNode,
+        car_make: str = None,
+        car_model: str = None,
+        car_year: str = None,
+        search_engine_service: Optional[SearchEngineService] = None,
+        websocket_manager: IWebSocketManager = None,
+        llm_service: Optional[LLMService] = None,
+        embedding_service: Optional[EmbeddingService] = None,
+        scraper_service: Optional[ScraperService] = None,
+        **kwargs
+    ):
         super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="DiagnosisAgent", websocket_manager=websocket_manager)
         self.diagnosis_tree = diagnosis_tree
-        self.llm_service = LLMService()
-        self.embedding_service = EmbeddingService()
-        self.scraper_service = ScraperService(headless=True)
+        self.llm_service = llm_service or LLMService()
+        self.embedding_service = embedding_service or EmbeddingService()
+        self.scraper_service = scraper_service or ScraperService(headless=True)
         self.search_engine_service = search_engine_service or SearchEngineService()
         self.car_make = car_make
         self.car_model = car_model

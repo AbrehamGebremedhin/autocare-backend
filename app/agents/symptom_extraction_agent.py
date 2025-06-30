@@ -93,11 +93,26 @@ class SymptomExtractorAgent(BaseAgent):
         )
 
 
-    def __init__(self, car_id: str, diagnosis_tree: DiagnosisTreeNode = None, car_make: str = None, car_model: str = None, car_year: str = None, websocket_manager: IWebSocketManager = None, **kwargs: Any):
+    def __init__(
+        self,
+        car_id: str,
+        diagnosis_tree: DiagnosisTreeNode = None,
+        car_make: str = None,
+        car_model: str = None,
+        car_year: str = None,
+        websocket_manager: IWebSocketManager = None,
+        llm_service: Optional[LLMService] = None,
+        embedding_service: Optional[EmbeddingService] = None,
+        scraper_service: Optional[ScraperService] = None,
+        tree_manager_agent: Optional[TreeManagerAgent] = None,
+        **kwargs: Any
+    ):
         super().__init__(car_crud=CarCRUD(), car_id=car_id, car_make=car_make, car_model=car_model, car_year=car_year, logger_name="SymptomExtractorAgent", websocket_manager=websocket_manager)
-        self.llm_service = LLMService()
+        self.llm_service = llm_service or LLMService()
         self.prompt = self.get_prompt_template()
         self.output_parser = JsonOutputParser()
+        self.embedding_service = embedding_service or EmbeddingService()
+        self.scraper_service = scraper_service or ScraperService(headless=True)
         
         # Initialize diagnosis tree if not provided
         if diagnosis_tree is None:
@@ -106,9 +121,12 @@ class SymptomExtractorAgent(BaseAgent):
         else:
             self.diagnosis_tree = diagnosis_tree
             
-        self.tree_manager_agent = None
-        if self.diagnosis_tree is not None:
+        if tree_manager_agent is not None:
+            self.tree_manager_agent = tree_manager_agent
+        elif self.diagnosis_tree is not None:
             self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree, llm_service=self.llm_service)
+        else:
+            self.tree_manager_agent = None
 
     async def pre_process(self, task: Any) -> Dict[str, Any]:
         await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Pre-processing context"}))
@@ -144,7 +162,7 @@ class SymptomExtractorAgent(BaseAgent):
             # No guide links available, return empty context
             return {}
 
-        embedding_service = EmbeddingService()
+        embedding_service = self.embedding_service
 
         # Start embedding and scraping in parallel (pipeline parallelism)
         async def get_embeddings():
@@ -155,7 +173,7 @@ class SymptomExtractorAgent(BaseAgent):
             return input_vec, link_vecs
 
         async def get_scraped_text(top_links):
-            scraper = ScraperService(headless=True)
+            scraper = self.scraper_service
             try:
                 scraped = await scraper.perform_action(top_links, limit=len(top_links))
                 return [item.get("text", "") for item in scraped if item.get("text")]

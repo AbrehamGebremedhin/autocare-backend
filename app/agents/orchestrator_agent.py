@@ -10,12 +10,20 @@ from app.utils.message_types import MessageSource
 from app.utils.monitoring import monitor_and_handle
 
 class OrchestratorAgent(BaseAgent):
-    def __init__(self, websocket_manager: IWebSocketManager = None, **kwargs):
+    def __init__(
+        self,
+        websocket_manager: IWebSocketManager = None,
+        symptom_extractor_agent_class=SymptomExtractorAgent,
+        diagnosis_agent_class=DiagnosisAgent,
+        user_interaction_agent: UserInteractionAgent = None,
+        **kwargs
+    ):
         super().__init__(websocket_manager=websocket_manager, **kwargs)
         self.agents = {
-            'symptom_extraction': SymptomExtractorAgent,  # Store the class, not the instance
+            'symptom_extraction': symptom_extractor_agent_class,  # Store the class, not the instance
         }
-        self.user_interaction_agent = UserInteractionAgent()
+        self.diagnosis_agent_class = diagnosis_agent_class
+        self.user_interaction_agent = user_interaction_agent or UserInteractionAgent()
 
     async def route_request(self, user_request: str, user_id: str = None, context: dict = None, websocket=None, session_id=None):
         await self.send_ws_stage(websocket, "Orchestrator - Routing request", MessageSource.ORCHESTRATOR, session_id=session_id)
@@ -44,7 +52,7 @@ class OrchestratorAgent(BaseAgent):
                 
             # Run diagnosis with the updated tree
             await self.send_ws_stage(websocket, "Orchestrator - Running diagnosis with extracted symptoms", MessageSource.ORCHESTRATOR, session_id=session_id)
-            diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=diagnosis_tree)
+            diagnostic_agent = self.diagnosis_agent_class(car_id, diagnosis_tree=diagnosis_tree)
             diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
             
             await self.send_ws_stage(websocket, "Orchestrator - Running user interaction agent", MessageSource.ORCHESTRATOR, session_id=session_id)
@@ -62,7 +70,7 @@ class OrchestratorAgent(BaseAgent):
         # For all other messages, use the current session's diagnosis_tree
         if car_id is not None:
             await self.send_ws_stage(websocket, "Orchestrator - Running diagnostic agent", MessageSource.ORCHESTRATOR, session_id=session_id)
-            diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=diagnosis_tree)
+            diagnostic_agent = self.diagnosis_agent_class(car_id, diagnosis_tree=diagnosis_tree)
             diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
             
             # If diagnostic agent requests symptom extraction, process with symptom extractor, then re-run diagnosis
@@ -76,7 +84,7 @@ class OrchestratorAgent(BaseAgent):
                     diagnosis_tree = symptom_result['diagnosis_tree']
                 
                 # Re-run diagnosis with updated tree
-                diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=diagnosis_tree)
+                diagnostic_agent = self.diagnosis_agent_class(car_id, diagnosis_tree=diagnosis_tree)
                 await self.send_ws_stage(websocket, "Orchestrator - Re-running diagnosis with updated tree", MessageSource.ORCHESTRATOR, session_id=session_id)
                 diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
                 
@@ -132,8 +140,7 @@ class OrchestratorAgent(BaseAgent):
         
         # After successful symptom extraction, run diagnostic agent
         if agent_key == 'symptom_extraction':
-            # Use the updated tree from symptom extraction
-            diagnostic_agent = DiagnosisAgent(car_id, diagnosis_tree=updated_tree)
+            diagnostic_agent = self.diagnosis_agent_class(car_id, diagnosis_tree=updated_tree)
             diagnosis_result = await diagnostic_agent.process(request, websocket=websocket, session_id=session_id)
             
             # Always pass the diagnosis result through UserInteractionAgent

@@ -15,9 +15,14 @@ class UserInteractionAgent(BaseAgent):
     """
     Agentic RAG that takes the result from the diagnostic agent and creates a user-facing message.
     """
-    def __init__(self, websocket_manager: IWebSocketManager = None, **kwargs):
+    def __init__(
+        self,
+        websocket_manager: IWebSocketManager = None,
+        llm_service: LLMService = None,
+        **kwargs
+    ):
         super().__init__(websocket_manager=websocket_manager, logger_name="UserInteractionAgent", **kwargs)
-        self.llm_service = LLMService()
+        self.llm_service = llm_service or LLMService()
         self.prompt = PromptTemplate.from_template(
             """
             You are an expert automotive assistant specializing in empowering DIY car repair enthusiasts. Your primary mission is to transform complex automotive diagnostic information into clear, actionable guidance that enables users to successfully diagnose and repair their vehicles themselves.

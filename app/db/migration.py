@@ -73,14 +73,14 @@ async def migrate_all_schemas():
     db = await SupabaseDBHandler().client  # Await the coroutine to get the client instance
     for model in models:
         sql = generate_create_table_sql(model)
-        await logger.info(f"Executing SQL for {model.__name__}:\n{sql}\n")
+        logger.info(f"Executing SQL for {model.__name__}:\n{sql}\n")
         loop = asyncio.get_running_loop()
         response = await loop.run_in_executor(None, lambda: db.rpc('execute_sql', { 'sql': sql }).execute())
-        await logger.info(f"Response: {response}\n")
+        logger.info(f"Response: {response}\n")
         if response and isinstance(response, dict) and response.get('error'):
-            await logger.error(f"Error migrating {model.__name__}: {response['error']}")
+            logger.error(f"Error migrating {model.__name__}: {response['error']}")
             raise Exception(f"Error migrating {model.__name__}: {response['error']}")
-        await logger.info(f'Migrated: {model.__name__}')
+        logger.info(f'Migrated: {model.__name__}')
 
 if __name__ == "__main__":
     asyncio.run(migrate_all_schemas())

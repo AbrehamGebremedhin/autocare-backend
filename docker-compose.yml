@@ -11,7 +11,5 @@ services:
       - MILVUS_HOST=host.docker.internal
       - OLLAMA_HOST=host.docker.internal
     restart: unless-stopped
-    # Uncomment below if you want to mount volumes for development
-    # volumes:
-    #   - .:/app
-    #   - /app/__pycache__
+    volumes:
+      - .:/app

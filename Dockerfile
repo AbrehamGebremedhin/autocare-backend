@@ -25,4 +25,4 @@ ENV MILVUS_HOST=host.docker.internal
 ENV OLLAMA_HOST=host.docker.internal
 
 # Start FastAPI app
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

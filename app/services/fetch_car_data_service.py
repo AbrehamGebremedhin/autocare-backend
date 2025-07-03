@@ -133,11 +133,12 @@ class FetchCarDataService(BaseService):
     async def scrape_links(self, url: str, req_type: str) -> list:
         """
         Scrapes all links from a given URL using BeautifulSoup with optimized parsing.
+        If req_type is not 'owner_manual', also fetches ArticleSummary from each article link.
         Args:
             url (str): The URL to scrape for links.
             req_type (str): The type of request ('owner_manual' or 'car_guide_link').
         Returns:
-            list: A list of scraped links or file paths.
+            list: A list of scraped links or file paths, or a list of dicts with link and summary.
         Raises:
             Exception: If scraping fails.
         """
@@ -179,9 +180,25 @@ class FetchCarDataService(BaseService):
                     if link.has_attr('href'):
                         link_info = f"{self.BASE_URL}{link['href'].lstrip('/')}"
                         links.append(link_info)
-                                        
-                await self.notify_websocket(f"Successfully scraped {len(links)} article links from {url}")
-                return links
+                
+                # Fetch summaries for each article link
+                results = []
+                for article_url in links:
+                    try:
+                        article_resp = await client.get(article_url)
+                        if article_resp.status_code == 200:
+                            article_soup = BeautifulSoup(article_resp.text, 'html.parser')
+                            summary_div = article_soup.find(class_='ArticleSummary')
+                            summary = summary_div.get_text(strip=True) if summary_div else None
+                        else:
+                            summary = None
+                        results.append({'link': article_url, 'summary': summary})
+                    except Exception as e:
+                        await self.logger.error(f"Error fetching summary for {article_url}: {e}")
+                        results.append({'link': article_url, 'summary': None})
+                
+                await self.notify_websocket(f"Successfully scraped {len(results)} article links with summaries from {url}")
+                return results
                 
         except Exception as e:
             await self.notify_websocket(f"Error scraping links from {url}: {str(e)}")

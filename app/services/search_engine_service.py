@@ -217,37 +217,44 @@ class SearchEngineService(BaseService):
     def is_valid_url(self, url):
         return isinstance(url, str) and re.match(r'^(http://|https://|file://|raw:)', url.strip())
 
-    async def scrape_and_vector_search_links(self, car_id: str, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    async def scrape_and_vector_search_links(self, car_id: str, query: str, top_k: int = 2) -> List[Dict[str, Any]]:
         """
-        Scrape relevant links from car_guide_links and perform a vector search on their content.
+        1. Use summaries and links from car_guide_links.
+        2. Vector search the summaries to select the top 2 most relevant links.
+        3. Scrape the content of those selected links and return them.
         """
-        # Retrieve car object and get car_guide_links
         car = await self.car_crud.get_car_by_id(car_id)
+        # car_guide_links should be a list of dicts: {"link": ..., "summary": ...}
         car_guide_links = car.get('car_guide_links', []) if car else []
-        # Filter for valid URLs
-        car_guide_links = [url for url in car_guide_links if self.is_valid_url(url)]
-        if not car_guide_links:
+        # Filter for valid links with summaries
+        summaries = []
+        links = []
+        for entry in car_guide_links:
+            link = entry.get('link') if isinstance(entry, dict) else None
+            summary = entry.get('summary') if isinstance(entry, dict) else None
+            if link and summary and isinstance(summary, str) and len(summary.strip()) > 0 and self.is_valid_url(link):
+                links.append(link)
+                summaries.append(summary)
+        if not summaries:
             return []
-        # Scrape the links using ScraperService
-        scraped_results = await self.scraper_service.perform_action(links=car_guide_links, limit=5, concurrency=3)
-        # Extract text content from scraped results
-        scraped_texts = [r.get('text', '') for r in scraped_results if r.get('text')]
-        if not scraped_texts:
-            return []
-        chunk_embeddings = await self.embedding_service.embed_texts_batch(scraped_texts)
+        # Vector search the summaries to select top N links
+        chunk_embeddings = await self.embedding_service.embed_texts_batch(summaries)
         query_embedding = await self.embedding_service.embed_text(query)
         top_matches = await self.embedding_service.find_most_similar(query_embedding, chunk_embeddings, top_k=top_k)
-        scores = [score for _, score in top_matches]
-        norm_scores = self.score_normalizer(scores, reverse=False)
-        results = [
-            {
+        top_indices = [idx for (idx, _) in top_matches]
+        selected_links = [links[idx] for idx in top_indices]
+        selected_summaries = [summaries[idx] for idx in top_indices]
+        # Scrape the content of the selected links only
+        detailed_results = await self.scraper_service.perform_action(links=selected_links, concurrency=2)
+        results = []
+        for i, detail in enumerate(detailed_results):
+            results.append({
                 "source": "car_guide_link",
-                "chunk": scraped_texts[idx],
-                "score": norm_score,
-                "url": car_guide_links[idx] if idx < len(car_guide_links) else None
-            }
-            for (idx, _), norm_score in zip(top_matches, norm_scores)
-        ]
+                "url": selected_links[i],
+                "summary": selected_summaries[i],
+                "score": top_matches[i][1],
+                "content": detail.get('text') or detail.get('content') or ""
+            })
         return results
 
     async def search(self, car_id: str, query: str, top_k: int = 80) -> List[Document]:

@@ -2,6 +2,14 @@
 
 AutoCare Backend is a FastAPI-based backend service designed to power automotive care applications. It provides RESTful APIs and WebSocket support for real-time communication, leveraging a modular architecture for scalability and maintainability.
 
+## Version 1 Status
+
+**Version 1 is complete and production-ready for MVP use.**
+
+- All core features implemented and tested
+- Robust error handling, dependency injection, and startup/shutdown checks
+- Modular, SOLID-compliant architecture for easy extension
+
 ## Features
 
 - **REST API**: Organized under `/api/v1` for versioning and modularity.
@@ -14,6 +22,9 @@ AutoCare Backend is a FastAPI-based backend service designed to power automotive
 - **Background Tasks**: Celery-based background task processing with status endpoints.
 - **Performance Monitoring**: Service-level performance stats and caching.
 - **Logging**: Centralized logging for easier debugging and monitoring.
+- **Startup/Shutdown Checks**: Automatic health checks for Milvus, Supabase, Redis, and graceful shutdown of all services.
+- **Dependency Injection**: FastAPI dependency injection for logger, DB, and WebSocket manager.
+- **SOLID Architecture**: All major components depend on abstractions for testability and maintainability.
 
 ## Project Structure
 
@@ -36,17 +47,11 @@ requirements.txt         # Python dependencies
 
 ## Getting Started
 
-### Prerequisites
-
-- Python 3.10+
-- [Supabase](https://supabase.com/) account (for DB)
-- Redis (optional, for caching)
-
 ### Installation
 
 1. **Clone the repository:**
    ```sh
-   git clone <repo-url>
+   git clone https://github.com/AbrehamGebremedhin/autocare-backend
    cd autocare-backend
    ```
 2. **Install dependencies:**
@@ -87,3 +92,5 @@ pytest
 - For PDF and web scraping, the backend uses Crawl4AI and Playwright.
 - The system is modular and can be extended with new agents, services, or integrations.
 - For local development, ensure all environment variables are set and required services (Supabase, Redis) are running.
+- The orchestrator agent and all major services are initialized and gracefully shut down on app startup/shutdown.
+- Test coverage is provided for all major modules in the `tests/` directory.

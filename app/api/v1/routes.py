@@ -14,4 +14,8 @@ router.include_router(user_car_router)
 @router.get("/health")
 @limiter.limit("5/minute")
 async def health_check(request: Request):
-    return {"status": "ok"}
+    data = {
+        "status": "ok",
+        "success": True
+    }
+    return data

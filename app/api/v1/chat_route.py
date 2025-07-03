@@ -7,10 +7,12 @@ from app.CRUD import ChatSessionCRUD
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.schemas.Chat_Session import ChatSession
 from datetime import datetime
+from app.CRUD.user_crud import UserCRUD
 
 router = APIRouter()
 chat_service = ChatService()
 chat_session_crud = ChatSessionCRUD()
+user_crud = UserCRUD()
 
 # --- Request Schemas ---
 class ChatMessageRequest(BaseModel):
@@ -30,6 +32,9 @@ class CreateChatSessionRequest(BaseModel):
 @router.post('/chat/session/create', summary="Create a new chat session", tags=["Chat"])
 async def create_chat_session(request: CreateChatSessionRequest):
     try:
+        # Check if user_id exists
+        if not await user_crud.user_id_exists(request.user_id):
+            raise HTTPException(status_code=404, detail="User ID does not exist")
         session_id = str(uuid4())
         now = datetime.now().isoformat()
         diagnosis_tree = DiagnosisTreeNode(issue_name='root', likelyhood=1.0)
@@ -129,6 +134,9 @@ async def send_message_in_session(session_id: str, request: ChatSessionMessageRe
     """)
 async def send_chat_message(request: ChatMessageRequest):
     try:
+        # Check if user_id exists
+        if not await user_crud.user_id_exists(request.user_id):
+            raise HTTPException(status_code=404, detail="User ID does not exist")
         # Create a new session for each request
         session_id = str(uuid4())
         now = datetime.now().isoformat()

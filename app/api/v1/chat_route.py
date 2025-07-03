@@ -7,10 +7,13 @@ from app.CRUD import ChatSessionCRUD
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.schemas.Chat_Session import ChatSession
 from datetime import datetime
+from app.CRUD.user_crud import UserCRUD
+from app.db.client import db_client  # Adjust this import to your actual DB client location
 
 router = APIRouter()
 chat_service = ChatService()
 chat_session_crud = ChatSessionCRUD()
+user_crud = UserCRUD()
 
 # --- Request Schemas ---
 class ChatMessageRequest(BaseModel):
@@ -25,6 +28,10 @@ class ChatSessionMessageRequest(BaseModel):
 class CreateChatSessionRequest(BaseModel):
     user_id: str
     context: Optional[Dict[str, Any]] = None
+
+async def user_exists(user_id: str) -> bool:
+    user = await user_crud.get_by_field(db_client, 'id', user_id)
+    return user is not None
 
 # --- Session Management --
 @router.post('/chat/session/create', summary="Create a new chat session", tags=["Chat"])
@@ -101,15 +108,20 @@ async def send_message_in_session(session_id: str, request: ChatSessionMessageRe
         if not sessions:
             raise HTTPException(status_code=404, detail="Session not found")
         session = sessions[0]
+        user_id = session.get('user_id')
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Session is missing user_id")
+        if not await user_exists(user_id):
+            raise HTTPException(status_code=404, detail="User not found")
         # Use chat_service to generate assistant response and update conversation
         response = await chat_service.send_message(
-            user_id=session.get('user_id'),
+            user_id=user_id,
             message=request.message,
             context=request.context,
             session=session
         )
         # Update the session in the DB with the new messages and updated_at
-        updated_session = chat_service._get_conversation(session.get('user_id'), session=session)
+        updated_session = chat_service._get_conversation(user_id, session=session)
         await chat_session_crud.update({'id': session_id}, {
             'messages': updated_session['messages'],
             'updated_at': updated_session.get('last_updated', datetime.now().isoformat())

@@ -9,7 +9,17 @@ from app.schemas.Chat_Session import ChatSession
 from datetime import datetime
 from app.CRUD.user_crud import UserCRUD
 
-router = APIRouter()
+router = APIRouter(
+    tags=["Chat"],
+    responses={
+        404: {"description": "Resource not found."},
+        400: {"description": "Bad request."},
+        200: {"description": "Successful Response."},
+        500: {"description": "Internal server error."}
+    },
+    description="Endpoints for chat sessions, messages, and chat assistant interaction."
+)
+
 chat_service = ChatService()
 chat_session_crud = ChatSessionCRUD()
 user_crud = UserCRUD()
@@ -29,7 +39,7 @@ class CreateChatSessionRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
 
 # --- Session Management --
-@router.post('/chat/session/create', summary="Create a new chat session", tags=["Chat"])
+@router.post('/chat/session/create', summary="Create a new chat session")
 async def create_chat_session(request: CreateChatSessionRequest):
     try:
         # Check if user_id exists
@@ -53,7 +63,16 @@ async def create_chat_session(request: CreateChatSessionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get('/chat/sessions/{user_id}', summary="Get all chat sessions for a user", tags=["Chat"])
+@router.get(
+    '/chat/sessions/{user_id}',
+    summary="Get all chat sessions for a user",
+    description="Retrieve all chat sessions associated with a user.",
+    responses={
+        200: {"description": "List of chat sessions."},
+        404: {"description": "User not found."},
+        500: {"description": "Internal server error."}
+    }
+)
 async def get_user_sessions(user_id: str):
     try:
         sessions = await chat_session_crud.read({'user_id': user_id})
@@ -61,7 +80,16 @@ async def get_user_sessions(user_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete('/chat/session/{session_id}', summary="Delete a chat session", tags=["Chat"])
+@router.delete(
+    '/chat/session/{session_id}',
+    summary="Delete a chat session",
+    description="Delete a chat session by its session ID.",
+    responses={
+        200: {"description": "Session deleted."},
+        404: {"description": "Session not found."},
+        500: {"description": "Internal server error."}
+    }
+)
 async def delete_session(session_id: str):
     try:
         result = await chat_session_crud.delete({'id': session_id})
@@ -70,7 +98,16 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Message Management ---
-@router.get('/chat/session/{session_id}/messages', summary="Get all messages in a session", tags=["Chat"])
+@router.get(
+    '/chat/session/{session_id}/messages',
+    summary="Get all messages in a session",
+    description="Retrieve all messages from a specific chat session.",
+    responses={
+        200: {"description": "List of messages in the session."},
+        404: {"description": "Session not found."},
+        500: {"description": "Internal server error."}
+    }
+)
 async def get_session_messages(session_id: str):
     try:
         sessions = await chat_session_crud.read({'id': session_id})
@@ -80,7 +117,17 @@ async def get_session_messages(session_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete('/chat/session/{session_id}/message/{message_index}', summary="Delete a specific message from a session", tags=["Chat"])
+@router.delete(
+    '/chat/session/{session_id}/message/{message_index}',
+    summary="Delete a specific message from a session",
+    description="Delete a specific message from a chat session by its index.",
+    responses={
+        200: {"description": "Message deleted."},
+        400: {"description": "Invalid message index."},
+        404: {"description": "Session not found."},
+        500: {"description": "Internal server error."}
+    }
+)
 async def delete_message_from_session(session_id: str, message_index: int):
     try:
         sessions = await chat_session_crud.read({'id': session_id})
@@ -99,7 +146,16 @@ async def delete_message_from_session(session_id: str, message_index: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Chatting ---
-@router.post('/chat/session/{session_id}/send', summary="Send a message within a session", tags=["Chat"])
+@router.post(
+    '/chat/session/{session_id}/send',
+    summary="Send a message within a session",
+    description="Send a message within a chat session and receive the assistant's response.",
+    responses={
+        200: {"description": "Assistant response and updated messages."},
+        404: {"description": "Session not found."},
+        500: {"description": "Internal server error."}
+    }
+)
 async def send_message_in_session(session_id: str, request: ChatSessionMessageRequest):
     try:
         sessions = await chat_session_crud.read({'id': session_id})
@@ -124,7 +180,7 @@ async def send_message_in_session(session_id: str, request: ChatSessionMessageRe
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- General Chat (no session) ---
-@router.post('/chat/send', summary="Send a chat message", response_description="Chat assistant response", tags=["Chat"],
+@router.post('/chat/send', summary="Send a chat message", response_description="Chat assistant response",
     description="""
     Send a message to the chat assistant and receive a contextual response.
     - **user_id**: Unique identifier for the user
@@ -163,7 +219,7 @@ async def send_chat_message(request: ChatMessageRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Performance ---
-@router.get('/chat/performance', summary="Get chat performance stats", response_description="Performance statistics", tags=["Chat"],
+@router.get('/chat/performance', summary="Get chat performance stats", response_description="Performance statistics",
     description="""
     Get performance statistics for the chat service, including average, min, and max response times, and conversation counts.
     """)

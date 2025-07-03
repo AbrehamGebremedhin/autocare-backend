@@ -5,7 +5,16 @@ from app.schemas.User import UserBase
 from typing import List
 import json
 
-router = APIRouter(prefix="/user/cars", tags=["Cars"])
+router = APIRouter(
+    prefix="/user/cars",
+    tags=["Cars"],
+    responses={
+        404: {"description": "User or car not found."},
+        400: {"description": "Bad request or car could not be created."},
+        200: {"description": "Successful Response."}
+    },
+    description="Endpoints for managing user's cars: add, remove, and list cars for a user."
+)
 
 user_crud = UserCRUD()
 car_crud = CarCRUD()
@@ -20,7 +29,16 @@ def ensure_list(value):
     except Exception:
         return []
 
-@router.get("/{user_id}", response_model=List[str], summary="Get user's cars", description="Retrieve the list of car IDs associated with a user.")
+@router.get(
+    "/{user_id}",
+    response_model=List[str],
+    summary="Get user's cars",
+    description="Retrieve the list of car IDs associated with a user.",
+    responses={
+        200: {"description": "List of car IDs."},
+        404: {"description": "User not found."}
+    }
+)
 async def get_user_cars(user_id: str):
     """
     Retrieve the list of car IDs associated with a user.
@@ -32,7 +50,17 @@ async def get_user_cars(user_id: str):
         raise HTTPException(status_code=404, detail="User not found.")
     return ensure_list(user[0].get("cars", []))
 
-@router.post("/{user_id}", response_model=dict, summary="Add a car to user", description="Add a car to the user's list. If the car does not exist, it will be created. If it exists, it will only be added to the user's cars field.")
+@router.post(
+    "/{user_id}",
+    response_model=dict,
+    summary="Add a car to user",
+    description="Add a car to the user's list. If the car does not exist, it will be created. If it exists, it will only be added to the user's cars field.",
+    responses={
+        200: {"description": "Car added to user."},
+        400: {"description": "Car could not be created."},
+        404: {"description": "User not found."}
+    }
+)
 async def add_car_to_user(user_id: str, car: dict):
     """
     Add a car to the user's list. If the car does not exist, it will be created. If it exists, it will only be added to the user's cars field.
@@ -64,7 +92,16 @@ async def add_car_to_user(user_id: str, car: dict):
         await user_crud.update({"id": user_id}, {"cars": cars})
     return car_obj
 
-@router.delete("/{user_id}/{car_id}", response_model=dict, summary="Remove a car from user", description="Remove a car from the user's list of cars.")
+@router.delete(
+    "/{user_id}/{car_id}",
+    response_model=dict,
+    summary="Remove a car from user",
+    description="Remove a car from the user's list of cars.",
+    responses={
+        200: {"description": "Car removed from user."},
+        404: {"description": "User not found."}
+    }
+)
 async def remove_car_from_user(user_id: str, car_id: str):
     """
     Remove a car from the user's list of cars.

@@ -6,12 +6,17 @@ from app.api.v1.car_route import router as user_car_router
 from app.utils.limiter import limiter
 
 router = APIRouter()
-router.include_router(auth_router)
-router.include_router(background_tasks_router)
-router.include_router(chat_router)
-router.include_router(user_car_router)
+router.include_router(auth_router, tags=["Authentication"], prefix="/auth")
+router.include_router(background_tasks_router, tags=["Background Tasks"], prefix="/background-tasks")
+router.include_router(chat_router, tags=["Chat"], prefix="/chat")
+router.include_router(user_car_router, tags=["Car"], prefix="/car")
 
-@router.get("/health")
+@router.get(
+    "/health",
+    tags=["Health"],
+    summary="Health Check",
+    description="Check the health status of the API. Returns status and success flag."
+)
 @limiter.limit("5/minute")
 async def health_check(request: Request):
     data = {

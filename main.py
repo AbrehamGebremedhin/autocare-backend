@@ -20,7 +20,20 @@ logger: ILogger = get_logger_instance()
 db_handler: IDBHandler = AppDBHandler()
 websocket_manager: IWebSocketManager = websocket_manager
 
-app = FastAPI()
+app = FastAPI(
+    title="AutoCare API",
+    description="""
+    AutoCare API provides intelligent automotive diagnostics, chat-based assistance, and car data management. 
+    Features include:
+    - User authentication and management
+    - Car CRUD operations
+    - Chat sessions with AI assistant for troubleshooting and advice
+    - Real-time WebSocket communication
+    - Rate limiting and robust error handling
+    - Integration with external services (Milvus, Supabase, Redis)
+    """,
+    version="1.0.0"
+)
 app.state.limiter = limiter
 # Add SlowAPI middleware for rate limiting
 app.add_middleware(SlowAPIMiddleware)
@@ -127,18 +140,36 @@ async def shutdown_event():
     if hasattr(orchestrator_agent, "close") and callable(getattr(orchestrator_agent, "close")):
         orchestrator_agent.close()
 
-app.include_router(v1_router, prefix="/api/v1")
+app.include_router(
+    v1_router,
+    prefix="/api/v1",
+    tags=["API v1"],
+    responses={404: {"description": "Not found"}},
+    description="All version 1 API endpoints. See tags for grouping."
+)
 
-@app.get("/")
+@app.get(
+    "/",
+    tags=["Root"],
+    summary="API Root Endpoint",
+    description="Welcome endpoint for the AutoCare API. Returns a welcome message.",
+)
 @limiter.limit("10/minute")
 async def read_root(request: Request):
     return {"message": "Welcome to AutoCare API"}
 
-@app.websocket("/ws")
+@app.websocket(
+    "/ws",
+    name="WebSocket Endpoint",
+)
 async def websocket_endpoint(
     websocket: WebSocket,
     websocket_manager: IWebSocketManager = Depends(get_websocket_manager_dep),
     logger: ILogger = Depends(get_logger_dep),
 ):
+    """
+    WebSocket endpoint for real-time communication.
+    Accepts and echoes messages. Used for chat and live features.
+    """
     handler = WebSocketHandler(websocket_manager, logger)
     await handler.handle(websocket)

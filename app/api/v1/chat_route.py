@@ -16,8 +16,7 @@ router = APIRouter(
         400: {"description": "Bad request."},
         200: {"description": "Successful Response."},
         500: {"description": "Internal server error."}
-    },
-    description="Endpoints for chat sessions, messages, and chat assistant interaction."
+    }
 )
 
 chat_service = ChatService()

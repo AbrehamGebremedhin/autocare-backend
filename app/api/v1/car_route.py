@@ -12,8 +12,7 @@ router = APIRouter(
         404: {"description": "User or car not found."},
         400: {"description": "Bad request or car could not be created."},
         200: {"description": "Successful Response."}
-    },
-    description="Endpoints for managing user's cars: add, remove, and list cars for a user."
+    }
 )
 
 user_crud = UserCRUD()

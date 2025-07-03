@@ -145,7 +145,6 @@ app.include_router(
     prefix="/api/v1",
     tags=["API v1"],
     responses={404: {"description": "Not found"}},
-    description="All version 1 API endpoints. See tags for grouping."
 )
 
 @app.get(

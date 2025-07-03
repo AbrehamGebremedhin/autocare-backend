@@ -9,8 +9,8 @@ from app.utils.startup_checks import check_milvus_connection, check_supabase_con
 from app.core.interfaces import ILogger, IDBHandler, IWebSocketManager
 from typing import Any
 from pydantic import BaseModel
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from app.utils.limiter import limiter
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
 import asyncio
 from app.agents.global_agents import orchestrator_agent
@@ -21,8 +21,9 @@ db_handler: IDBHandler = AppDBHandler()
 websocket_manager: IWebSocketManager = websocket_manager
 
 app = FastAPI()
-limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
+# Add SlowAPI middleware for rate limiting
+app.add_middleware(SlowAPIMiddleware)
 
 class ErrorResponse(BaseModel):
     detail: str

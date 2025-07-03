@@ -63,7 +63,12 @@ class SearchEngineService(BaseService):
         """
         Download the owner's manual for the given car_id from the Supabase bucket.
         Returns the local file path to the manual PDF, or None if not found.
+        If the manual text is available in the DB, returns None (should use text, not file).
         """
+        # Prefer DB text over file
+        manual_text = await self.car_crud.get_owner_manual_text(car_id)
+        if manual_text:
+            return None  # Indicate to use DB text, not file
         # Check cache first
         cached_path = self._manual_path_cache.get(car_id)
         if cached_path and os.path.exists(cached_path):
@@ -115,10 +120,30 @@ class SearchEngineService(BaseService):
 
     async def embed_and_vector_search(self, content_path: str, query: str, top_k: int = 12, chunk_size: int = 800) -> List[Dict[str, Any]]:
         """
-        Embed the content (PDF path) and perform a vector search against the query.
+        Embed the content (PDF path or DB text) and perform a vector search against the query.
         Returns top_k relevant results.
         chunk_size is tunable for retrieval quality and speed.
         """
+        # Try to get manual text from DB first
+        car_id = None
+        if content_path and content_path.startswith("car_data/") and content_path.endswith("_manual.pdf"):
+            car_id = content_path[len("car_data/"):-len("_manual.pdf")]
+        manual_text = await self.car_crud.get_owner_manual_text(car_id) if car_id else None
+        if manual_text:
+            # Use DB text, chunk and embed
+            chunks = await self.parser_service.chunk_text_optimized(manual_text, chunk_size=chunk_size)
+            if not chunks:
+                return []
+            chunk_embeddings = await self.embedding_service.embed_texts_batch(chunks)
+            query_embedding = await self.embedding_service.embed_text(query)
+            top_matches = await self.embedding_service.find_most_similar(query_embedding, chunk_embeddings, top_k=top_k)
+            scores = [score for _, score in top_matches]
+            norm_scores = self.score_normalizer(scores, reverse=False)
+            results = [
+                {"source": "owner_manual", "chunk": chunks[idx], "score": norm_score}
+                for (idx, _), norm_score in zip(top_matches, norm_scores)
+            ]
+            return results
         # Use cache key based on file path, query, and chunk_size
         cache_key = f"{content_path}:{query}:{chunk_size}"
         cached_result = self._embedding_cache.get(cache_key)

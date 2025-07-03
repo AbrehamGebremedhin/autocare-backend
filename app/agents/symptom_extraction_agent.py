@@ -145,7 +145,7 @@ class SymptomExtractorAgent(BaseAgent):
         t0 = time.perf_counter()
         await self._ensure_car_info()
         if self.car_make and self.car_model and self.car_year:
-            car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year}
+            car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year, 'id': self.car_id}
         else:
             car = None
         timings['car_fetch'] = time.perf_counter() - t0
@@ -197,7 +197,17 @@ class SymptomExtractorAgent(BaseAgent):
         ]
         scored_links.sort(key=lambda x: x[1], reverse=True)
         top_links = [link for link, score in scored_links[:3] if score > 0.3]
-        context["owner_manual"] = car.get("vector", "")
+        # Fetch owner manual text from DB
+        owner_manual_text = await self.car_crud.get_owner_manual_text(self.car_id) if self.car_crud and self.car_id else ""
+        context["owner_manual"] = owner_manual_text
+
+        # Vector search against owner manual text using user message
+        user_message_concat = self._concat_user_messages(task)
+        manual_chunks = await self.embedding_service.search_engine_service.embed_and_vector_search(
+            content_path=f"car_data/{self.car_id}_manual.pdf", query=user_message_concat, top_k=1
+        )
+        owner_manual_text = manual_chunks[0]["chunk"] if manual_chunks else ""
+        context["owner_manual"] = owner_manual_text
 
         # Start scraping in parallel with other work (if any)
         t2 = time.perf_counter()

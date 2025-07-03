@@ -226,18 +226,12 @@ class DiagnosisAgent(BaseAgent):
 
     async def retrieve_context(self, user_message: str) -> Dict[str, Any]:
         await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Retrieving context"}))
-        """
-        Retrieve owner's manual, knowledge base, and online context relevant to the user message and tree using SearchEngineService.
-        Uses the new search engine unified interface.
-        """
         await self._ensure_car_info()
-        # Fetch the full car object from the DB to get the vector
-        car = await self.car_crud.get_car_by_id(self.car_id) if self.car_crud and self.car_id else None
-        manual_context = ""
-        if car and car.get("vector"):
-            manual_context = str(car["vector"])
-        # Use the new search engine to get a broader set of relevant context as LangChain Documents (except manual)
-        # Fetch more documents for richer context - increased to leverage the 38936 documents
+        # Vector search against owner manual text using user_message
+        manual_chunks = await self.search_engine_service.embed_and_vector_search(
+            content_path=f"car_data/{self.car_id}_manual.pdf", query=user_message, top_k=1
+        )
+        manual_context = manual_chunks[0]["chunk"] if manual_chunks else ""
         docs = await self.search_engine_service.search(self.car_id, user_message, top_k=80)
         
         # Separate and process knowledge base docs more comprehensively

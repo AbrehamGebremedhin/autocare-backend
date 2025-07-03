@@ -69,50 +69,37 @@ class CarCRUD(BaseCRUD):
                 except Exception as e:
                     await logger.error(f"Error creating bucket: {e}")
                     return [car_obj]
-            vector = None
+            text = None
             if not manual_exists and manual_link:
                 try:
                     await self.fetch_car_data_service.download_pdf(manual_link, pdf_filename)
-                    # Vectorize the PDF before uploading
+                    # Extract text from the PDF before uploading (use optimized parser)
                     try:
-                        chunks = await self.parser_service.parse_pdf(pdf_filename)
+                        chunks = await self.parser_service.parse_pdf_optimized(pdf_filename)
                         if chunks:
-                            vectors = await self.embedding_service.embed_texts(chunks)
-                            # Use the average vector for the car (or first vector if only one chunk)
-                            if vectors:
-                                import numpy as np
-                                if len(vectors) == 1:
-                                    vector = vectors[0]
-                                else:
-                                    vector = np.mean(np.array(vectors), axis=0).tolist()
-                                car_obj['vector'] = vector
+                            text = '\n'.join(chunks)
+                            car_obj['text'] = text
                     except Exception as e:
-                        await logger.error(f"Error vectorizing PDF: {e}")
+                        await logger.error(f"Error extracting text from PDF: {e}")
                     await self.bucket_manager.upload_file(bucket_name, pdf_filename, pdf_filename)
                     if os.path.exists(pdf_filename):
                         os.remove(pdf_filename)
                 except Exception as e:
                     await logger.error(f"Error downloading/uploading manual: {e}")
-            # If manual already exists, try to vectorize if not already present
+            # If manual already exists, try to extract text if not already present
             elif manual_exists and os.path.exists(pdf_filename):
                 try:
-                    chunks = await self.parser_service.parse_pdf(pdf_filename)
+                    chunks = await self.parser_service.parse_pdf_optimized(pdf_filename)
                     if chunks:
-                        vectors = await self.embedding_service.embed_texts(chunks)
-                        if vectors:
-                            import numpy as np
-                            if len(vectors) == 1:
-                                vector = vectors[0]
-                            else:
-                                vector = np.mean(np.array(vectors), axis=0).tolist()
-                            car_obj['vector'] = vector
+                        text = '\n'.join(chunks)
+                        car_obj['text'] = text
                 except Exception as e:
-                    await logger.error(f"Error vectorizing existing PDF: {e}")
+                    await logger.error(f"Error extracting text from existing PDF: {e}")
             # Update car record
             update_data = {
                 'owner_manual_url': f"{bucket_name}/{pdf_filename}" if manual_link else "",
                 'car_guide_links': self.ensure_list(guide_links) if guide_links else [],
-                'vector': car_obj.get('vector')
+                'text': car_obj.get('text')
             }
             try:
                 await self.update({'id': car_id}, update_data)
@@ -141,9 +128,9 @@ class CarCRUD(BaseCRUD):
         data['owner_manual_url'] = data.get('owner_manual_url') or ""
         data['service_manual_url'] = data.get('service_manual_url') or ""
         data['car_guide_links'] = self.ensure_list(data.get('car_guide_links'))
-        # Ensure vector is not null
-        if data.get('vector') is None:
-            data['vector'] = []
+        # Ensure text is not null
+        if data.get('text') is None:
+            data['text'] = ''
         # 1. Create the car record first
         car = await super().create(data)
         if not car or not isinstance(car, list) or not car[0]:
@@ -193,3 +180,13 @@ class CarCRUD(BaseCRUD):
                 await cache.set(cache_key, car)
             return car
         return None
+
+    async def get_owner_manual_text(self, car_id: str, cache: RedisCache = None) -> str:
+        """
+        Retrieve the owner manual text for a car from the database.
+        Agents and services should use this method to get the manual text instead of downloading/parsing the PDF.
+        """
+        car = await self.get_car_by_id(car_id, cache=cache)
+        if car and car.get('text'):
+            return car['text']
+        return ''

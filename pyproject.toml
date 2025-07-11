@@ -1,0 +1,121 @@
+[tool.pytest.ini_options]
+# PyTest configuration for AutoCare backend
+
+# Test discovery
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+# Test execution
+addopts = [
+    "-v",                           # Verbose output
+    "--strict-markers",             # Strict marker usage
+    "--tb=short",                   # Short traceback format
+    "--show-capture=no",            # Don't show captured output unless test fails
+    "--disable-warnings",           # Disable pytest warnings
+    "--color=yes",                  # Colored output
+    "--durations=10",               # Show 10 slowest tests
+]
+
+# Markers
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "database: marks tests that require database",
+    "external: marks tests that require external services",
+    "asyncio: marks tests that use asyncio",
+    "parametrize: marks parametrized tests",
+    "smoke: marks tests as smoke tests",
+    "regression: marks tests as regression tests",
+    "performance: marks tests as performance tests",
+]
+
+# Async support
+asyncio_mode = "auto"
+
+# Test timeout (in seconds)
+timeout = 30
+timeout_method = "thread"
+
+# Coverage settings (when using pytest-cov)
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "*/tests/*",
+    "*/venv/*",
+    "*/env/*",
+    "*/__pycache__/*",
+    "*/migrations/*",
+    "*/alembic/*",
+    "app/db/migration.py",
+]
+
+[tool.coverage.report]
+# Fail if coverage is below this percentage
+fail_under = 80
+
+# Show missing lines in coverage report
+show_missing = true
+
+# Exclude lines from coverage
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+    "except ImportError:",
+    "except ModuleNotFoundError:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+# Logging configuration for tests
+[tool.pytest.logging]
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s [%(levelname)8s] %(name)s: %(message)s"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+
+# Capture log output for failed tests
+log_capture = true
+log_level = "DEBUG"
+log_format = "%(asctime)s [%(levelname)8s] %(name)s: %(message)s"
+log_date_format = "%Y-%m-%d %H:%M:%S"
+
+# Filterwarnings
+filterwarnings = [
+    "error",
+    "ignore::UserWarning",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+    "ignore::ImportWarning",
+    "ignore:.*deprecated.*:DeprecationWarning",
+    "ignore:.*asyncio.*:DeprecationWarning",
+]
+
+# Test data directory
+testmon_datadir = ".testmondata"
+
+# Minimum Python version for tests
+minversion = "6.0"
+
+# Require at least this version of pytest
+required_plugins = [
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.10.0",
+]
+
+# Mock configuration
+mock_use_standalone_module = true

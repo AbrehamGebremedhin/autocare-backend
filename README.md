@@ -1,6 +1,55 @@
 # AutoCare Backend
 
-AutoCare Backend is a FastAPI-based backend service designed to power automotive care applications. It provides RESTful APIs and WebSocket support for real-time communication, leveraging a modular architecture for scalability and maintainability.
+AutoCare Backend is a comprehensive FastAPI-based backend service designed to power intelligent automotive care applications. It provides RESTful APIs and WebSocket support for real-time communication, leveraging a modular architecture for scalability and maintainability.
+
+## Project Description
+
+AutoCare Backend is an advanced automotive diagnostic and care management system that combines artificial intelligence, machine learning, and automotive expertise to provide intelligent vehicle diagnostics, maintenance recommendations, and real-time support. The system is designed to bridge the gap between automotive professionals and vehicle owners by providing accessible, accurate, and actionable automotive insights.
+
+### Key Capabilities
+
+**Intelligent Diagnostic System:**
+
+- AI-powered symptom analysis and diagnostic recommendations
+- Multi-agent architecture with specialized diagnostic agents
+- Real-time decision tree navigation for systematic troubleshooting
+- Integration with comprehensive automotive knowledge base
+
+**Knowledge Management:**
+
+- Extensive automotive reference library with PDF document processing
+- Vector-based semantic search across automotive manuals and documentation
+- Ground truth knowledge base with verified diagnostic procedures
+- Continuous learning from diagnostic interactions
+
+**Real-time Communication:**
+
+- WebSocket-powered live chat sessions for immediate support
+- Interactive diagnostic conversations with AI agents
+- Real-time status updates for background processing tasks
+- Seamless integration between web and mobile interfaces
+
+**Data Processing & Analytics:**
+
+- Advanced text processing and embedding generation
+- Web scraping capabilities for up-to-date automotive information
+- Performance monitoring and analytics for system optimization
+- Comprehensive logging and error tracking
+
+**Scalable Architecture:**
+
+- Microservices-based design with clear separation of concerns
+- Background task processing with Celery for heavy operations
+- Redis caching for improved performance and responsiveness
+- Supabase integration for reliable data persistence and user management
+
+### Target Use Cases
+
+- **Vehicle Owners:** Get intelligent diagnostic help and maintenance guidance
+- **Automotive Professionals:** Access comprehensive diagnostic tools and knowledge base
+- **Service Centers:** Streamline diagnostic processes and customer communication
+- **Educational Institutions:** Teaching platform for automotive technology
+- **Fleet Management:** Centralized vehicle health monitoring and maintenance scheduling
 
 ## Version 1 Status
 

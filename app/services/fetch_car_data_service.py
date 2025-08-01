@@ -270,9 +270,9 @@ class FetchCarDataService(BaseService):
             await self.notify_websocket(f"Fetching data for {make} {model} {year}")
 
             async def process_manual():
+                """Only fetch manual link - avoid downloading if not necessary"""
                 manual_link = await self.scrape_links_with_retry(links['Owner_Manual'], req_type="owner_manual")
-                if manual_link:
-                    await self.download_pdf(manual_link, output_path=f"{make}-{model}_{year}_EN_US.pdf")
+                # Note: PDF download is now handled in CarCRUD.update_car_with_links only when needed
                 return manual_link
 
             async def process_guides():

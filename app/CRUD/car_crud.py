@@ -5,6 +5,7 @@ from app.utils.logger import get_logger_instance, Logger
 from app.services.parser_service import ParserService
 from app.services.embedding_service import EmbeddingService
 from app.utils.redis_cache import get_redis_cache, RedisCache
+from typing import List, Dict
 import os
 import uuid
 import json
@@ -38,7 +39,10 @@ class CarCRUD(BaseCRUD):
             return []
 
     async def update_car_with_links(self, car_obj, manual_link, guide_links):
-        """Update car record with manual URL and guide links, checking for existing manual in bucket. Adds error handling."""
+        """
+        Optimized car update with manual URL and guide links.
+        Only downloads and processes PDF if text is not already in database.
+        """
         make = car_obj.get('make')
         model = car_obj.get('model')
         year = car_obj.get('year')
@@ -46,13 +50,27 @@ class CarCRUD(BaseCRUD):
         pdf_filename = f"{make}-{model}_{year}_EN_US.pdf"
         bucket_name = "manuals"
         logger = self.logger
+        
         try:
-            # Check if bucket exists
+            # Check if text already exists in DB - if so, skip all PDF processing
+            if car_obj.get('text'):
+                await logger.info(f"Manual text already exists for car {car_id}, skipping PDF processing")
+                update_data = {
+                    'owner_manual_url': f"{bucket_name}/{pdf_filename}" if manual_link else "",
+                    'car_guide_links': self.ensure_list(guide_links) if guide_links else [],
+                    'text': car_obj.get('text')
+                }
+                await self.update({'id': car_id}, update_data)
+                car_obj.update(update_data)
+                car_obj['car_guide_links'] = self.ensure_list(car_obj.get('car_guide_links'))
+                return [car_obj]
+            
+            # Check if bucket exists and create if necessary
             buckets = await self.bucket_manager.list_buckets()
             bucket_names = [getattr(b, 'name', None) for b in buckets] if buckets else []
             manual_exists = False
+            
             if bucket_name in bucket_names:
-                # List files in the bucket and check for the manual
                 try:
                     client = await self.bucket_manager.client
                     files = await asyncio.get_running_loop().run_in_executor(
@@ -69,11 +87,16 @@ class CarCRUD(BaseCRUD):
                 except Exception as e:
                     await logger.error(f"Error creating bucket: {e}")
                     return [car_obj]
+            
             text = None
+            
+            # Only process PDF if manual doesn't exist and we have a link
             if not manual_exists and manual_link:
                 try:
+                    # Download PDF temporarily for text extraction
                     await self.fetch_car_data_service.download_pdf(manual_link, pdf_filename)
-                    # Extract text from the PDF before uploading (use optimized parser)
+                    
+                    # Extract text from the PDF (optimized parser)
                     try:
                         chunks = await self.parser_service.parse_pdf_optimized(pdf_filename)
                         if chunks:
@@ -81,33 +104,44 @@ class CarCRUD(BaseCRUD):
                             car_obj['text'] = text
                     except Exception as e:
                         await logger.error(f"Error extracting text from PDF: {e}")
+                    
+                    # Upload to bucket and clean up local file
                     await self.bucket_manager.upload_file(bucket_name, pdf_filename, pdf_filename)
                     if os.path.exists(pdf_filename):
                         os.remove(pdf_filename)
+                        
                 except Exception as e:
                     await logger.error(f"Error downloading/uploading manual: {e}")
-            # If manual already exists, try to extract text if not already present
-            elif manual_exists and os.path.exists(pdf_filename):
+            
+            # If manual exists in bucket but we don't have text, try to download and extract
+            elif manual_exists and not text:
                 try:
-                    chunks = await self.parser_service.parse_pdf_optimized(pdf_filename)
-                    if chunks:
-                        text = '\n'.join(chunks)
-                        car_obj['text'] = text
+                    # Download from bucket to extract text
+                    file_bytes = await self.bucket_manager.download_file(bucket_name, pdf_filename)
+                    if file_bytes:
+                        chunks = await self.parser_service.parse_pdf_bytes_optimized(file_bytes)
+                        if chunks:
+                            text = '\n'.join(chunks)
+                            car_obj['text'] = text
                 except Exception as e:
-                    await logger.error(f"Error extracting text from existing PDF: {e}")
-            # Update car record
+                    await logger.error(f"Error extracting text from bucket PDF: {e}")
+            
+            # Update car record with optimized data
             update_data = {
                 'owner_manual_url': f"{bucket_name}/{pdf_filename}" if manual_link else "",
                 'car_guide_links': self.ensure_list(guide_links) if guide_links else [],
-                'text': car_obj.get('text')
+                'text': car_obj.get('text') or text or ''
             }
+            
             try:
                 await self.update({'id': car_id}, update_data)
                 car_obj.update(update_data)
                 car_obj['car_guide_links'] = self.ensure_list(car_obj.get('car_guide_links'))
             except Exception as e:
                 await logger.error(f"Error updating car record: {e}")
+            
             return [car_obj]
+            
         except Exception as e:
             await logger.error(f"update_car_with_links unexpected error: {e}")
             return [car_obj]
@@ -190,3 +224,40 @@ class CarCRUD(BaseCRUD):
         if car and car.get('text'):
             return car['text']
         return ''
+
+    async def batch_get_cars_by_ids(self, car_ids: List[str], cache: RedisCache = None) -> Dict[str, dict]:
+        """
+        Retrieve multiple cars by their IDs in a single operation for better performance.
+        Returns a dictionary mapping car_id to car data.
+        """
+        results = {}
+        uncached_ids = []
+        
+        # Check cache first if provided
+        if cache:
+            for car_id in car_ids:
+                cache_key = f"car:{car_id}"
+                cached = await cache.get(cache_key)
+                if cached:
+                    results[car_id] = cached
+                else:
+                    uncached_ids.append(car_id)
+        else:
+            uncached_ids = car_ids
+        
+        # Fetch uncached cars in batch
+        if uncached_ids:
+            # Use batch query - this is more efficient than individual reads
+            batch_cars = await self.read({'id': {'in': uncached_ids}}) if len(uncached_ids) > 1 else await self.read({'id': uncached_ids[0]})
+            
+            if batch_cars:
+                for car in batch_cars:
+                    car_id = car.get('id')
+                    if car_id:
+                        results[car_id] = car
+                        # Cache the result
+                        if cache:
+                            cache_key = f"car:{car_id}"
+                            await cache.set(cache_key, car)
+        
+        return results

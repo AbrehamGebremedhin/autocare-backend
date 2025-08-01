@@ -126,8 +126,20 @@ class SymptomExtractorAgent(BaseAgent):
             
         if tree_manager_agent is not None:
             self.tree_manager_agent = tree_manager_agent
+            # Ensure the tree manager is using the same tree reference
+            if hasattr(tree_manager_agent, 'root') and tree_manager_agent.root != self.diagnosis_tree:
+                print(f"WARNING: TreeManagerAgent root differs from provided diagnosis_tree")
+                print(f"  TreeManager root id: {id(tree_manager_agent.root)}")
+                print(f"  Provided tree id: {id(self.diagnosis_tree)}")
+                # Force the tree manager to use our tree
+                tree_manager_agent.root = self.diagnosis_tree
         elif self.diagnosis_tree is not None:
             self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree, llm_service=self.llm_service)
+            # Verify the tree manager is using the correct tree
+            if self.tree_manager_agent.root != self.diagnosis_tree:
+                print(f"ERROR: TreeManagerAgent created with wrong tree reference!")
+                print(f"  TreeManager root id: {id(self.tree_manager_agent.root)}")
+                print(f"  Expected tree id: {id(self.diagnosis_tree)}")
         else:
             self.tree_manager_agent = None
 
@@ -305,8 +317,12 @@ class SymptomExtractorAgent(BaseAgent):
         await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Completed"}))
         await self.logger.info(f"handle timings: {timings}")
 
+        # Debug: Check what parsed_result contains
+        await self.logger.info(f"DEBUG: parsed_result type: {type(parsed_result)}, content: {parsed_result}")
+
         # If still ambiguous after all attempts, ask user for more info
         if is_ambiguous(parsed_result):
+            await self.logger.info("DEBUG: Result is ambiguous, requesting more info")
             return {
                 'need_more_info': True,
                 'info_type': 'symptom description',
@@ -315,24 +331,52 @@ class SymptomExtractorAgent(BaseAgent):
 
         # Add results to the diagnosis_tree if it exists
         if self.tree_manager_agent is not None and isinstance(parsed_result, list):
+            await self.logger.info(f"Adding {len(parsed_result)} symptoms to diagnosis tree")
+            tree_before_count = len(self.diagnosis_tree.children) if self.diagnosis_tree else 0
+            
             for issue in parsed_result:
                 issue_name = issue.get('issue_name', 'Unknown Issue')
                 likelihood = issue.get('likelihood', 0) / 100.0  # Convert to 0-1 float
+                await self.logger.info(f"Adding symptom: {issue_name} with likelihood {likelihood} (original: {issue.get('likelihood', 0)})")
+                
                 await self.tree_manager_agent.add_symptom(
                     symptom=issue_name,
                     likelyhood=likelihood,
                     data=issue
                 )
-            # Optionally prune and sort after adding
-            self.tree_manager_agent.prune_tree()
+            
+            # Optionally prune and sort after adding with a lower threshold to preserve more symptoms
+            await self.logger.info("Pruning tree with threshold 0.2 (20%)")
+            self.tree_manager_agent.prune_tree(threshold=0.2)
             self.tree_manager_agent.sort_tree()
+            
+            tree_after_count = len(self.diagnosis_tree.children) if self.diagnosis_tree else 0
+            await self.logger.info(f"Tree children count: before={tree_before_count}, after={tree_after_count}")
+            
+            # Verify the tree has been updated
+            if tree_after_count > tree_before_count:
+                await self.logger.info("Symptoms successfully added to diagnosis tree")
+            else:
+                await self.logger.warning("No symptoms were added to the diagnosis tree")
+        else:
+            if self.tree_manager_agent is None:
+                await self.logger.warning("TreeManagerAgent is None, cannot add symptoms to tree")
+            if not isinstance(parsed_result, list):
+                await self.logger.warning(f"Parsed result is not a list: {type(parsed_result)}")
 
         processed_result = [self._sanitize_output(json.dumps(issue)) if isinstance(issue, dict) else self._sanitize_output(str(issue)) for issue in parsed_result] if isinstance(parsed_result, list) else parsed_result
         
         # Return both the result and the updated diagnosis tree
+        # Ensure we return the actual tree that was modified
+        actual_tree = self.tree_manager_agent.root if self.tree_manager_agent else self.diagnosis_tree
+        
+        # Debug logging to verify tree state
+        if actual_tree:
+            print(f"DEBUG: Returning tree with {len(actual_tree.children)} children, tree id: {id(actual_tree)}")
+        
         return {
             'symptoms': processed_result,
-            'diagnosis_tree': self.diagnosis_tree if self.diagnosis_tree is not None else None
+            'diagnosis_tree': actual_tree
         }
 
     @monitor_and_handle("SymptomExtractorAgent")

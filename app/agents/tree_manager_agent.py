@@ -51,13 +51,25 @@ class TreeManagerAgent(BaseAgent):
         Decide the parent node for a new symptom based on the current tree state.
         """
         tree_state = self.get_tree_state()
+        await self.logger.info(f"TreeManager: Current tree state when deciding parent for '{symptom}':\n{tree_state}")
+        
         prompt = self.prompt.format(symptom=symptom, tree_state=tree_state)
         response = await self.llm_service.generate_response(prompt)
         parent_name = response.strip()
+        
+        await self.logger.info(f"TreeManager: LLM suggested parent '{parent_name}' for symptom '{symptom}'")
+        
         if parent_name.lower() == 'root':
+            await self.logger.info(f"TreeManager: Using root as parent for '{symptom}'")
             return self.root
+        
         node = self.root.find(parent_name)
-        return node if node else self.root
+        if node:
+            await self.logger.info(f"TreeManager: Found parent node '{parent_name}' for symptom '{symptom}'")
+            return node
+        else:
+            await self.logger.info(f"TreeManager: Could not find parent node '{parent_name}', defaulting to root for symptom '{symptom}'")
+            return self.root
 
     async def add_symptom(self, symptom: str, likelyhood: float, data: Any = None, websocket=None, session_id=None):
         """
@@ -65,9 +77,20 @@ class TreeManagerAgent(BaseAgent):
         """
         if websocket:
             await self.send_ws_stage(websocket, f"Adding symptom '{symptom}' to tree", MessageSource.ORCHESTRATOR, session_id=session_id)
+        
+        # Debug logging
+        initial_children_count = len(self.root.children)
+        await self.logger.info(f"TreeManager: Adding symptom '{symptom}' with likelihood {likelyhood}. Current tree children: {initial_children_count}")
+        
         parent_node = await self.decide_parent_for_symptom(symptom)
+        await self.logger.info(f"TreeManager: Selected parent node: {parent_node.issue_name}")
+        
         new_node = DiagnosisTreeNode(issue_name=symptom, likelyhood=likelyhood, data=data)
         parent_node.add_child(new_node)
+        
+        final_children_count = len(self.root.children)
+        await self.logger.info(f"TreeManager: Added symptom '{symptom}'. Tree children count: {initial_children_count} -> {final_children_count}")
+        
         if websocket:
             await self.send_ws_result(websocket, f"Symptom '{symptom}' added", MessageSource.ORCHESTRATOR, session_id=session_id, details={"symptom": symptom, "likelyhood": likelyhood})
         return new_node
@@ -76,7 +99,11 @@ class TreeManagerAgent(BaseAgent):
         """
         Prune the tree by removing nodes that have a likelihood below the given threshold.
         """
+        print(f"TreeManager: Pruning tree with threshold {threshold}")
+        initial_count = len(self.root.children)
         self.root.prune(threshold)
+        final_count = len(self.root.children)
+        print(f"TreeManager: Pruned tree - children count: {initial_count} -> {final_count}")
 
     def sort_tree(self):
         """

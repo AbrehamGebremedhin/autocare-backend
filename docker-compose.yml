@@ -2,7 +2,9 @@ version: "3.8"
 
 services:
   autocare-backend:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: autocare-app
     ports:
       - "8000:8000"
@@ -10,6 +12,51 @@ services:
       - REDIS_HOST=host.docker.internal
       - MILVUS_HOST=host.docker.internal
       - OLLAMA_HOST=host.docker.internal
+      - ENV=production
     restart: unless-stopped
+
+    # Resource limits for security and stability
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: false # Set to true if app doesn't need write access
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+
+    # Volume mounts with read-only where possible
     volumes:
-      - .:/app
+      - ./logs:/app/logs # Only mount logs directory
+      - ./car_data:/app/car_data:ro # Read-only data
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Network configuration
+    networks:
+      - autocare-network
+
+networks:
+  autocare-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

@@ -1,12 +1,32 @@
 """
 Test configuration and fixtures for the AutoCare backend application.
+Enhanced with security, authentication, and comprehensive testing utilities.
 """
 import pytest
 import asyncio
+import os
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 import json
+from dotenv import load_dotenv
+
+# Load test environment before importing app modules
+test_env_path = Path(__file__).parent.parent / ".env.test"
+if test_env_path.exists():
+    load_dotenv(test_env_path, override=True)
+else:
+    # Set minimal test environment if .env.test doesn't exist
+    os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
+    os.environ.setdefault("TESTING", "true")
+    os.environ.setdefault("DATABASE_URL", "sqlite:///./test_autocare.db")
+    os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 # Test event loop configuration
 @pytest.fixture(scope="session")
@@ -15,6 +35,51 @@ def event_loop():
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
+
+# Test environment setup
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_environment():
+    """Setup test environment variables and configuration."""
+    test_env = {
+        "ENVIRONMENT": "test",
+        "DEBUG": "false",
+        "LOG_LEVEL": "WARNING",
+        
+        # Database settings (test values)
+        "SUPABASE_URL": "https://test.supabase.co",
+        "SUPABASE_ANON_KEY": "test_anon_key",
+        "DATABASE_URL": "postgresql://test:test@localhost:5432/test_db",
+        
+        # Redis settings (test values)
+        "REDIS_HOST": "localhost",
+        "REDIS_PORT": "6379",
+        "REDIS_DB": "1",  # Use different DB for tests
+        
+        # Security settings (test values)
+        "SECRET_KEY": "test_secret_key_for_testing_only",
+        "JWT_SECRET_KEY": "test_jwt_secret_key",
+        "ALLOWED_ORIGINS": "http://localhost:3000,http://localhost:8080",
+        
+        # Rate limiting (relaxed for tests)
+        "RATE_LIMIT_ENABLED": "false",
+        "RATE_LIMIT_PER_MINUTE": "1000",
+        "RATE_LIMIT_PER_HOUR": "10000",
+    }
+    
+    # Store original values
+    original_env = {}
+    for key, value in test_env.items():
+        original_env[key] = os.environ.get(key)
+        os.environ[key] = value
+    
+    yield
+    
+    # Restore original values
+    for key, original_value in original_env.items():
+        if original_value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = original_value
 
 # Mock data fixtures
 @pytest.fixture
@@ -252,6 +317,232 @@ def json_serializer():
 def datetime_now():
     """Fixed datetime for consistent testing."""
     return datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+# Security test fixtures
+@pytest.fixture
+def mock_logger():
+    """Mock logger for testing."""
+    logger = MagicMock()
+    logger.info = AsyncMock()
+    logger.warning = AsyncMock()
+    logger.error = AsyncMock()
+    logger.debug = AsyncMock()
+    return logger
+
+@pytest.fixture
+def mock_settings():
+    """Mock settings for testing."""
+    settings = MagicMock()
+    settings.ENVIRONMENT = "test"
+    settings.DEBUG = False
+    settings.SECRET_KEY = "test_secret"
+    settings.SUPABASE_URL = "https://test.supabase.co"
+    settings.SUPABASE_ANON_KEY = "test_key"
+    settings.REDIS_HOST = "localhost"
+    settings.REDIS_PORT = "6379"
+    settings.ALLOWED_ORIGINS = ["http://localhost:3000"]
+    return settings
+
+@pytest.fixture
+def mock_supabase_client():
+    """Enhanced mock Supabase client for testing."""
+    client = MagicMock()
+    
+    # Mock table operations
+    table_mock = MagicMock()
+    table_mock.select = MagicMock(return_value=table_mock)
+    table_mock.insert = MagicMock(return_value=table_mock)
+    table_mock.update = MagicMock(return_value=table_mock)
+    table_mock.delete = MagicMock(return_value=table_mock)
+    table_mock.eq = MagicMock(return_value=table_mock)
+    table_mock.execute = AsyncMock()
+    
+    client.table = MagicMock(return_value=table_mock)
+    client.from_ = MagicMock(return_value=table_mock)
+    
+    # Mock auth operations
+    auth_mock = MagicMock()
+    auth_mock.sign_up = AsyncMock()
+    auth_mock.sign_in_with_password = AsyncMock()
+    auth_mock.get_user = AsyncMock()
+    client.auth = auth_mock
+    
+    return client
+
+@pytest.fixture
+def mock_redis_client():
+    """Enhanced mock Redis client for testing."""
+    redis = MagicMock()
+    redis.get = AsyncMock()
+    redis.set = AsyncMock()
+    redis.delete = AsyncMock()
+    redis.ping = AsyncMock(return_value=True)
+    redis.info = AsyncMock(return_value={
+        "connected_clients": 1,
+        "used_memory": 1024000,
+        "keyspace_hits": 100,
+        "keyspace_misses": 10
+    })
+    redis.close = AsyncMock()
+    return redis
+
+@pytest.fixture
+def mock_jwt_payload():
+    """Mock JWT payload for testing."""
+    return {
+        "sub": "test_user_id",
+        "email": "test@example.com",
+        "role": "user",
+        "permissions": ["read", "write"],
+        "exp": 9999999999,  # Far future
+        "iat": 1000000000,
+        "jti": "test_token_id"
+    }
+
+@pytest.fixture
+def mock_request():
+    """Mock FastAPI request for testing."""
+    from starlette.requests import Request
+    
+    request = MagicMock(spec=Request)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
+    request.headers = {}
+    request.url = MagicMock()
+    request.url.path = "/test"
+    request.method = "GET"
+    request.state = MagicMock()
+    return request
+
+# Test utilities
+class TestHelper:
+    """Helper class for common test operations."""
+    
+    @staticmethod
+    def create_mock_response(status_code=200, json_data=None, text_data=None):
+        """Create a mock HTTP response."""
+        response = MagicMock()
+        response.status_code = status_code
+        response.json.return_value = json_data or {}
+        response.text = text_data or ""
+        response.headers = {}
+        return response
+    
+    @staticmethod
+    def create_mock_exception(exception_type, message="Test exception"):
+        """Create a mock exception for testing error handling."""
+        return exception_type(message)
+    
+    @staticmethod
+    def assert_correlation_id_in_response(response_data):
+        """Assert that correlation ID is present in response."""
+        assert "correlation_id" in response_data
+        assert isinstance(response_data["correlation_id"], str)
+        assert len(response_data["correlation_id"]) > 0
+    
+    @staticmethod
+    def assert_security_headers_present(headers):
+        """Assert that security headers are present."""
+        security_headers = [
+            "X-Content-Type-Options",
+            "X-Frame-Options", 
+            "X-XSS-Protection",
+            "Strict-Transport-Security",
+            "Content-Security-Policy"
+        ]
+        
+        for header in security_headers:
+            assert header in headers, f"Security header {header} is missing"
+
+@pytest.fixture
+def test_helper():
+    """Provide TestHelper instance for tests."""
+    return TestHelper()
+
+# Error simulation fixtures
+@pytest.fixture
+def database_error():
+    """Simulate database connection error."""
+    return ConnectionError("Database connection failed")
+
+@pytest.fixture 
+def redis_error():
+    """Simulate Redis connection error."""
+    return ConnectionError("Redis connection failed")
+
+@pytest.fixture
+def external_api_error():
+    """Simulate external API error."""
+    import requests
+    return requests.RequestException("External API unavailable")
+
+# Performance test fixtures
+@pytest.fixture
+def performance_monitor():
+    """Monitor for performance testing."""
+    import time
+    class PerformanceMonitor:
+        def __init__(self):
+            self.start_time = None
+            self.end_time = None
+        
+        def start(self):
+            self.start_time = time.time()
+        
+        def stop(self):
+            self.end_time = time.time()
+        
+        @property
+        def duration(self):
+            if self.start_time and self.end_time:
+                return self.end_time - self.start_time
+            return None
+        
+        def assert_duration_less_than(self, max_duration):
+            assert self.duration is not None, "Timer not started/stopped"
+            assert self.duration < max_duration, f"Duration {self.duration}s exceeds {max_duration}s"
+    
+    return PerformanceMonitor()
+
+# Pytest configuration
+def pytest_configure(config):
+    """Configure pytest with custom markers and settings."""
+    config.addinivalue_line(
+        "markers", "unit: mark test as a unit test"
+    )
+    config.addinivalue_line(
+        "markers", "integration: mark test as an integration test"
+    )
+    config.addinivalue_line(
+        "markers", "security: mark test as a security test"
+    )
+    config.addinivalue_line(
+        "markers", "performance: mark test as a performance test"
+    )
+    config.addinivalue_line(
+        "markers", "slow: mark test as slow running"
+    )
+
+def pytest_collection_modifyitems(config, items):
+    """Modify test collection to add markers based on test paths."""
+    for item in items:
+        # Add markers based on test file path
+        if "test_security" in item.nodeid:
+            item.add_marker(pytest.mark.security)
+        if "test_auth" in item.nodeid:
+            item.add_marker(pytest.mark.security)
+        if "integration" in item.nodeid:
+            item.add_marker(pytest.mark.integration)
+        else:
+            item.add_marker(pytest.mark.unit)
+
+# Async test decorator
+def async_test(coro):
+    """Decorator to run async test functions."""
+    def wrapper(*args, **kwargs):
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(coro(*args, **kwargs))
+    return wrapper
 
 # Performance testing fixtures
 @pytest.fixture

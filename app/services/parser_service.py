@@ -192,14 +192,38 @@ class ParserService(BaseService):
             if current_chunk.strip():
                 chunks.append(current_chunk.strip())
             
-            # Filter out very short chunks (less than 50 characters) unless they're the only content
+            # Filter out very short chunks (less than 30 characters) unless they're the only content
+            # Reduced minimum chunk size for better performance
             if len(chunks) > 1:
-                chunks = [chunk for chunk in chunks if len(chunk) >= 50]
+                chunks = [chunk for chunk in chunks if len(chunk) >= 30]
             
             return chunks
         except Exception as e:
             await self.logger.error(f"ParserService.chunk_text_optimized error: {e}")
-            return await self.chunk_text(text, chunk_size)  # Fallback to original method
+            # Optimized fallback - simple word-based chunking
+            try:
+                words = text.split()
+                chunks = []
+                current = []
+                current_len = 0
+                
+                for word in words:
+                    if current_len + len(word) + 1 <= chunk_size:
+                        current.append(word)
+                        current_len += len(word) + 1
+                    else:
+                        if current:
+                            chunks.append(' '.join(current))
+                        current = [word]
+                        current_len = len(word)
+                
+                if current:
+                    chunks.append(' '.join(current))
+                
+                return chunks
+            except Exception as fallback_e:
+                await self.logger.error(f"ParserService.chunk_text_optimized fallback error: {fallback_e}")
+                return [text[:chunk_size]] if text else []
 
     @BaseService.cache_result(ttl_seconds=1800)  # Cache parsed PDFs for 30 minutes
     async def parse_pdf_optimized(self, file_path: str, chunk_size: int = 1000) -> List[str]:

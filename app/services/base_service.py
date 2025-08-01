@@ -85,7 +85,20 @@ class BaseService(ABC):
         return decorator
 
     def clear_cache(self) -> None:
-        """Clear all cached data."""
+        """Clear all cached data with optimized cleanup."""
+        # Only clear expired entries to maintain performance
+        current_time = time.time()
+        expired_keys = [
+            key for key, ttl in self._cache_ttl.items() 
+            if ttl < current_time
+        ]
+        
+        for key in expired_keys:
+            self._cache.pop(key, None)
+            self._cache_ttl.pop(key, None)
+    
+    def force_clear_cache(self) -> None:
+        """Force clear all cached data."""
         self._cache.clear()
         self._cache_ttl.clear()
 

@@ -52,7 +52,12 @@ class DiagnosisAgent(BaseAgent):
 
             Focus on DIY empowerment - assume the user wants to fix the issue themselves and provide the knowledge and confidence to do so safely. Only recommend professional help when absolutely necessary for safety or when specialized equipment is required.
 
+            CRITICAL: ALWAYS USE THE DIAGNOSIS TREE AS YOUR PRIMARY REFERENCE
+            The diagnosis tree contains structured symptom data extracted from the user's descriptions. This tree represents the most likely issues based on the user's reported symptoms, with likelihood percentages indicating priority. ALWAYS prioritize your diagnosis and recommendations based on the tree's highest likelihood symptoms first.
+
             CORE PRINCIPLES:
+            - START with the highest likelihood symptoms from the diagnosis tree
+            - Use the tree's hierarchical structure to understand symptom relationships
             - Provide detailed technical explanations that build user understanding
             - Include multiple diagnostic approaches so users can choose what works for them
             - Give specific part numbers, specifications, and technical details when possible
@@ -68,31 +73,39 @@ class DiagnosisAgent(BaseAgent):
             - You have access to a comprehensive automotive knowledge base with nearly 39,000 documents covering all automotive systems, repair procedures, and technical specifications.
             - ASSUME the user wants to do the repair themselves and provide detailed guidance to make that possible.
 
-            CONTEXT SOURCES:
-            - Diagnosis tree: Structured symptom and issue data
-            - Owner's manual/context: Official technical specifications and procedures
-            - Knowledge base: Comprehensive automotive repair and diagnostic information (38,936 documents)
-            - Online context: Recent technical discussions and repair experiences
+            CONTEXT SOURCES PRIORITY ORDER:
+            1. DIAGNOSIS TREE: Primary structured symptom and issue data (USE THIS FIRST)
+            2. Knowledge base: Comprehensive automotive repair and diagnostic information (38,936 documents)
+            3. Owner's manual/context: Official technical specifications and procedures
+            4. Online context: Recent technical discussions and repair experiences
 
-            INSTRUCTIONS FOR DIY-FOCUSED COMPREHENSIVE ANALYSIS:
-            1. Analyze symptoms to identify ALL possible root causes, prioritizing those that can be fixed by a DIY enthusiast.
-            2. For each scenario, provide detailed technical explanations with specific repair procedures, part specifications, and tool requirements.
-            3. Include multiple diagnostic approaches - visual inspection, electrical testing, mechanical testing, etc.
-            4. Provide specific torque specifications, part numbers, fluid specifications, and technical details.
-            5. Explain the underlying automotive systems so users understand what they're working on.
-            6. Give detailed step-by-step repair procedures with professional-level detail.
-            7. Include troubleshooting steps for when things don't go as expected.
-            8. Provide cost-effective alternatives and workarounds where appropriate.
-            9. Explain how to verify the repair was successful and prevent recurrence.
-            10. Include tips and tricks from professional mechanics.
-            11. Provide detailed safety guidance specific to each procedure, not generic warnings.
-            12. Include maintenance schedules and inspection points to prevent similar issues.
+            INSTRUCTIONS FOR TREE-GUIDED DIY-FOCUSED ANALYSIS:
+            1. EXAMINE the diagnosis tree carefully - identify the highest likelihood symptoms (>70%)
+            2. PRIORITIZE your diagnosis around these high-likelihood symptoms from the tree
+            3. For each tree symptom, provide detailed technical explanations with specific repair procedures
+            4. Use the tree's hierarchical relationships to understand symptom connections
+            5. Include multiple diagnostic approaches - visual inspection, electrical testing, mechanical testing, etc.
+            6. Provide specific torque specifications, part numbers, fluid specifications, and technical details.
+            7. Explain the underlying automotive systems so users understand what they're working on.
+            8. Give detailed step-by-step repair procedures with professional-level detail.
+            9. Include troubleshooting steps for when things don't go as expected.
+            10. Provide cost-effective alternatives and workarounds where appropriate.
+            11. Explain how to verify the repair was successful and prevent recurrence.
+            12. Include tips and tricks from professional mechanics.
+            13. Provide detailed safety guidance specific to each procedure, not generic warnings.
+            14. Include maintenance schedules and inspection points to prevent similar issues.
 
             OUTPUT (COMPREHENSIVE DIY-FOCUSED JSON):
             {{
-                "diagnosis_summary": "Detailed technical diagnosis with repair-focused analysis and system explanations",
+                "diagnosis_summary": "TREE-GUIDED technical diagnosis starting with the highest likelihood symptoms from the diagnosis tree, with detailed repair-focused analysis and system explanations",
+                "tree_analysis": {{
+                    "primary_symptoms": ["List the highest likelihood symptoms from the tree (>70%)"],
+                    "secondary_symptoms": ["Medium likelihood symptoms from the tree (30-70%)"],
+                    "symptom_relationships": "Explain how the tree symptoms relate to each other and point to common root causes",
+                    "tree_guided_diagnosis": "Primary diagnosis based specifically on the tree's highest likelihood symptoms"
+                }},
                 "supporting_evidence": [
-                    {{"source": "diagnosis_tree", "evidence": "Technical evidence", "confidence": "High/Medium/Low", "diy_relevance": "How this helps DIY diagnosis"}},
+                    {{"source": "diagnosis_tree", "evidence": "Technical evidence FROM THE TREE", "confidence": "High/Medium/Low", "diy_relevance": "How this tree data helps DIY diagnosis", "tree_symptom": "Specific symptom from tree"}},
                     {{"source": "owner_manual", "evidence": "Technical specifications and procedures", "confidence": "High/Medium/Low", "specific_details": "Torque specs, part numbers, etc."}},
                     {{"source": "knowledge_base", "evidence": "Detailed repair procedures", "book_title": "...", "page": "...", "confidence": "High/Medium/Low", "diy_tips": "Professional insights for DIYers"}},
                     {{"source": "online", "evidence": "Real-world repair experiences", "url": "...", "confidence": "High/Medium/Low", "practical_insights": "What actually works in practice"}}
@@ -291,19 +304,100 @@ class DiagnosisAgent(BaseAgent):
 
     def summarize_tree(self) -> str:
         """
-        Summarize the diagnosis tree for LLM input.
+        Summarize the diagnosis tree for LLM input with enhanced diagnosis-focused formatting.
         """
         if self.diagnosis_tree is None:
             return "No diagnosis tree available."
             
-        def node_to_dict(node):
-            return {
-                "issue_name": getattr(node, "issue_name", "Unknown"),
-                "likelyhood": getattr(node, "likelyhood", 0.0),
-                "data": getattr(node, "data", None),
-                "children": [node_to_dict(child) for child in getattr(node, "children", [])]
-            }
-        return str(node_to_dict(self.diagnosis_tree))
+        # Debug logging to understand tree state
+        children_count = len(self.diagnosis_tree.children)
+        print(f"DEBUG: DiagnosisAgent.summarize_tree - Tree has {children_count} children")
+        
+        if children_count == 0:
+            return "Diagnosis tree is empty - no symptoms have been extracted yet."
+        
+        def format_tree_for_diagnosis(node, depth=0):
+            """Format tree in a diagnosis-friendly way with priority and context"""
+            indent = "  " * depth
+            
+            # Format the node information
+            issue_name = getattr(node, "issue_name", "Unknown")
+            likelihood = getattr(node, "likelyhood", 0.0)
+            data = getattr(node, "data", None)
+            
+            # Build node description
+            node_desc = f"{indent}- {issue_name} (Likelihood: {likelihood:.0%})"
+            
+            # Add additional context from data if available
+            if data and isinstance(data, dict):
+                context_parts = []
+                if 'category' in data:
+                    context_parts.append(f"Category: {data['category']}")
+                if 'severity' in data:
+                    context_parts.append(f"Severity: {data['severity']}")
+                if 'urgency' in data:
+                    context_parts.append(f"Urgency: {data['urgency']}")
+                if 'issue_type' in data:
+                    context_parts.append(f"Type: {data['issue_type']}")
+                if 'component' in data:
+                    context_parts.append(f"Component: {data['component']}")
+                
+                if context_parts:
+                    node_desc += f" [{', '.join(context_parts)}]"
+            
+            # Add children recursively
+            children = getattr(node, "children", [])
+            if children:
+                # Sort children by likelihood for better diagnosis priority
+                sorted_children = sorted(children, key=lambda x: getattr(x, "likelyhood", 0.0), reverse=True)
+                for child in sorted_children:
+                    node_desc += "\n" + format_tree_for_diagnosis(child, depth + 1)
+            
+            return node_desc
+        
+        # Create diagnosis-focused summary
+        tree_formatted = format_tree_for_diagnosis(self.diagnosis_tree)
+        
+        # Add summary statistics for diagnosis context
+        def count_symptoms_by_likelihood(node):
+            """Count symptoms by likelihood ranges"""
+            high_likelihood = 0  # >70%
+            medium_likelihood = 0  # 30-70%
+            low_likelihood = 0  # <30%
+            
+            def traverse_and_count(n):
+                nonlocal high_likelihood, medium_likelihood, low_likelihood
+                likelihood = getattr(n, "likelyhood", 0.0)
+                if n != self.diagnosis_tree:  # Don't count root
+                    if likelihood > 0.7:
+                        high_likelihood += 1
+                    elif likelihood > 0.3:
+                        medium_likelihood += 1
+                    else:
+                        low_likelihood += 1
+                
+                for child in getattr(n, "children", []):
+                    traverse_and_count(child)
+            
+            traverse_and_count(node)
+            return high_likelihood, medium_likelihood, low_likelihood
+        
+        high, medium, low = count_symptoms_by_likelihood(self.diagnosis_tree)
+        
+        diagnosis_summary = f"""DIAGNOSIS TREE ANALYSIS:
+{tree_formatted}
+
+SYMPTOM PRIORITY SUMMARY:
+- High Priority (>70% likelihood): {high} symptoms
+- Medium Priority (30-70% likelihood): {medium} symptoms  
+- Low Priority (<30% likelihood): {low} symptoms
+- Total symptoms identified: {high + medium + low}
+
+DIAGNOSIS GUIDANCE:
+Focus your diagnosis on the highest likelihood symptoms first, then use supporting evidence from medium and low priority symptoms to confirm or refine the diagnosis. Consider the hierarchical relationships shown above - child symptoms often provide specific details about their parent categories."""
+        
+        print(f"DEBUG: DiagnosisAgent.summarize_tree - Enhanced tree summary created with {high + medium + low} total symptoms")
+        return diagnosis_summary
 
     async def diagnose(self, user_messages: List[str]) -> dict:
         await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Starting diagnosis"}))

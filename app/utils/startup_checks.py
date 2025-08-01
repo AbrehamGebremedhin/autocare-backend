@@ -16,7 +16,7 @@ async def check_milvus_connection():
 async def check_supabase_connection():
     try:
         db_handler = SupabaseDBHandler()
-        client = await db_handler.client
+        client = await db_handler.get_client()
         # Try a simple operation: list tables
         tables = client.table('Car').select('*').limit(1).execute()
         return True, None

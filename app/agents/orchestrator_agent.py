@@ -1,18 +1,168 @@
 import json
+from typing import Optional, Dict, Any
 from app.agents.symptom_extraction_agent import SymptomExtractorAgent
 from app.agents.diagnostic_agent import DiagnosisAgent
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.utils.diagnosis_tree_factory import get_diagnosis_tree
 from app.agents.user_interaction_agent import UserInteractionAgent
 from app.core.interfaces import IWebSocketManager
-from app.agents.base_agent import BaseAgent
+from app.agents.base_agent import BaseAgent, AgentCommand, AgentState
 from app.utils.message_types import MessageSource
 from app.utils.monitoring import monitor_and_handle
-from typing import Optional
+
+class SymptomExtractionCommand(AgentCommand):
+    """Command for symptom extraction operations"""
+    
+    def __init__(self, agent_class, user_interaction_agent):
+        self.agent_class = agent_class
+        self.user_interaction_agent = user_interaction_agent
+    
+    def validate(self, context: Dict[str, Any]) -> bool:
+        return 'user_request' in context and 'car_id' in context
+    
+    async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        user_request = context['user_request']
+        car_id = context['car_id']
+        diagnosis_tree = context.get('diagnosis_tree')
+        websocket = context.get('websocket')
+        session_id = context.get('session_id')
+        
+        if car_id is None:
+            user_response = await self.user_interaction_agent.process(
+                user_request, 'car_id is required for symptom extraction.'
+            )
+            return {
+                'response': user_response.get('user_message'), 
+                'success': user_response.get('success', True)
+            }
+        
+        agent = self.agent_class(car_id, diagnosis_tree=diagnosis_tree)
+        
+        # Debug logging
+        print(f"DEBUG: SymptomExtractionCommand created agent with tree id: {id(diagnosis_tree) if diagnosis_tree else 'None'}")
+        
+        process_result = await agent.process(user_request, websocket=websocket, session_id=session_id)
+        
+        result = process_result.get('result')
+        success = process_result.get('success', True)
+        updated_tree = process_result.get('diagnosis_tree')
+        
+        # Debug logging
+        print(f"DEBUG: SymptomExtractionCommand - result type: {type(result)}, updated_tree id: {id(updated_tree) if updated_tree else 'None'}")
+        if updated_tree:
+            print(f"DEBUG: SymptomExtractionCommand - updated tree children: {len(updated_tree.children)}")
+        
+        if isinstance(result, dict) and result.get('need_more_info'):
+            info_type = result.get('info_type', 'additional information')
+            user_response = await self.user_interaction_agent.process(
+                user_request, f"Could you please provide more details about: {info_type}?"
+            )
+            return {
+                'response': user_response.get('user_message'),
+                'need_more_info': True,
+                'info_type': info_type,
+                'success': user_response.get('success', True),
+                'diagnosis_tree': updated_tree
+            }
+        
+        if not success:
+            user_response = await self.user_interaction_agent.process(
+                user_request, 'An error occurred during processing.'
+            )
+            return {
+                'response': user_response.get('user_message'), 
+                'success': user_response.get('success', True), 
+                'diagnosis_tree': updated_tree
+            }
+        
+        return {
+            'result': result,
+            'success': success,
+            'diagnosis_tree': updated_tree
+        }
+
+class DiagnosisCommand(AgentCommand):
+    """Command for diagnosis operations"""
+    
+    def __init__(self, diagnosis_agent_class, user_interaction_agent):
+        self.diagnosis_agent_class = diagnosis_agent_class
+        self.user_interaction_agent = user_interaction_agent
+    
+    def validate(self, context: Dict[str, Any]) -> bool:
+        return 'user_request' in context and 'car_id' in context
+    
+    async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        user_request = context['user_request']
+        car_id = context['car_id']
+        diagnosis_tree = context.get('diagnosis_tree')
+        websocket = context.get('websocket')
+        session_id = context.get('session_id')
+        
+        diagnostic_agent = self.diagnosis_agent_class(car_id, diagnosis_tree=diagnosis_tree)
+        
+        # Debug logging
+        print(f"DEBUG: DiagnosisCommand created agent with tree id: {id(diagnosis_tree) if diagnosis_tree else 'None'}")
+        if diagnosis_tree:
+            print(f"DEBUG: DiagnosisCommand - tree children: {len(diagnosis_tree.children)}")
+        
+        diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
+        
+        user_response = await self.user_interaction_agent.process(user_request, diagnosis_result)
+        
+        return {
+            'response': user_response.get('user_message'),
+            'success': user_response.get('success', True),
+            'step_by_step_guide': diagnosis_result.get('step_by_step_guide'),
+            'diagnosis_tree': diagnosis_tree,
+            'diagnosis_result': diagnosis_result
+        }
+
+class InitialProcessingCommand(AgentCommand):
+    """Command for initial message processing (symptom extraction + diagnosis)"""
+    
+    def __init__(self, symptom_command, diagnosis_command):
+        self.symptom_command = symptom_command
+        self.diagnosis_command = diagnosis_command
+    
+    def validate(self, context: Dict[str, Any]) -> bool:
+        return self.symptom_command.validate(context) and self.diagnosis_command.validate(context)
+    
+    async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        # Debug logging
+        initial_tree = context.get('diagnosis_tree')
+        print(f"DEBUG: InitialProcessingCommand - initial tree id: {id(initial_tree) if initial_tree else 'None'}")
+        if initial_tree:
+            print(f"DEBUG: InitialProcessingCommand - initial tree children: {len(initial_tree.children)}")
+        
+        # Execute symptom extraction
+        symptom_result = await self.symptom_command.execute(context)
+        
+        if 'diagnosis_tree' in symptom_result:
+            context['diagnosis_tree'] = symptom_result['diagnosis_tree']
+            updated_tree = symptom_result['diagnosis_tree']
+            print(f"DEBUG: InitialProcessingCommand - updated tree from symptom extraction id: {id(updated_tree) if updated_tree else 'None'}")
+            if updated_tree:
+                print(f"DEBUG: InitialProcessingCommand - updated tree children: {len(updated_tree.children)}")
+        
+        # Execute diagnosis with updated tree
+        diagnosis_result = await self.diagnosis_command.execute(context)
+        
+        final_tree = context.get('diagnosis_tree')
+        print(f"DEBUG: InitialProcessingCommand - final tree id: {id(final_tree) if final_tree else 'None'}")
+        if final_tree:
+            print(f"DEBUG: InitialProcessingCommand - final tree children: {len(final_tree.children)}")
+        
+        return {
+            'response': diagnosis_result.get('response'),
+            'success': diagnosis_result.get('success', True),
+            'step_by_step_guide': diagnosis_result.get('step_by_step_guide'),
+            'diagnosis_tree': context.get('diagnosis_tree')
+        }
 
 class OrchestratorAgent(BaseAgent):
     """
     Orchestrates the flow between agents for end-to-end diagnosis and user interaction.
+    Uses command pattern for better separation of concerns and maintainability.
     """
     def __init__(
         self,
@@ -26,155 +176,131 @@ class OrchestratorAgent(BaseAgent):
         Initialize the OrchestratorAgent with agent class dependencies for testability.
         """
         super().__init__(websocket_manager=websocket_manager, **kwargs)
-        self.agents = {
-            'symptom_extraction': symptom_extractor_agent_class,  # Store the class, not the instance
-        }
+        
+        # Agent dependencies
+        self.symptom_extractor_agent_class = symptom_extractor_agent_class
         self.diagnosis_agent_class = diagnosis_agent_class
         self.user_interaction_agent = user_interaction_agent or UserInteractionAgent()
-
-    async def route_request(self, user_request: str, user_id: str = None, context: dict = None, websocket=None, session_id=None):
-        await self.send_ws_stage(websocket, "Orchestrator - Routing request", MessageSource.ORCHESTRATOR, session_id=session_id)
-        """
-        Main entry point: decides which agent should handle the user request.
-        """
-        car_id = None
-        diagnosis_tree = None
-        if context:
-            car_id = context.get('car_id')
-            diagnosis_tree = context.get('diagnosis_tree')  # Always use the session's current tree
         
-        # Initialize diagnosis tree if it doesn't exist
+        # Initialize commands
+        self._setup_commands()
+    
+    def _setup_commands(self) -> None:
+        """Setup command pattern for orchestrator operations"""
+        symptom_command = SymptomExtractionCommand(
+            self.symptom_extractor_agent_class,
+            self.user_interaction_agent
+        )
+        
+        diagnosis_command = DiagnosisCommand(
+            self.diagnosis_agent_class,
+            self.user_interaction_agent
+        )
+        
+        initial_processing_command = InitialProcessingCommand(
+            symptom_command,
+            diagnosis_command
+        )
+        
+        # Register commands
+        self.register_command('symptom_extraction', symptom_command)
+        self.register_command('diagnosis', diagnosis_command)
+        self.register_command('initial_processing', initial_processing_command)
+    
+    async def _ensure_diagnosis_tree(self, context: Dict[str, Any]) -> DiagnosisTreeNode:
+        """Ensure diagnosis tree exists, creating if necessary"""
+        diagnosis_tree = context.get('diagnosis_tree')
+        car_id = context.get('car_id')
+        
         if diagnosis_tree is None and car_id is not None:
             diagnosis_tree = get_diagnosis_tree(issue_name='root', likelyhood=1.0)
-            await self.send_ws_stage(websocket, "Orchestrator - Created new diagnosis tree", MessageSource.ORCHESTRATOR, session_id=session_id)
+            context['diagnosis_tree'] = diagnosis_tree
+            
+            # Debug logging
+            print(f"DEBUG: Orchestrator created new diagnosis tree with id: {id(diagnosis_tree)}")
+            
+            websocket = context.get('websocket')
+            session_id = context.get('session_id')
+            await self.send_ws_stage(
+                websocket, 
+                "Orchestrator - Created new diagnosis tree", 
+                MessageSource.ORCHESTRATOR, 
+                session_id=session_id
+            )
+        elif diagnosis_tree is not None:
+            print(f"DEBUG: Orchestrator using existing diagnosis tree with id: {id(diagnosis_tree)}, children: {len(diagnosis_tree.children)}")
         
-        # If this is the initial message, extract symptoms
-        if context and context.get('is_initial_message'):
-            await self.send_ws_stage(websocket, "Orchestrator - Initial message, extracting symptoms", MessageSource.ORCHESTRATOR, session_id=session_id)
-            symptom_result = await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree, websocket=websocket, session_id=session_id)
+        return diagnosis_tree
+    
+    async def route_request(self, user_request: str, user_id: str = None, context: dict = None, websocket=None, session_id=None):
+        """
+        Main entry point: decides which command should handle the user request.
+        """
+        await self.send_ws_stage(websocket, "Orchestrator - Routing request", MessageSource.ORCHESTRATOR, session_id=session_id)
+        
+        # Prepare context for command execution
+        command_context = {
+            'user_request': user_request,
+            'user_id': user_id,
+            'websocket': websocket,
+            'session_id': session_id,
+            **(context or {})
+        }
+        
+        # Ensure diagnosis tree exists
+        await self._ensure_diagnosis_tree(command_context)
+        
+        car_id = command_context.get('car_id')
+        
+        # Route based on request type and context
+        try:
+            if command_context.get('is_initial_message'):
+                await self.send_ws_stage(websocket, "Orchestrator - Processing initial message", MessageSource.ORCHESTRATOR, session_id=session_id)
+                return await self.execute_command('initial_processing', command_context)
             
-            # Extract updated tree from symptom extraction result
-            if isinstance(symptom_result, dict) and 'diagnosis_tree' in symptom_result:
-                diagnosis_tree = symptom_result['diagnosis_tree']
+            elif car_id is not None:
+                await self.send_ws_stage(websocket, "Orchestrator - Processing diagnosis request", MessageSource.ORCHESTRATOR, session_id=session_id)
+                diagnosis_result = await self.execute_command('diagnosis', command_context)
                 
-            # Run diagnosis with the updated tree
-            await self.send_ws_stage(websocket, "Orchestrator - Running diagnosis with extracted symptoms", MessageSource.ORCHESTRATOR, session_id=session_id)
-            diagnostic_agent = self.diagnosis_agent_class(car_id, diagnosis_tree=diagnosis_tree)
-            diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
-            
-            await self.send_ws_stage(websocket, "Orchestrator - Running user interaction agent", MessageSource.ORCHESTRATOR, session_id=session_id)
-            user_response = await self.user_interaction_agent.process(user_request, diagnosis_result)
-            await self.send_ws_stage(websocket, "Orchestrator - Done", MessageSource.ORCHESTRATOR, session_id=session_id)
-            
-            # Return response with updated diagnosis tree
-            return {
-                'response': user_response.get('user_message'),
-                'success': user_response.get('success', True),
-                'step_by_step_guide': diagnosis_result.get('step_by_step_guide'),
-                'diagnosis_tree': diagnosis_tree  # Include updated tree in response
-            }
-            
-        # For all other messages, use the current session's diagnosis_tree
-        if car_id is not None:
-            await self.send_ws_stage(websocket, "Orchestrator - Running diagnostic agent", MessageSource.ORCHESTRATOR, session_id=session_id)
-            diagnostic_agent = self.diagnosis_agent_class(car_id, diagnosis_tree=diagnosis_tree)
-            diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
-            
-            # If diagnostic agent requests symptom extraction, process with symptom extractor, then re-run diagnosis
-            if isinstance(diagnosis_result, dict) and diagnosis_result.get('need_symptom_extraction'):
-                await self.send_ws_stage(websocket, "Orchestrator - Need symptom extraction after diagnosis", MessageSource.ORCHESTRATOR, session_id=session_id)
-                # Run symptom extraction
-                symptom_result = await self._handle_with_agent('symptom_extraction', user_request, car_id, diagnosis_tree, websocket=websocket, session_id=session_id)
+                # Check if symptom extraction is needed
+                if isinstance(diagnosis_result.get('diagnosis_result'), dict) and \
+                   diagnosis_result['diagnosis_result'].get('need_symptom_extraction'):
+                    
+                    await self.send_ws_stage(websocket, "Orchestrator - Need symptom extraction after diagnosis", MessageSource.ORCHESTRATOR, session_id=session_id)
+                    
+                    # Execute symptom extraction
+                    symptom_result = await self.execute_command('symptom_extraction', command_context)
+                    
+                    # Update context with new tree and re-run diagnosis
+                    if 'diagnosis_tree' in symptom_result:
+                        command_context['diagnosis_tree'] = symptom_result['diagnosis_tree']
+                    
+                    await self.send_ws_stage(websocket, "Orchestrator - Re-running diagnosis with updated tree", MessageSource.ORCHESTRATOR, session_id=session_id)
+                    diagnosis_result = await self.execute_command('diagnosis', command_context)
                 
-                # Get updated tree if available
-                if isinstance(symptom_result, dict) and 'diagnosis_tree' in symptom_result:
-                    diagnosis_tree = symptom_result['diagnosis_tree']
-                
-                # Re-run diagnosis with updated tree
-                diagnostic_agent = self.diagnosis_agent_class(car_id, diagnosis_tree=diagnosis_tree)
-                await self.send_ws_stage(websocket, "Orchestrator - Re-running diagnosis with updated tree", MessageSource.ORCHESTRATOR, session_id=session_id)
-                diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
-                
-            await self.send_ws_stage(websocket, "Orchestrator - Running user interaction agent", MessageSource.ORCHESTRATOR, session_id=session_id)
-            user_response = await self.user_interaction_agent.process(user_request, diagnosis_result)
-            await self.send_ws_stage(websocket, "Orchestrator - Done", MessageSource.ORCHESTRATOR, session_id=session_id)
+                await self.send_ws_stage(websocket, "Orchestrator - Done", MessageSource.ORCHESTRATOR, session_id=session_id)
+                return diagnosis_result
             
-            return {
-                'response': user_response.get('user_message'),
-                'success': user_response.get('success', True),
-                'step_by_step_guide': diagnosis_result.get('step_by_step_guide'),
-                'diagnosis_tree': diagnosis_tree  # Include updated tree in response
-            }
-        else:
-            await self.send_ws_stage(websocket, "Orchestrator - No car_id provided, cannot diagnose", MessageSource.ORCHESTRATOR, session_id=session_id)
-            user_response = await self.user_interaction_agent.process(user_request, 'car_id is required for diagnosis.')
-            return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
+            else:
+                await self.send_ws_stage(websocket, "Orchestrator - No car_id provided, cannot diagnose", MessageSource.ORCHESTRATOR, session_id=session_id)
+                user_response = await self.user_interaction_agent.process(user_request, 'car_id is required for diagnosis.')
+                return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
+                
+        except Exception as e:
+            await self.logger.error(f"Error in route_request: {str(e)}")
+            await self._set_state(AgentState.ERROR)
+            user_response = await self.user_interaction_agent.process(user_request, f'Error: {str(e)}')
+            return {'response': user_response.get('user_message'), 'success': False}
 
     def _is_chat_request(self, user_request: str) -> bool:
-        # Simple heuristic: treat as chat if not a specific agent keyword
+        """Simple heuristic to determine if request is a chat vs diagnostic request"""
         keywords = ['symptom', 'diagnosis', 'extract']
         return not any(k in user_request.lower() for k in keywords)
 
-    async def _handle_with_agent(self, agent_key: str, request: str, car_id=None, diagnosis_tree=None, websocket=None, session_id=None):
-        agent_class = self.agents.get(agent_key)
-        if not agent_class:
-            user_response = await self.user_interaction_agent.process(request, f'Agent {agent_key} not found.')
-            return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
-        if car_id is not None:
-            agent = agent_class(car_id, diagnosis_tree=diagnosis_tree)
-        else:
-            user_response = await self.user_interaction_agent.process(request, 'car_id is required for symptom extraction.')
-            return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
-        
-        process_result = await agent.process(request, websocket=websocket, session_id=session_id)
-        result = process_result.get('result')
-        success = process_result.get('success', True)
-        updated_tree = process_result.get('diagnosis_tree')  # Get updated tree from agent
-        
-        if isinstance(result, dict) and result.get('need_more_info'):
-            info_type = result.get('info_type', 'additional information')
-            user_response = await self.user_interaction_agent.process(request, f"Could you please provide more details about: {info_type}?")
-            return {
-                'response': user_response.get('user_message'),
-                'need_more_info': True,
-                'info_type': info_type,
-                'success': user_response.get('success', True),
-                'diagnosis_tree': updated_tree
-            }
-        if not success:
-            user_response = await self.user_interaction_agent.process(request, 'An error occurred during processing.')
-            return {'response': user_response.get('user_message'), 'success': user_response.get('success', True), 'diagnosis_tree': updated_tree}
-        
-        # After successful symptom extraction, run diagnostic agent
-        if agent_key == 'symptom_extraction':
-            diagnostic_agent = self.diagnosis_agent_class(car_id, diagnosis_tree=updated_tree)
-            diagnosis_result = await diagnostic_agent.process(request, websocket=websocket, session_id=session_id)
-            
-            # Always pass the diagnosis result through UserInteractionAgent
-            user_response = await self.user_interaction_agent.process(request, diagnosis_result)
-            return {
-                'response': user_response.get('user_message'), 
-                'success': user_response.get('success', True),
-                'diagnosis_tree': updated_tree,  # Return the updated tree
-                'step_by_step_guide': diagnosis_result.get('step_by_step_guide')
-            }
-        
-        # For all other agent results, pass through UserInteractionAgent
-        user_response = await self.user_interaction_agent.process(request, result)
-        return {
-            'response': user_response.get('user_message'), 
-            'success': user_response.get('success', True),
-            'diagnosis_tree': updated_tree
-        }
-        user_response = await self.user_interaction_agent.process(request, result)
-        return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
-
     def request_more_info(self, info_type: str, from_agent: str = None):
-        # Orchestrator can ask other agents or the user for more info
-        # For now, just return a dummy value or extend as needed
-        if from_agent and from_agent in self.agents:
-            return self.agents[from_agent].provide_info(info_type)
-        return f'Dummy info for {info_type}'
+        """Request additional information from agents or user"""
+        # This could be extended to implement inter-agent communication
+        return f'Additional info needed for {info_type}'
 
     @monitor_and_handle("OrchestratorAgent")
     async def process(self, user_request: str, user_id: str = None, context: dict = None) -> dict:
@@ -183,21 +309,29 @@ class OrchestratorAgent(BaseAgent):
         Calls route_request and returns a standardized result dict.
         """
         try:
+            if self.state == AgentState.INACTIVE:
+                await self.initialize()
+            
             result = await self.route_request(user_request, user_id=user_id, context=context)
             return {
                 'result': result.get('response'),
-                'success': result.get('success', True)
+                'success': result.get('success', True),
+                'step_by_step_guide': result.get('step_by_step_guide'),
+                'diagnosis_tree': result.get('diagnosis_tree')
             }
         except Exception as e:
+            await self.logger.error(f"Error in orchestrator process: {str(e)}")
+            await self._set_state(AgentState.ERROR)
             user_response = await self.user_interaction_agent.process(user_request, f'Error: {str(e)}')
             return {
                 'result': user_response.get('user_message'),
                 'success': False
             }
     
-    def close(self) -> None:
+    async def close(self) -> None:
         """
-        Optional cleanup method for the agent.
+        Cleanup method for the agent.
         """
+        await self.shutdown()
         if hasattr(self.user_interaction_agent, 'close'):
             self.user_interaction_agent.close()

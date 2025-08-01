@@ -4,12 +4,9 @@ from app.services.parser_service import ParserService
 from app.services.scraper_service import ScraperService
 from app.db.milvus_handler import MilvusHandler
 from app.CRUD.car_crud import CarCRUD
-from app.db.bucket_operations import SupabaseBucketManager
 from typing import List, Dict, Any, Optional
-import os
 import asyncio
 import re
-import aiofiles
 from langchain_core.documents import Document
 from collections import OrderedDict
 from app.core.interfaces import IWebSocketManager
@@ -44,8 +41,6 @@ class SearchEngineService(BaseService):
         scraper_service: Optional[ScraperService] = None,
         milvus_handler: Optional[MilvusHandler] = None,
         car_crud: Optional[CarCRUD] = None,
-        bucket_manager: Optional[SupabaseBucketManager] = None,
-        manual_path_cache: Optional[LRUCache] = None,
         embedding_cache: Optional[LRUCache] = None,
     ):
         super().__init__(websocket_manager=websocket_manager)
@@ -54,51 +49,24 @@ class SearchEngineService(BaseService):
         self.scraper_service = scraper_service or ScraperService(websocket_manager=websocket_manager)
         self.milvus_handler = milvus_handler or MilvusHandler()
         self.car_crud = car_crud or CarCRUD()
-        self.bucket_manager = bucket_manager or SupabaseBucketManager()
-        # Caches
-        self._manual_path_cache = manual_path_cache or LRUCache(capacity=32)
-        self._embedding_cache = embedding_cache or LRUCache(capacity=32)
+        # Cache for embeddings only - manual path cache no longer needed
+        self._embedding_cache = embedding_cache or LRUCache(capacity=64)  # Increased capacity for better performance
 
-    async def download_owner_manual(self, car_id: str) -> Optional[str]:
+    async def get_owner_manual_text(self, car_id: str) -> Optional[str]:
         """
-        Download the owner's manual for the given car_id from the Supabase bucket.
-        Returns the local file path to the manual PDF, or None if not found.
-        If the manual text is available in the DB, returns None (should use text, not file).
+        Get the owner's manual text for the given car_id from the database.
+        This method eliminates redundant PDF downloading and parsing since text is already stored.
+        Returns the manual text or None if not found.
         """
-        # Prefer DB text over file
+        # Always use DB text - no more PDF downloading/parsing
         manual_text = await self.car_crud.get_owner_manual_text(car_id)
         if manual_text:
-            return None  # Indicate to use DB text, not file
-        # Check cache first
-        cached_path = self._manual_path_cache.get(car_id)
-        if cached_path and os.path.exists(cached_path):
-            return cached_path
-        car = await self.car_crud.get_car_by_id(car_id)
-        owner_manual_url = car.get('owner_manual_url') if car else None
-        if not owner_manual_url:
-            return None
-        # owner_manual_url is expected to be in the format 'bucket_name/path/to/file.pdf'
-        try:
-            bucket_name, file_path = owner_manual_url.split('/', 1)
-        except Exception as e:
-            if hasattr(self, 'logger') and self.logger:
-                self.logger.exception(f"Error splitting owner_manual_url: {owner_manual_url}")
-            return None
-        local_path = f"car_data/{car_id}_manual.pdf"
-        # Download the file from Supabase if not already present locally
-        if not os.path.exists(local_path):
-            try:
-                file_bytes = await self.bucket_manager.download_file(bucket_name, file_path)
-                if not file_bytes:
-                    return None
-                async with aiofiles.open(local_path, 'wb') as f:
-                    await f.write(file_bytes)
-            except Exception as e:
-                if hasattr(self, 'logger') and self.logger:
-                    self.logger.exception(f"Error downloading or saving manual for car_id {car_id}: {e}")
-                return None
-        self._manual_path_cache.set(car_id, local_path)
-        return local_path
+            return manual_text
+        
+        # If no text in DB, log warning and return None
+        if hasattr(self, 'logger') and self.logger:
+            await self.logger.warning(f"No manual text found in database for car_id: {car_id}")
+        return None
 
     @staticmethod
     def score_normalizer(scores, reverse=False):
@@ -118,58 +86,51 @@ class SearchEngineService(BaseService):
         else:
             return [(s - min_score) / (max_score - min_score) for s in scores]
 
-    async def embed_and_vector_search(self, content_path: str, query: str, top_k: int = 12, chunk_size: int = 800) -> List[Dict[str, Any]]:
+    async def embed_and_vector_search(self, car_id: str, query: str, top_k: int = 12, chunk_size: int = 800) -> List[Dict[str, Any]]:
         """
-        Embed the content (PDF path or DB text) and perform a vector search against the query.
+        Optimized embedding and vector search using pre-stored text from database.
+        Eliminates redundant PDF downloading and parsing.
         Returns top_k relevant results.
-        chunk_size is tunable for retrieval quality and speed.
         """
-        # Try to get manual text from DB first
-        car_id = None
-        if content_path and content_path.startswith("car_data/") and content_path.endswith("_manual.pdf"):
-            car_id = content_path[len("car_data/"):-len("_manual.pdf")]
-        manual_text = await self.car_crud.get_owner_manual_text(car_id) if car_id else None
-        if manual_text:
-            # Use DB text, chunk and embed
+        # Get manual text directly from database - no more PDF processing
+        manual_text = await self.get_owner_manual_text(car_id)
+        if not manual_text:
+            return []
+        
+        # Use cache key based on car_id, query, and chunk_size for better cache efficiency
+        cache_key = f"manual_search:{car_id}:{hash(query)}:{chunk_size}"
+        cached_result = self._embedding_cache.get(cache_key)
+        if cached_result is not None:
+            return cached_result
+        
+        # Precompute and cache embeddings for static documents (owner manuals) by car_id
+        static_embedding_key = f"manual_embeddings:{car_id}:{chunk_size}"
+        static_data = self._embedding_cache.get(static_embedding_key)
+        
+        if static_data is not None:
+            chunks, chunk_embeddings = static_data
+        else:
+            # Chunk the text and create embeddings
             chunks = await self.parser_service.chunk_text_optimized(manual_text, chunk_size=chunk_size)
             if not chunks:
                 return []
             chunk_embeddings = await self.embedding_service.embed_texts_batch(chunks)
-            query_embedding = await self.embedding_service.embed_text(query)
-            top_matches = await self.embedding_service.find_most_similar(query_embedding, chunk_embeddings, top_k=top_k)
-            scores = [score for _, score in top_matches]
-            norm_scores = self.score_normalizer(scores, reverse=False)
-            results = [
-                {"source": "owner_manual", "chunk": chunks[idx], "score": norm_score}
-                for (idx, _), norm_score in zip(top_matches, norm_scores)
-            ]
-            return results
-        # Use cache key based on file path, query, and chunk_size
-        cache_key = f"{content_path}:{query}:{chunk_size}"
-        cached_result = self._embedding_cache.get(cache_key)
-        if cached_result is not None:
-            return cached_result
-        # Precompute and store embeddings for static documents (owner manuals)
-        static_embedding_key = f"static:{content_path}:{chunk_size}"
-        static_data = self._embedding_cache.get(static_embedding_key)
-        if static_data is not None:
-            chunks, chunk_embeddings = static_data
-        else:
-            async with aiofiles.open(content_path, 'rb') as f:
-                pdf_bytes = await f.read()
-            chunks = await self.parser_service.parse_pdf_bytes_optimized(pdf_bytes, chunk_size=chunk_size)
-            if not chunks:
-                return []
-            chunk_embeddings = await self.embedding_service.embed_texts_batch(chunks)
+            # Cache the embeddings for future use
             self._embedding_cache.set(static_embedding_key, (chunks, chunk_embeddings))
+        
+        # Perform vector search
         query_embedding = await self.embedding_service.embed_text(query)
         top_matches = await self.embedding_service.find_most_similar(query_embedding, chunk_embeddings, top_k=top_k)
+        
         scores = [score for _, score in top_matches]
         norm_scores = self.score_normalizer(scores, reverse=False)
+        
         results = [
             {"source": "owner_manual", "chunk": chunks[idx], "score": norm_score}
             for (idx, _), norm_score in zip(top_matches, norm_scores)
         ]
+        
+        # Cache the final results
         self._embedding_cache.set(cache_key, results)
         return results
 
@@ -264,8 +225,8 @@ class SearchEngineService(BaseService):
         Returns a list of LangChain Document objects.
         """
         # Run all three searches in parallel with increased limits for knowledge base
-        manual_path = await self.download_owner_manual(car_id)
-        manual_task = self.embed_and_vector_search(manual_path, query, top_k=max(15, top_k//4)) if manual_path else asyncio.create_task(asyncio.sleep(0, result=[]))
+        manual_text = await self.get_owner_manual_text(car_id)
+        manual_task = self.embed_and_vector_search(car_id, query, top_k=max(15, top_k//4)) if manual_text else asyncio.create_task(asyncio.sleep(0, result=[]))
         ground_task = self.vector_search_ground_knowledge(query, top_k=max(60, int(top_k * 0.75)))  # Focus on knowledge base
         links_task = self.scrape_and_vector_search_links(car_id, query, top_k=max(5, top_k//15))
         

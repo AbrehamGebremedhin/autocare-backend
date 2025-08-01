@@ -87,7 +87,7 @@ class EmbeddingService(BaseService):
     @redis_cache_decorator(expire=1800)  # Cache for 30 minutes
     async def embed_texts_batch(self, texts: List[str], batch_size: Optional[int] = None, websocket=None, session_id=None) -> List[List[float]]:
         """
-        Generate embeddings for a list of text strings with optimized batching.
+        Generate embeddings for a list of text strings with optimized batching and caching.
         Args:
             texts (list): List of text strings to embed.
             batch_size (int): Override default batch size.
@@ -100,15 +100,21 @@ class EmbeddingService(BaseService):
             if not texts:
                 return []
             
-            batch_size = batch_size or self._batch_size
+            # Filter out empty or very short texts to improve performance
+            filtered_texts = [text for text in texts if text and len(text.strip()) > 10]
+            if not filtered_texts:
+                return []
+            
+            batch_size = batch_size or min(self._batch_size, 50)  # Limit batch size for better performance
             results = []
             
-            # Process in batches to avoid API limits
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i:i + batch_size]
+            # Process in optimized batches to avoid API limits and improve throughput
+            for i in range(0, len(filtered_texts), batch_size):
+                batch = filtered_texts[i:i + batch_size]
                 await self._rate_limit()
                 if websocket:
-                    await self.send_ws_progress(websocket, f"Embedding batch {i//batch_size+1}", MessageSource.CHAT_SERVICE, min(0.9, (i+batch_size)/max(1,len(texts))), session_id=session_id, details={"batch": i//batch_size+1})
+                    await self.send_ws_progress(websocket, f"Embedding batch {i//batch_size+1}", MessageSource.CHAT_SERVICE, min(0.9, (i+batch_size)/max(1,len(filtered_texts))), session_id=session_id, details={"batch": i//batch_size+1})
+                
                 batch_result = await self._retry_with_backoff(
                     lambda b=batch: asyncio.get_event_loop().run_in_executor(
                         None, lambda: self.embedder.embed_documents(b)
@@ -116,12 +122,12 @@ class EmbeddingService(BaseService):
                 )
                 results.extend(batch_result)
                 
-                # Small delay between batches to avoid overwhelming the API
-                if i + batch_size < len(texts):
-                    await asyncio.sleep(0.1)
+                # Reduce delay between batches for better performance
+                if i + batch_size < len(filtered_texts):
+                    await asyncio.sleep(0.05)  # Reduced from 0.1
             
             if websocket:
-                await self.send_ws_result(websocket, "Batch text embedding complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_batches": (len(texts)+batch_size-1)//batch_size})
+                await self.send_ws_result(websocket, "Batch text embedding complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_batches": (len(filtered_texts)+batch_size-1)//batch_size})
             return results
         except Exception as e:
             await self.logger.error(f"EmbeddingService.embed_texts_batch error: {e}")

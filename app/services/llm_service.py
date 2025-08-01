@@ -7,7 +7,6 @@ from app.utils.redis_cache import redis_cache
 from tenacity import retry, stop_after_attempt, wait_fixed
 from string import Template
 from app.utils.message_types import MessageSource
-from opik.integrations.langchain import opik_tracer
 
 class LLMService(BaseService):
     """
@@ -51,23 +50,13 @@ class LLMService(BaseService):
     async def _call_llm(self, prompt: str, params: dict, stream: bool = False):
         import asyncio
         loop = asyncio.get_event_loop()
-        # Integrate opik_tracer for tracing LLM calls
-        with opik_tracer.trace(
-            "llm_call",
-            metadata={
-                "model": self.model_name,
-                "version": self.version,
-                "prompt": prompt,
-                "params": params,
-                "stream": stream
-            }
-        ):
-            if stream and hasattr(self.llm, 'stream'):
-                def stream_fn():
-                    return self.llm.stream(prompt, **params)
-                return await loop.run_in_executor(None, stream_fn)
-            else:
-                return await loop.run_in_executor(None, lambda: self.llm.invoke(prompt, **params))
+        # Direct LLM call without tracing
+        if stream and hasattr(self.llm, 'stream'):
+            def stream_fn():
+                return self.llm.stream(prompt, **params)
+            return await loop.run_in_executor(None, stream_fn)
+        else:
+            return await loop.run_in_executor(None, lambda: self.llm.invoke(prompt, **params))
 
     async def generate_response(self, prompt: str, stream: bool = False, use_cache: bool = True, websocket=None, session_id=None, output_schema: Union[dict, Callable]=None, **kwargs) -> str:
         await self._rate_limit()

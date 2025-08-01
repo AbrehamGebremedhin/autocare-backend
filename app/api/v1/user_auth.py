@@ -7,6 +7,15 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
 from app.CRUD.user_crud import UserCRUD
 from app.utils.logger import get_logger_instance
+from app.utils.exceptions import (
+    AuthenticationException, 
+    ValidationException,
+    DatabaseException,
+    DuplicateRecordException,
+    RecordNotFoundException
+)
+from app.utils.auth_middleware import jwt_handler
+from app.utils.audit_logging import audit_logger, AuditEventType
 
 router = APIRouter()
 user_crud = UserCRUD()
@@ -23,51 +32,133 @@ class UserLogin(BaseModel):
     password: str
 
 @router.post('/auth/register', response_model=UserBase)
-async def register_user(user: UserCreate, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
-    logger.info(f"Register attempt for email: {user.email}")
-    db = await db_handler.client
+async def register_user(user: UserCreate, request: Request, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+    correlation_id = getattr(request.state, 'correlation_id', 'unknown')
+    await logger.info(f"Register attempt for email: {user.email} [ID: {correlation_id}]")
+    
     try:
-        response = db.auth.sign_up({
-            "email": user.email,
-            "password": user.password,
-            "options": {
-                "data": {"phone": user.phone}  # Store phone in user_metadata
-            }
-        })
-        if hasattr(response, 'user') and response.user:
-            user_data = response.user
-        elif isinstance(response, dict) and response.get('user'):
-            user_data = response['user']
-        else:
-            logger.error(f"Registration failed for email: {user.email}")
-            raise HTTPException(status_code=400, detail="Registration failed.")
-        logger.info(f"Registration successful for email: {user.email}")
-        return UserBase(**(user_data.model_dump() if hasattr(user_data, "model_dump") else dict(user_data)))
+        async with db_handler.get_connection() as db:
+            response = db.auth.sign_up({
+                "email": user.email,
+                "password": user.password,
+                "options": {
+                    "data": {"phone": user.phone}
+                }
+            })
+            
+            if hasattr(response, 'user') and response.user:
+                user_data = response.user
+            elif isinstance(response, dict) and response.get('user'):
+                user_data = response['user']
+            else:
+                await audit_logger.log_event(
+                    event_type=AuditEventType.AUTHENTICATION_FAILED,
+                    ip_address=request.client.host if request.client else None,
+                    endpoint=request.url.path,
+                    method=request.method,
+                    risk_level="medium",
+                    details={"reason": "registration_failed", "email": user.email}
+                )
+                raise AuthenticationException("Registration failed - invalid response from auth provider")
+            
+            await audit_logger.log_event(
+                event_type=AuditEventType.USER_CREATED,
+                ip_address=request.client.host if request.client else None,
+                endpoint=request.url.path,
+                method=request.method,
+                risk_level="low",
+                details={"email": user.email, "user_id": getattr(user_data, 'id', None)}
+            )
+            
+            await logger.info(f"Registration successful for email: {user.email} [ID: {correlation_id}]")
+            return UserBase(**(user_data.model_dump() if hasattr(user_data, "model_dump") else dict(user_data)))
+            
+    except AuthenticationException:
+        raise
     except Exception as e:
-        logger.exception(f"Registration error for email: {user.email}")
-        raise HTTPException(status_code=400, detail=str(e))
+        await logger.error(f"Registration error for email: {user.email} - {str(e)} [ID: {correlation_id}]")
+        
+        # Check for specific error types
+        error_str = str(e).lower()
+        if "already exists" in error_str or "duplicate" in error_str:
+            raise DuplicateRecordException("User", details={"email": user.email})
+        elif "invalid" in error_str and "email" in error_str:
+            raise ValidationException("Invalid email format")
+        elif "password" in error_str and ("weak" in error_str or "short" in error_str):
+            raise ValidationException("Password does not meet security requirements")
+        else:
+            raise DatabaseException("Registration failed due to database error")
 
 @router.post('/auth/login')
-async def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db_handler: SupabaseDBHandler = Depends(get_db_handler)):
-    logger.info(f"Login attempt for email: {form_data.username}")
-    db = await db_handler.client
+async def login_user(form_data: OAuth2PasswordRequestForm = Depends(), request: Request = None, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+    correlation_id = getattr(request.state, 'correlation_id', 'unknown') if request else 'unknown'
+    await logger.info(f"Login attempt for email: {form_data.username} [ID: {correlation_id}]")
+    
     try:
-        response = db.auth.sign_in_with_password({
-            "email": form_data.username,
-            "password": form_data.password
-        })
-        if hasattr(response, 'session') and response.session:
-            logger.info(f"Login successful for email: {form_data.username}")
-            return {"access_token": response.session.access_token, "token_type": "bearer"}
-        elif isinstance(response, dict) and response.get('session'):
-            logger.info(f"Login successful for email: {form_data.username}")
-            return {"access_token": response['session']['access_token'], "token_type": "bearer"}
-        else:
-            logger.warning(f"Invalid credentials for email: {form_data.username}")
-            raise HTTPException(status_code=401, detail="Invalid credentials.")
+        async with db_handler.get_connection() as db:
+            response = db.auth.sign_in_with_password({
+                "email": form_data.username,
+                "password": form_data.password
+            })
+            
+            if hasattr(response, 'session') and response.session:
+                session = response.session
+                user = response.user
+            elif isinstance(response, dict) and response.get('session'):
+                session = response['session']
+                user = response.get('user')
+            else:
+                await audit_logger.log_event(
+                    event_type=AuditEventType.AUTHENTICATION_FAILED,
+                    ip_address=request.client.host if request.client else None,
+                    endpoint=request.url.path,
+                    method=request.method,
+                    risk_level="medium",
+                    details={"reason": "invalid_credentials", "email": form_data.username}
+                )
+                raise AuthenticationException("Invalid email or password")
+            
+            # Create our own JWT token with additional claims
+            token_data = {
+                "sub": user.id if hasattr(user, 'id') else user.get('id'),
+                "email": form_data.username,
+                "role": getattr(user, 'role', user.get('role', 'user')),
+                "permissions": getattr(user, 'permissions', user.get('permissions', []))
+            }
+            
+            access_token = jwt_handler.create_access_token(token_data)
+            refresh_token = jwt_handler.create_refresh_token(token_data)
+            
+            await audit_logger.log_event(
+                event_type=AuditEventType.USER_LOGIN,
+                user_id=token_data["sub"],
+                ip_address=request.client.host if request.client else None,
+                endpoint=request.url.path,
+                method=request.method,
+                risk_level="low",
+                details={"email": form_data.username}
+            )
+            
+            await logger.info(f"Login successful for email: {form_data.username} [ID: {correlation_id}]")
+            return {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": "bearer",
+                "expires_in": jwt_handler.access_token_expire_minutes * 60
+            }
+            
+    except AuthenticationException:
+        raise
     except Exception as e:
-        logger.exception(f"Login error for email: {form_data.username}")
-        raise HTTPException(status_code=401, detail=str(e))
+        await logger.error(f"Login error for email: {form_data.username} - {str(e)} [ID: {correlation_id}]")
+        
+        error_str = str(e).lower()
+        if "invalid" in error_str and ("credentials" in error_str or "password" in error_str):
+            raise AuthenticationException("Invalid email or password")
+        elif "not confirmed" in error_str or "verification" in error_str:
+            raise AuthenticationException("Email address not verified. Please check your email.")
+        else:
+            raise DatabaseException("Authentication service temporarily unavailable")
 
 @router.post('/auth/logout')
 async def logout_user(token: str, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
@@ -81,8 +172,17 @@ async def logout_user(token: str, db_handler: SupabaseDBHandler = Depends(get_db
         logger.exception("Logout error.")
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.api_route('/auth/confirm', methods=["GET", "POST"])
-async def confirm_email(request: Request, token: str = None, type: str = 'signup', email: str = None, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+@router.get('/auth/confirm', operation_id="confirm_email_get")
+async def confirm_email_get(request: Request, token: str = None, type: str = 'signup', email: str = None, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+    """Confirm email via GET request (for email links)"""
+    return await _confirm_email_logic(request, token, type, email, db_handler)
+
+@router.post('/auth/confirm', operation_id="confirm_email_post")
+async def confirm_email_post(request: Request, token: str = None, type: str = 'signup', email: str = None, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+    """Confirm email via POST request"""
+    return await _confirm_email_logic(request, token, type, email, db_handler)
+
+async def _confirm_email_logic(request: Request, token: str = None, type: str = 'signup', email: str = None, db_handler: SupabaseDBHandler = None):
     logger.info(f"Email confirmation attempt for email: {email} (type: {type})")
     if not token or not email:
         try:

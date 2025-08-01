@@ -59,5 +59,13 @@ class Logger(ILogger):
                 functools.partial(self.logger.debug, message, extra={"log_type": "debug"})
             )
 
+    async def critical(self, message: str):
+        loop = asyncio.get_running_loop()
+        async with self._lock:
+            await loop.run_in_executor(
+                None,
+                functools.partial(self.logger.critical, message, extra={"log_type": "critical"})
+            )
+
 def get_logger_instance(name: Optional[str] = None) -> Logger:
     return Logger(name or "autocare")

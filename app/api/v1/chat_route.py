@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, status
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing import Optional, Dict, Any
 from uuid import uuid4
 from app.services.chat_service import ChatService
@@ -8,6 +8,7 @@ from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.schemas.Chat_Session import ChatSession
 from datetime import datetime
 from app.CRUD.user_crud import UserCRUD
+import re
 
 router = APIRouter(
     tags=["Chat"],
@@ -23,19 +24,81 @@ chat_service = ChatService()
 chat_session_crud = ChatSessionCRUD()
 user_crud = UserCRUD()
 
-# --- Request Schemas ---
+# Enhanced Request Schemas with Validation
 class ChatMessageRequest(BaseModel):
     user_id: str
     message: str
     context: Optional[Dict[str, Any]] = None
+    
+    @validator('user_id')
+    def validate_user_id(cls, v):
+        if not v or len(v) < 1 or len(v) > 100:
+            raise ValueError('User ID must be between 1 and 100 characters')
+        if not re.match(r'^[a-zA-Z0-9\-_]+$', v):
+            raise ValueError('User ID contains invalid characters')
+        return v
+    
+    @validator('message')
+    def validate_message(cls, v):
+        if not v or len(v) < 1 or len(v) > 5000:
+            raise ValueError('Message must be between 1 and 5000 characters')
+        # Basic sanitization - remove potential HTML/script tags
+        if re.search(r'<[^>]+>', v):
+            raise ValueError('HTML tags are not allowed in messages')
+        if re.search(r'javascript:|data:|vbscript:', v, re.IGNORECASE):
+            raise ValueError('Potentially dangerous URLs are not allowed')
+        return v.strip()
+    
+    @validator('context')
+    def validate_context(cls, v):
+        if v is not None:
+            # Limit context size and depth
+            import json
+            try:
+                context_str = json.dumps(v)
+                if len(context_str) > 10000:  # 10KB limit
+                    raise ValueError('Context data is too large')
+            except (TypeError, ValueError) as e:
+                raise ValueError('Invalid context data format')
+        return v
 
 class ChatSessionMessageRequest(BaseModel):
     message: str
     context: Optional[Dict[str, Any]] = None
+    
+    @validator('message')
+    def validate_message(cls, v):
+        if not v or len(v) < 1 or len(v) > 5000:
+            raise ValueError('Message must be between 1 and 5000 characters')
+        if re.search(r'<[^>]+>', v):
+            raise ValueError('HTML tags are not allowed in messages')
+        if re.search(r'javascript:|data:|vbscript:', v, re.IGNORECASE):
+            raise ValueError('Potentially dangerous URLs are not allowed')
+        return v.strip()
 
 class CreateChatSessionRequest(BaseModel):
     user_id: str
     context: Optional[Dict[str, Any]] = None
+    
+    @validator('user_id')
+    def validate_user_id(cls, v):
+        if not v or len(v) < 1 or len(v) > 100:
+            raise ValueError('User ID must be between 1 and 100 characters')
+        if not re.match(r'^[a-zA-Z0-9\-_]+$', v):
+            raise ValueError('User ID contains invalid characters')
+        return v
+    
+    @validator('context')
+    def validate_context(cls, v):
+        if v is not None:
+            import json
+            try:
+                context_str = json.dumps(v)
+                if len(context_str) > 10000:
+                    raise ValueError('Context data is too large')
+            except (TypeError, ValueError):
+                raise ValueError('Invalid context data format')
+        return v
 
 # --- Session Management --
 @router.post('/chat/session/create', summary="Create a new chat session")

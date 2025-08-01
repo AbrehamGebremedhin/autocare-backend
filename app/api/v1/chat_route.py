@@ -7,7 +7,7 @@ from app.CRUD import ChatSessionCRUD
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.schemas.Chat_Session import ChatSession
 from datetime import datetime
-from app.CRUD.user_crud import UserCRUD
+from app.services.user_service import user_service
 import re
 
 router = APIRouter(
@@ -22,7 +22,6 @@ router = APIRouter(
 
 chat_service = ChatService()
 chat_session_crud = ChatSessionCRUD()
-user_crud = UserCRUD()
 
 # Enhanced Request Schemas with Validation
 class ChatMessageRequest(BaseModel):
@@ -105,7 +104,7 @@ class CreateChatSessionRequest(BaseModel):
 async def create_chat_session(request: CreateChatSessionRequest):
     try:
         # Check if user_id exists
-        if not await user_crud.user_id_exists(request.user_id):
+        if not await user_service.user_exists(request.user_id):
             raise HTTPException(status_code=404, detail="User ID does not exist")
         session_id = str(uuid4())
         now = datetime.now().isoformat()
@@ -253,7 +252,7 @@ async def send_message_in_session(session_id: str, request: ChatSessionMessageRe
 async def send_chat_message(request: ChatMessageRequest):
     try:
         # Check if user_id exists
-        if not await user_crud.user_id_exists(request.user_id):
+        if not await user_service.user_exists(request.user_id):
             raise HTTPException(status_code=404, detail="User ID does not exist")
         # Create a new session for each request
         session_id = str(uuid4())

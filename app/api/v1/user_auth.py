@@ -5,7 +5,7 @@ from app.schemas.User import UserBase
 from app.core.config import get_settings
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
-from app.CRUD.user_crud import UserCRUD
+from app.services.user_service import user_service
 from app.utils.logger import get_logger_instance
 from app.utils.exceptions import (
     AuthenticationException, 
@@ -17,10 +17,11 @@ from app.utils.exceptions import (
 from app.utils.auth_middleware import jwt_handler
 from app.utils.audit_logging import audit_logger, AuditEventType
 
-router = APIRouter()
-user_crud = UserCRUD()
 
-logger = get_logger_instance("user_auth").logger
+router = APIRouter()
+
+# Use the custom async logger instance
+logger = get_logger_instance("user_auth")
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -34,6 +35,7 @@ class UserLogin(BaseModel):
 @router.post('/auth/register', response_model=UserBase)
 async def register_user(user: UserCreate, request: Request, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
     correlation_id = getattr(request.state, 'correlation_id', 'unknown')
+    # Use custom async logger method to ensure 'log_type' is present
     await logger.info(f"Register attempt for email: {user.email} [ID: {correlation_id}]")
     
     try:
@@ -45,7 +47,7 @@ async def register_user(user: UserCreate, request: Request, db_handler: Supabase
                     "data": {"phone": user.phone}
                 }
             })
-            
+            # response may be sync, so do not await
             if hasattr(response, 'user') and response.user:
                 user_data = response.user
             elif isinstance(response, dict) and response.get('user'):
@@ -60,7 +62,6 @@ async def register_user(user: UserCreate, request: Request, db_handler: Supabase
                     details={"reason": "registration_failed", "email": user.email}
                 )
                 raise AuthenticationException("Registration failed - invalid response from auth provider")
-            
             await audit_logger.log_event(
                 event_type=AuditEventType.USER_CREATED,
                 ip_address=request.client.host if request.client else None,
@@ -69,7 +70,6 @@ async def register_user(user: UserCreate, request: Request, db_handler: Supabase
                 risk_level="low",
                 details={"email": user.email, "user_id": getattr(user_data, 'id', None)}
             )
-            
             await logger.info(f"Registration successful for email: {user.email} [ID: {correlation_id}]")
             return UserBase(**(user_data.model_dump() if hasattr(user_data, "model_dump") else dict(user_data)))
             
@@ -209,24 +209,17 @@ async def _confirm_email_logic(request: Request, token: str = None, type: str = 
         else:
             logger.error(f"Email confirmation failed for email: {email}")
             raise HTTPException(status_code=400, detail="Email confirmation failed.")
-        existing = await user_crud.get_by_field(db, 'email', email)
-        if not existing:
-            user_dict = {
-                'id': user_data.id if hasattr(user_data, 'id') else user_data.get('id'),
-                'email': email,
-                'created_at': user_data.created_at if hasattr(user_data, 'created_at') else user_data.get('created_at'),
-                'phone': user_data.phone if hasattr(user_data, 'phone') else user_data.get('phone'),
-                'user_metadata': user_data.user_metadata if hasattr(user_data, 'user_metadata') else user_data.get('user_metadata'),
-                'app_metadata': user_data.app_metadata if hasattr(user_data, 'app_metadata') else user_data.get('app_metadata'),
-                'confirmed_at': user_data.confirmed_at if hasattr(user_data, 'confirmed_at') else user_data.get('confirmed_at'),
-                'last_sign_in_at': user_data.last_sign_in_at if hasattr(user_data, 'last_sign_in_at') else user_data.get('last_sign_in_at'),
-                'role': user_data.role if hasattr(user_data, 'role') else user_data.get('role'),
-                'cars': []
-            }
-            from app.CRUD.user_crud import serialize_datetimes
-            user_dict = serialize_datetimes(user_dict)
-            await user_crud.create(user_dict)
-            logger.info(f"User created in custom table for email: {email}")
+        
+        # Email confirmed successfully - user is now in Supabase auth.users
+        # Ensure user profile exists in our user_profiles table  
+        user_id = user_data.id if hasattr(user_data, 'id') else user_data.get('id')
+        if user_id:
+            try:
+                await user_service.ensure_user_profile(user_id)
+                logger.info(f"User profile ensured for user: {user_id}")
+            except Exception as profile_error:
+                logger.warning(f"Could not ensure user profile for {user_id}: {str(profile_error)}")
+        
         logger.info(f"Email confirmed successfully for email: {email}")
         return {"message": "Email confirmed successfully."}
     except Exception as e:

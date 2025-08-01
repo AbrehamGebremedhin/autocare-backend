@@ -19,6 +19,7 @@ class AuditEventType(Enum):
     RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
     AUTHENTICATION_FAILED = "authentication_failed"
     DATA_MODIFICATION = "data_modification"
+    USER_CREATED = "user_created"
 
 class AuditLogger:
     """Enhanced audit logging system with Redis caching and structured logging"""

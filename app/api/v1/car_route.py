@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from app.CRUD.user_crud import UserCRUD
+from app.services.user_service import user_service
 from app.CRUD.car_crud import CarCRUD
 from app.schemas.User import UserBase
 from typing import List
@@ -15,7 +15,6 @@ router = APIRouter(
     }
 )
 
-user_crud = UserCRUD()
 car_crud = CarCRUD()
 
 def ensure_list(value):
@@ -44,10 +43,11 @@ async def get_user_cars(user_id: str):
     - **user_id**: The unique identifier of the user.
     - **Returns**: List of car IDs.
     """
-    user = await user_crud.read({"id": user_id})
-    if not user or not user[0]:
+    if not await user_service.user_exists(user_id):
         raise HTTPException(status_code=404, detail="User not found.")
-    return ensure_list(user[0].get("cars", []))
+    
+    cars = await user_service.get_user_cars(user_id)
+    return cars
 
 @router.post(
     "/{user_id}",
@@ -67,16 +67,18 @@ async def add_car_to_user(user_id: str, car: dict):
     - **car**: Car data (must include make, model, year).
     - **Returns**: The car object.
     """
-    user = await user_crud.read({"id": user_id})
-    if not user or not user[0]:
+    if not await user_service.user_exists(user_id):
         raise HTTPException(status_code=404, detail="User not found.")
+    
     # Try to get car by make, model, year (unique)
     make = car.get("make")
     model = car.get("model")
     year = car.get("year")
     car_obj = None
+    
     if make and model and year:
         car_obj = await car_crud.get_car_by_make_model_year(make, model, year)
+    
     if car_obj:
         car_id = car_obj.get("id")
     else:
@@ -85,10 +87,9 @@ async def add_car_to_user(user_id: str, car: dict):
             raise HTTPException(status_code=400, detail="Car could not be created.")
         car_obj = car_result[0]
         car_id = car_obj.get("id")
-    cars = ensure_list(user[0].get("cars", []))
-    if car_id not in cars:
-        cars.append(car_id)
-        await user_crud.update({"id": user_id}, {"cars": cars})
+    
+    # Add car to user's profile
+    await user_service.add_car_to_user(user_id, car_id)
     return car_obj
 
 @router.delete(
@@ -108,11 +109,12 @@ async def remove_car_from_user(user_id: str, car_id: str):
     - **car_id**: The unique identifier of the car to remove.
     - **Returns**: The removed car ID and the updated list of car IDs.
     """
-    user = await user_crud.read({"id": user_id})
-    if not user or not user[0]:
+    if not await user_service.user_exists(user_id):
         raise HTTPException(status_code=404, detail="User not found.")
-    cars = ensure_list(user[0].get("cars", []))
-    if car_id in cars:
-        cars.remove(car_id)
-        await user_crud.update({"id": user_id}, {"cars": cars})
+    
+    # Remove car from user's profile
+    await user_service.remove_car_from_user(user_id, car_id)
+    
+    # Get updated car list
+    cars = await user_service.get_user_cars(user_id)
     return {"removed": car_id, "cars": cars}

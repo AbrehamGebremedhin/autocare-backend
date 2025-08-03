@@ -35,7 +35,7 @@ class FetchCarDataService(BaseService):
         super().__init__(websocket_manager=websocket_manager)
         self.logger = logger or get_logger_instance("FetchCarDataService")
         settings = get_settings()
-        self.BASE_URL = base_url or settings.BASE_URL
+        self.BASE_URL = "https://www.startmycar.com/"
         self._client_pool = client_pool
         self._max_retries = max_retries
         self._retry_delay = retry_delay
@@ -101,8 +101,8 @@ class FetchCarDataService(BaseService):
         model = model.replace(" ", "-").lower()
         year = str(year).lower()
         data = {
-            "Owner_Manual": f"{self.BASE_URL}{make}/{model}/info/manuals/{year}",
-            "Car_guide_link": f"{self.BASE_URL}{make}/{model}/guides/"
+            "Owner_Manual": f"{self.BASE_URL}{model}/{make}/info/manuals/{year}",
+            "Car_guide_link": f"{self.BASE_URL}{model}/{make}/guides/"
         }
         return data
 

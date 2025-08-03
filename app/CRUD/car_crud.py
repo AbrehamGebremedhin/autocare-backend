@@ -72,7 +72,7 @@ class CarCRUD(BaseCRUD):
             
             if bucket_name in bucket_names:
                 try:
-                    client = await self.bucket_manager.client
+                    client = self.bucket_manager.client
                     files = await asyncio.get_running_loop().run_in_executor(
                         None, lambda: client.storage.from_(bucket_name).list()
                     )

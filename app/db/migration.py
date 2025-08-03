@@ -70,17 +70,18 @@ def generate_create_table_sql(model):
 async def migrate_all_schemas():
     schemas_path = os.path.join(os.path.dirname(__file__), '../schemas')
     models = await get_schema_models(schemas_path)
-    db = await SupabaseDBHandler().client  # Await the coroutine to get the client instance
-    for model in models:
-        sql = generate_create_table_sql(model)
-        logger.info(f"Executing SQL for {model.__name__}:\n{sql}\n")
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(None, lambda: db.rpc('execute_sql', { 'sql': sql }).execute())
-        logger.info(f"Response: {response}\n")
-        if response and isinstance(response, dict) and response.get('error'):
-            logger.error(f"Error migrating {model.__name__}: {response['error']}")
-            raise Exception(f"Error migrating {model.__name__}: {response['error']}")
-        logger.info(f'Migrated: {model.__name__}')
+    db_handler = SupabaseDBHandler()
+    async with db_handler.get_connection() as db:
+        for model in models:
+            sql = generate_create_table_sql(model)
+            logger.info(f"Executing SQL for {model.__name__}:\n{sql}\n")
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: db.rpc('execute_sql', { 'sql': sql }).execute())
+            logger.info(f"Response: {response}\n")
+            if response and isinstance(response, dict) and response.get('error'):
+                logger.error(f"Error migrating {model.__name__}: {response['error']}")
+                raise Exception(f"Error migrating {model.__name__}: {response['error']}")
+            logger.info(f'Migrated: {model.__name__}')
 
 if __name__ == "__main__":
     asyncio.run(migrate_all_schemas())

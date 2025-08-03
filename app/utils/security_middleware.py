@@ -25,6 +25,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         # Determine CSP policy based on endpoint
         is_docs_endpoint = '/docs' in str(request.url.path) or '/redoc' in str(request.url.path)
+        is_confirm_page = '/auth/confirm-page' in str(request.url.path)
         
         # Security headers
         headers = {
@@ -50,7 +51,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         # Only add security headers for non-docs endpoints
         if not is_docs_endpoint:
-            headers["Content-Security-Policy"] = self._get_csp_policy(nonce, is_docs_endpoint)
+            headers["Content-Security-Policy"] = self._get_csp_policy(nonce, is_docs_endpoint, is_confirm_page)
             headers["X-Frame-Options"] = "DENY"
         
         # Add headers to response
@@ -60,7 +61,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         return response
     
-    def _get_csp_policy(self, nonce: str, is_docs_endpoint: bool = False) -> str:
+    def _get_csp_policy(self, nonce: str, is_docs_endpoint: bool = False, is_confirm_page: bool = False) -> str:
         """Generate Content Security Policy"""
         
         if is_docs_endpoint:
@@ -74,6 +75,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 f"connect-src *; "
                 f"frame-src *; "
                 f"object-src *"
+            )
+        elif is_confirm_page:
+            # Relaxed CSP for confirmation page to allow inline scripts
+            return (
+                f"default-src 'self'; "
+                f"script-src 'self' 'nonce-{nonce}' 'unsafe-inline'; "
+                f"style-src 'self' 'nonce-{nonce}' 'unsafe-inline'; "
+                f"font-src 'self' https://fonts.gstatic.com; "
+                f"img-src 'self' data: https:; "
+                f"connect-src 'self'; "
+                f"frame-ancestors 'none'; "
+                f"base-uri 'self'; "
+                f"object-src 'none'"
             )
         else:
             # Strict CSP for other endpoints

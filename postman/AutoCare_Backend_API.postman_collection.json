@@ -1,0 +1,522 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "AutoCare Backend API",
+    "description": "AutoCare API provides intelligent automotive diagnostics, chat-based assistance, and car data management.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "description": "User registration, login, and token management",
+      "item": [
+        {
+          "name": "Register User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"email\": \"{{user_email}}\",\n    \"password\": \"{{user_password}}\",\n    \"phone\": \"{{user_phone}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "register"]
+            },
+            "description": "Register a new user with email and password"
+          },
+          "response": []
+        },
+        {
+          "name": "Login User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData && jsonData.access_token) {",
+                  "    pm.environment.set('access_token', jsonData.access_token);",
+                  "}",
+                  "if (jsonData && jsonData.refresh_token) {",
+                  "    pm.environment.set('refresh_token', jsonData.refresh_token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"email\": \"{{user_email}}\",\n    \"password\": \"{{user_password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "Login with email and password"
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData && jsonData.access_token) {",
+                  "    pm.environment.set('access_token', jsonData.access_token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"refresh_token\": \"{{refresh_token}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "refresh"]
+            },
+            "description": "Refresh access token using refresh token"
+          },
+          "response": []
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "logout"]
+            },
+            "description": "Logout and invalidate current token"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "description": "User profile management",
+      "item": [
+        {
+          "name": "Get User Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/user/profile",
+              "host": ["{{base_url}}"],
+              "path": ["user", "profile"]
+            },
+            "description": "Get current user profile"
+          },
+          "response": []
+        },
+        {
+          "name": "Update User Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"phone\": \"{{user_phone}}\",\n    \"name\": \"{{user_name}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/user/profile",
+              "host": ["{{base_url}}"],
+              "path": ["user", "profile"]
+            },
+            "description": "Update user profile information"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Cars",
+      "description": "Car management operations",
+      "item": [
+        {
+          "name": "Get User Cars",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/car/user/cars/{{user_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["car", "user", "cars", "{{user_id}}"]
+            },
+            "description": "Get list of cars for a user"
+          },
+          "response": []
+        },
+        {
+          "name": "Add User Car",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"user_id\": \"{{user_id}}\",\n    \"make\": \"Toyota\",\n    \"model\": \"Corolla\",\n    \"year\": 2020,\n    \"vin\": \"ABC123456789\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/car/add",
+              "host": ["{{base_url}}"],
+              "path": ["car", "add"]
+            },
+            "description": "Add a new car to user profile"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Car Details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/car/{{car_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["car", "{{car_id}}"]
+            },
+            "description": "Get detailed information about a specific car"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Car Details",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"make\": \"Toyota\",\n    \"model\": \"Camry\",\n    \"year\": 2022,\n    \"vin\": \"ABC123456789\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/car/{{car_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["car", "{{car_id}}"]
+            },
+            "description": "Update car information"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Car",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/car/{{car_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["car", "{{car_id}}"]
+            },
+            "description": "Delete a car from user profile"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Chat",
+      "description": "Chat and diagnostics operations",
+      "item": [
+        {
+          "name": "Start Chat Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"user_id\": \"{{user_id}}\",\n    \"car_id\": \"{{car_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/chat/session/start",
+              "host": ["{{base_url}}"],
+              "path": ["chat", "session", "start"]
+            },
+            "description": "Start a new chat diagnostic session"
+          },
+          "response": []
+        },
+        {
+          "name": "Send Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"user_id\": \"{{user_id}}\",\n    \"message\": \"My car is making a strange noise when I brake\",\n    \"context\": {\n        \"session_id\": \"{{session_id}}\"\n    }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/chat/message",
+              "host": ["{{base_url}}"],
+              "path": ["chat", "message"]
+            },
+            "description": "Send a message in the diagnostic chat"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Chat History",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/chat/history/{{session_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["chat", "history", "{{session_id}}"]
+            },
+            "description": "Get chat history for a specific session"
+          },
+          "response": []
+        },
+        {
+          "name": "Get User Sessions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/chat/sessions/{{user_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["chat", "sessions", "{{user_id}}"]
+            },
+            "description": "Get all chat sessions for a user"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "description": "Health check endpoints",
+      "item": [
+        {
+          "name": "Simple Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health-simple",
+              "host": ["{{base_url}}"],
+              "path": ["health-simple"]
+            },
+            "description": "Simple health check for the API"
+          },
+          "response": []
+        },
+        {
+          "name": "Detailed Health Check",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Detailed health check including all services"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Background Tasks",
+      "description": "Background task management",
+      "item": [
+        {
+          "name": "Get Task Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/background-tasks/status/{{task_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["background-tasks", "status", "{{task_id}}"]
+            },
+            "description": "Check status of a background task"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Security",
+      "description": "Security-related endpoints",
+      "item": [
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"current_password\": \"{{current_password}}\",\n    \"new_password\": \"{{new_password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/security/password",
+              "host": ["{{base_url}}"],
+              "path": ["security", "password"]
+            },
+            "description": "Change user password"
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [""]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [""]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000/v1",
+      "type": "string"
+    }
+  ]
+}

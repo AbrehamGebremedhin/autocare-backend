@@ -75,6 +75,8 @@ class TreeManagerAgent(BaseAgent):
         """
         Add a new symptom to the diagnosis tree under the decided parent node.
         """
+        await self.logger.info(f"TreeManager: Starting to add symptom '{symptom}' with likelihood {likelyhood}")
+        
         if websocket:
             await self.send_ws_stage(websocket, f"Adding symptom '{symptom}' to tree", MessageSource.ORCHESTRATOR, session_id=session_id)
         
@@ -93,17 +95,25 @@ class TreeManagerAgent(BaseAgent):
         
         if websocket:
             await self.send_ws_result(websocket, f"Symptom '{symptom}' added", MessageSource.ORCHESTRATOR, session_id=session_id, details={"symptom": symptom, "likelyhood": likelyhood})
+        
+        await self.logger.info(f"TreeManager: Successfully completed adding symptom '{symptom}'")
         return new_node
 
     def prune_tree(self, threshold: float = 0.3):
         """
         Prune the tree by removing nodes that have a likelihood below the given threshold.
         """
-        print(f"TreeManager: Pruning tree with threshold {threshold}")
+        # Note: This is a sync method called from async context, so we cannot use async logger
+        # The caller should log this operation instead
         initial_count = len(self.root.children)
         self.root.prune(threshold)
         final_count = len(self.root.children)
-        print(f"TreeManager: Pruned tree - children count: {initial_count} -> {final_count}")
+        # Store pruning stats for caller to log
+        self._last_prune_stats = {
+            "threshold": threshold,
+            "initial_count": initial_count,
+            "final_count": final_count
+        }
 
     def sort_tree(self):
         """

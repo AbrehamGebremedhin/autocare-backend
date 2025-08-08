@@ -323,7 +323,9 @@ class UserInteractionAgent(BaseAgent):
             parsed_response = serialize_datetimes(parsed_response)
             if websocket:
                 await self.send_ws_result(websocket, "User message generated", MessageSource.CHAT_SERVICE, session_id=session_id, details=parsed_response)
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "User message generated"}))
+            stage_msg = {"type": "stage", "stage": "User message generated"}
+            await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
+            await self.broadcast_stage(json.dumps(stage_msg))
             return {
                 **parsed_response,
                 "success": True,
@@ -332,7 +334,10 @@ class UserInteractionAgent(BaseAgent):
         except Exception as e:
             if websocket:
                 await self.send_ws_error(websocket, f"Error in user message generation - {type(e).__name__}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": f"Error in user message generation - {type(e).__name__}"}))
+            error_stage = f"Error in user message generation - {type(e).__name__}"
+            stage_msg = {"type": "stage", "stage": error_stage}
+            await self.logger.info(f"Broadcasting error stage: {stage_msg['stage']}")
+            await self.broadcast_stage(json.dumps(stage_msg))
             await self.logger.error(f"UserInteractionAgent error: {e}\nTraceback: {traceback.format_exc()}")
             return {
                 "diagnosis": None,
@@ -364,6 +369,8 @@ class UserInteractionAgent(BaseAgent):
         Returns:
             dict: Contains 'success', 'diagnosis', 'actionable_steps', 'needed_tools', 'safety_note', 'followup_questions', 'confidence', and optionally 'error' and 'error_type'.
         """
+        await self._log_entry("process", message_length=len(user_message), session_id=session_id)
+        
         # Convert DiagnosisTreeNode to dict if present in diagnosis_result
         def serialize(obj):
             from app.utils.diagnosis_tree import DiagnosisTreeNode
@@ -376,6 +383,7 @@ class UserInteractionAgent(BaseAgent):
             return obj
         diagnosis_result = serialize(diagnosis_result)
         max_retries = 2
+        
         for attempt in range(max_retries + 1):
             try:
                 result = await self.generate_user_message(user_message, diagnosis_result, websocket=websocket, session_id=session_id)
@@ -396,19 +404,25 @@ class UserInteractionAgent(BaseAgent):
                     "maintenance_prevention": result.get("maintenance_prevention", {}),
                     "followup_questions": result.get("followup_questions", [])
                 }
-                return {
+                
+                process_result = {
                     "success": result.get("success", False),
                     "user_message": user_message_text,
                     "followup_questions": result.get("followup_questions", []),  # Also include at top level for backwards compatibility
                     "error": None,
                     "error_type": None
                 }
+                
+                await self._log_exit("process", success=process_result["success"], attempt=attempt + 1)
+                return process_result
+                
             except Exception as e:
                 await self.logger.error(f"Process error (attempt {attempt+1}): {e}")
                 if attempt == max_retries:
                     if websocket:
                         await self.send_ws_error(websocket, f"Error in user message generation - {type(e).__name__}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
-                    return {
+                    
+                    error_result = {
                         "success": False,
                         "user_message": "",
                         "followup_questions": [
@@ -418,6 +432,9 @@ class UserInteractionAgent(BaseAgent):
                         "error": str(e),
                         "error_type": type(e).__name__
                     }
+                    
+                    await self._log_exit("process", success=False, error=str(e), max_attempts_reached=True)
+                    return error_result
 
     def close(self) -> None:
         """

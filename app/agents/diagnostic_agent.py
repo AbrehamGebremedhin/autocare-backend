@@ -238,13 +238,43 @@ class DiagnosisAgent(BaseAgent):
         )
 
     async def retrieve_context(self, user_message: str) -> Dict[str, Any]:
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Retrieving context"}))
+        stage_msg = {"type": "stage", "stage": "Retrieving context"}
+        await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
+        await self.broadcast_stage(json.dumps(stage_msg))
         await self._ensure_car_info()
-        # Vector search against owner manual text using user_message
-        manual_chunks = await self.search_engine_service.embed_and_vector_search(
-            content_path=f"car_data/{self.car_id}_manual.pdf", query=user_message, top_k=1
-        )
-        manual_context = manual_chunks[0]["chunk"] if manual_chunks else ""
+        
+        try:
+            # Try to get manual text and handle potential issues
+            manual_chunks = await self.search_engine_service.embed_and_vector_search(
+                car_id=self.car_id, query=user_message, top_k=1
+            )
+            manual_context = manual_chunks[0]["chunk"] if manual_chunks else ""
+            
+            # If no manual chunks, look for a fallback
+            if not manual_chunks:
+                await self.logger.warning(f"No manual chunks found for car_id {self.car_id}, using fallback search")
+                # Try normalized car ID if original failed
+                normalized_car_id = self.car_id
+                # If car ID format looks like model-make-year, try to normalize it to make-model-year
+                parts = self.car_id.lower().split('-')
+                if len(parts) >= 3:
+                    common_makes = ['toyota', 'honda', 'ford', 'chevrolet', 'bmw', 'audi', 'mercedes', 'nissan', 
+                                  'mazda', 'subaru', 'hyundai', 'kia', 'lexus', 'acura', 'volkswagen', 'vw']
+                    if parts[0] not in common_makes and parts[1] in common_makes:
+                        normalized_car_id = f"{parts[1]}-{parts[0]}-{parts[2]}"
+                        
+                        # Try again with normalized ID if different
+                        if normalized_car_id != self.car_id:
+                            await self.logger.info(f"Trying normalized car_id: {normalized_car_id}")
+                            manual_chunks = await self.search_engine_service.embed_and_vector_search(
+                                car_id=normalized_car_id, query=user_message, top_k=1
+                            )
+                            manual_context = manual_chunks[0]["chunk"] if manual_chunks else ""
+        except Exception as e:
+            await self.logger.error(f"Error retrieving manual text: {str(e)}")
+            manual_context = ""
+            
+        # Continue with general search
         docs = await self.search_engine_service.search(self.car_id, user_message, top_k=80)
         
         # Separate and process knowledge base docs more comprehensively
@@ -311,7 +341,6 @@ class DiagnosisAgent(BaseAgent):
             
         # Debug logging to understand tree state
         children_count = len(self.diagnosis_tree.children)
-        print(f"DEBUG: DiagnosisAgent.summarize_tree - Tree has {children_count} children")
         
         if children_count == 0:
             return "Diagnosis tree is empty - no symptoms have been extracted yet."
@@ -396,11 +425,12 @@ SYMPTOM PRIORITY SUMMARY:
 DIAGNOSIS GUIDANCE:
 Focus your diagnosis on the highest likelihood symptoms first, then use supporting evidence from medium and low priority symptoms to confirm or refine the diagnosis. Consider the hierarchical relationships shown above - child symptoms often provide specific details about their parent categories."""
         
-        print(f"DEBUG: DiagnosisAgent.summarize_tree - Enhanced tree summary created with {high + medium + low} total symptoms")
         return diagnosis_summary
 
     async def diagnose(self, user_messages: List[str]) -> dict:
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Starting diagnosis"}))
+        stage_msg = {"type": "stage", "stage": "Starting diagnosis"}
+        await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
+        await self.broadcast_stage(json.dumps(stage_msg))
         """
         Main entry: generate diagnosis using tree, last 5 user messages, and multi-source context.
         Improved error handling.
@@ -413,7 +443,9 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
             last_messages = user_messages[-5:] if isinstance(user_messages, list) else [user_messages]
             user_message_concat = "\n".join(last_messages)
             context = await self.retrieve_context(user_message_concat)
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Context retrieved"}))
+            stage_msg = {"type": "stage", "stage": "Context retrieved"}
+            await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
+            await self.broadcast_stage(json.dumps(stage_msg))
             tree_summary = self.summarize_tree()
             prompt_vars = {
                 "user_message": user_message_concat,
@@ -425,7 +457,9 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
                 "car_model": self.car_model or "",
                 "car_year": self.car_year or ""
             }
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Invoking LLM for diagnosis"}))
+            stage_msg = {"type": "stage", "stage": "Invoking LLM for diagnosis"}
+            await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
+            await self.broadcast_stage(json.dumps(stage_msg))
             llm = self.llm_service.get_llm()
             prompt = self.prompt.format(**prompt_vars)
             response = await llm.ainvoke(prompt) if hasattr(llm, "ainvoke") else llm.invoke(prompt)
@@ -442,7 +476,9 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
                     response = response[:-3].strip()
             elif isinstance(response, dict):
                 response = json.loads(self._sanitize_output(json.dumps(response)))
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "LLM response received"}))
+            stage_msg = {"type": "stage", "stage": "LLM response received"}
+            await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
+            await self.broadcast_stage(json.dumps(stage_msg))
             # --- Symptom extraction trigger logic ---
             need_symptom_extraction = False
             if isinstance(response, str) and ("need more symptom" in response.lower() or "provide more symptoms" in response.lower()):
@@ -489,7 +525,10 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
             }
         except Exception as e:
             tb = traceback.format_exc()
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": f"Error occurred - {type(e).__name__}"}))
+            error_stage = f"Error occurred - {type(e).__name__}"
+            stage_msg = {"type": "stage", "stage": error_stage}
+            await self.logger.info(f"Broadcasting error stage: {stage_msg['stage']}")
+            await self.broadcast_stage(json.dumps(stage_msg))
             await self.logger.error(f"DiagnosisAgent error: {e}\n{tb}")
             user_friendly = "An internal error occurred while generating the diagnosis. Please try again later."
             return {
@@ -502,27 +541,37 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
 
     @monitor_and_handle("DiagnosisAgent")
     async def process(self, user_message: str, websocket=None, session_id=None):
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Processing diagnosis"}))
         """
         Accepts the user messages (list), runs the diagnosis, and returns the result and success status.
         Uses only the last 5 user messages.
         """
+        await self._log_entry("process", message_length=len(str(user_message)), session_id=session_id)
+        stage_msg = {"type": "stage", "stage": "Processing diagnosis"}
+        await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
+        await self.broadcast_stage(json.dumps(stage_msg))
+        
         await self._ensure_car_info()
         try:
             if websocket:
+                await self.logger.info(f"Sending diagnosis start stage via WebSocket - session_id={session_id}")
                 await self.send_ws_stage(websocket, "Diagnosis started", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id)
+            
             # Fetch the full car object from the DB to check for vector data
             car = await self.car_crud.get_car_by_id(self.car_id) if self.car_crud and self.car_id else None
             if car:
                 vector_data = car.get('vector')
                 if vector_data:
-                    await self.logger.info(f"[DEBUG] Vector data present for car {self.car_id}: type={type(vector_data)}, length={len(vector_data) if hasattr(vector_data, '__len__') else 'N/A'}")
+                    await self.logger.info(f"Vector data present for car {self.car_id}: type={type(vector_data)}, length={len(vector_data) if hasattr(vector_data, '__len__') else 'N/A'}")
                 else:
-                    await self.logger.info(f"[DEBUG] No vector data present for car {self.car_id}")
+                    await self.logger.info(f"No vector data present for car {self.car_id}")
+            
             result = await self.diagnose(user_message)
+            
             if websocket:
+                await self.logger.info(f"Sending diagnosis completion result via WebSocket - session_id={session_id}, result_success={result.get('success', False)}")
                 await self.send_ws_result(websocket, "Diagnosis complete", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id, details=result)
-            return {
+            
+            process_result = {
                 "success": result.get("success", False),
                 "result": result.get("diagnosis"),
                 "step_by_step_guide": result.get("step_by_step_guide"),
@@ -530,12 +579,19 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
                 "error_type": result.get("error_type") if not result.get("success", False) else None,
                 "user_message": result.get("user_message") if not result.get("success", False) else None
             }
+            
+            await self._log_exit("process", success=process_result["success"])
+            return process_result
+            
         except Exception as e:
             tb = traceback.format_exc()
             await self.logger.error(f"Process error: {e}\n{tb}")
             user_friendly = "An unexpected error occurred while processing your request. Please try again later."
             if websocket:
+                await self.logger.info(f"Sending diagnosis error via WebSocket - session_id={session_id}, error_type={type(e).__name__}")
                 await self.send_ws_error(websocket, user_friendly, MessageSource.DIAGNOSTIC_AGENT, session_id=session_id, details={"error": str(e)})
+            
+            await self._log_exit("process", success=False, error=str(e))
             return {
                 "success": False,
                 "result": None,
@@ -545,7 +601,9 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
             }
 
     async def generate_diagnosis(self, user_message: str, tree_summary: str, manual_context: str, kb_context: str = "", online_context: str = "") -> str:
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Generating diagnosis"}))
+        stage_msg = {"type": "stage", "stage": "Generating diagnosis"}
+        await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
+        await self.broadcast_stage(json.dumps(stage_msg))
         """
         Generate diagnosis using the LLM service.
         """

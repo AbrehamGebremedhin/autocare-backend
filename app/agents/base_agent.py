@@ -70,6 +70,17 @@ class BaseAgent(abc.ABC):
         self._state = new_state
         await self.logger.info(f"{self.__class__.__name__} state transition: {old_state.value} -> {new_state.value}")
     
+    async def _log_entry(self, method_name: str, **kwargs) -> None:
+        """Log agent method entry with optional context"""
+        context = f" with {kwargs}" if kwargs else ""
+        await self.logger.info(f"Entering {self.__class__.__name__}.{method_name}{context}")
+    
+    async def _log_exit(self, method_name: str, success: bool = True, **kwargs) -> None:
+        """Log agent method exit with status and optional context"""
+        status = "successfully" if success else "with errors"
+        context = f" - {kwargs}" if kwargs else ""
+        await self.logger.info(f"Exiting {self.__class__.__name__}.{method_name} {status}{context}")
+    
     def register_command(self, name: str, command: AgentCommand) -> None:
         """Register a command for this agent"""
         self._commands[name] = command
@@ -144,9 +155,15 @@ class BaseAgent(abc.ABC):
             details = serialize_datetimes(details)
             ws_method = getattr(self.websocket_manager, method, None)
             if ws_method:
+                await self.logger.info(f"Sending WebSocket {method} message: '{content[:100]}...' to session {session_id}")
                 await ws_method(websocket, content, source, session_id, details)
+            else:
+                await self.logger.warning(f"WebSocket method '{method}' not found on websocket manager")
+        else:
+            await self.logger.info(f"WebSocket message '{content[:50]}...' not sent (no websocket connection)")
 
     async def broadcast_stage(self, stage: str) -> None:
+        await self.logger.info(f"Broadcasting stage: {stage}")
         await self.websocket_manager.broadcast(stage)
 
     async def send_ws_info(self, websocket: Any, content: str, source: MessageSource, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
@@ -159,7 +176,10 @@ class BaseAgent(abc.ABC):
         if websocket is not None:
             from app.utils.json_utils import serialize_datetimes
             details = serialize_datetimes(details)
+            await self.logger.info(f"Sending WebSocket progress message: '{content[:50]}...' ({progress:.1%}) to session {session_id}")
             await self.websocket_manager.send_progress(websocket, content, source, progress, session_id, details)
+        else:
+            await self.logger.info(f"WebSocket progress message '{content[:50]}...' ({progress:.1%}) not sent (no websocket connection)")
 
     async def send_ws_stage(self, websocket: Any, content: str, source: MessageSource, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
         await self.send_ws_message(websocket, 'send_stage', content, source, session_id, details)

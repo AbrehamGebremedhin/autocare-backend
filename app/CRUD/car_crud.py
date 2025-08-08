@@ -166,6 +166,10 @@ class CarCRUD(BaseCRUD):
         if data.get('text') is None:
             data['text'] = ''
         # 1. Create the car record first
+        # Ensure text field is initialized to empty string if not present
+        if 'text' not in data or data['text'] is None:
+            data['text'] = ''
+            
         car = await super().create(data)
         if not car or not isinstance(car, list) or not car[0]:
             return car
@@ -202,28 +206,135 @@ class CarCRUD(BaseCRUD):
 
     async def get_car_by_id(self, car_id: str, cache: RedisCache = None):
         """Retrieve a car by its unique id, with optional Redis caching."""
+        # Normalize car_id to handle different formats
+        normalized_id = self._normalize_car_id(car_id)
+        
+        # First try with the original car_id
         cache_key = f"car:{car_id}"
         if cache:
             cached = await cache.get(cache_key)
             if cached:
                 return cached
+                
         cars = await self.read({'id': car_id})
+        
+        # If not found, try with normalized ID
+        if not cars or not isinstance(cars, list) or not cars:
+            if normalized_id != car_id:
+                # Try again with normalized ID
+                normalized_cache_key = f"car:{normalized_id}"
+                if cache:
+                    cached = await cache.get(normalized_cache_key)
+                    if cached:
+                        return cached
+                
+                cars = await self.read({'id': normalized_id})
+                
+                # Log attempt with normalized ID
+                if cars and isinstance(cars, list) and cars:
+                    await self.logger.info(f"Found car with normalized ID: {normalized_id} (original: {car_id})")
+                else:
+                    await self.logger.warning(f"Car not found with original ID '{car_id}' or normalized ID '{normalized_id}'")
+        
         if cars and isinstance(cars, list) and cars:
             car = cars[0]
             if cache:
                 await cache.set(cache_key, car)
+                if normalized_id != car_id:
+                    await cache.set(f"car:{normalized_id}", car)
             return car
+            
         return None
+        
+    def _normalize_car_id(self, car_id: str) -> str:
+        """
+        Normalize car ID to handle different formats and common variations.
+        For example: "echo-toyota-2001" -> "toyota-echo-2001"
+        """
+        if not car_id:
+            return car_id
+            
+        # Try to parse parts from the car_id
+        parts = car_id.lower().strip().split('-')
+        if len(parts) >= 3:
+            # Check for common pattern where make and model are reversed
+            # Common car makes that we can detect
+            common_makes = ['toyota', 'honda', 'ford', 'chevrolet', 'bmw', 'audi', 'mercedes', 'nissan', 
+                           'mazda', 'subaru', 'hyundai', 'kia', 'lexus', 'acura', 'volkswagen', 'vw']
+            
+            # If the first part isn't a known make but the second is, swap them
+            if parts[0] not in common_makes and parts[1] in common_makes:
+                model, make = parts[0], parts[1]
+                remaining = '-'.join(parts[2:])
+                return f"{make}-{model}-{remaining}"
+        
+        # If we couldn't normalize it, return the original
+        return car_id
 
     async def get_owner_manual_text(self, car_id: str, cache: RedisCache = None) -> str:
         """
         Retrieve the owner manual text for a car from the database.
         Agents and services should use this method to get the manual text instead of downloading/parsing the PDF.
         """
-        car = await self.get_car_by_id(car_id, cache=cache)
-        if car and car.get('text'):
-            return car['text']
-        return ''
+        try:
+            # Try to get car data
+            car = await self.get_car_by_id(car_id, cache=cache)
+            
+            if car:
+                # Car found in database
+                if car.get('text'):
+                    # Found text, log success and return it
+                    await self.logger.info(f"Successfully retrieved manual text for car {car_id} ({len(car.get('text', ''))} characters)")
+                    return car['text']
+                else:
+                    # Car found but no text field or empty text
+                    # Log detailed info about the car record
+                    keys = list(car.keys())
+                    text_field_exists = 'text' in car
+                    text_length = len(car.get('text', '')) if text_field_exists else 0
+                    
+                    owner_manual_url = car.get('owner_manual_url', '')
+                    has_url = bool(owner_manual_url)
+                    
+                    await self.logger.warning(
+                        f"Car {car_id} exists but has insufficient manual text. Details: "
+                        f"keys={keys}, text_field_exists={text_field_exists}, "
+                        f"text_length={text_length}, has_url={has_url}, url={owner_manual_url}"
+                    )
+                    
+                    # Check if we need to fetch text from URL
+                    if has_url and not text_length:
+                        await self.logger.info(f"Attempting to fetch text from URL for car {car_id}")
+                        # Here we could trigger a job to fetch and parse the manual
+                        # For now, just return empty string
+            else:
+                # Car not found - try to provide alternative IDs that might work
+                normalized_id = self._normalize_car_id(car_id)
+                suggestion = f" (try using '{normalized_id}')" if normalized_id != car_id else ""
+                
+                # Check if this could be a valid ID format but just not in DB
+                parts = car_id.split('-')
+                if len(parts) >= 3:
+                    make, model, year = parts[0], parts[1], parts[2]
+                    await self.logger.warning(
+                        f"Car {car_id} not found in database{suggestion}. "
+                        f"Parsed as make='{make}', model='{model}', year='{year}'"
+                    )
+                else:
+                    await self.logger.warning(
+                        f"Car {car_id} not found in database{suggestion}. "
+                        f"ID format might be invalid - should be 'make-model-year'"
+                    )
+                    
+            # If we reach here, we couldn't find text - return empty string
+            return ''
+            
+        except Exception as e:
+            # Enhanced error handling with stack trace
+            import traceback
+            tb_str = traceback.format_exc()
+            await self.logger.error(f"Error in get_owner_manual_text for {car_id}: {str(e)}\n{tb_str}")
+            return ''
 
     async def batch_get_cars_by_ids(self, car_ids: List[str], cache: RedisCache = None) -> Dict[str, dict]:
         """

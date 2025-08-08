@@ -58,15 +58,87 @@ class SearchEngineService(BaseService):
         This method eliminates redundant PDF downloading and parsing since text is already stored.
         Returns the manual text or None if not found.
         """
-        # Always use DB text - no more PDF downloading/parsing
+        # Try original car_id first
         manual_text = await self.car_crud.get_owner_manual_text(car_id)
         if manual_text:
             return manual_text
+            
+        # If not found, try with possible alternative formats
+        normalized_car_id = self._normalize_car_id(car_id)
+        if normalized_car_id != car_id:
+            if hasattr(self, 'logger') and self.logger:
+                await self.logger.info(f"Trying normalized car_id: {normalized_car_id}")
+            manual_text = await self.car_crud.get_owner_manual_text(normalized_car_id)
+            if manual_text:
+                if hasattr(self, 'logger') and self.logger:
+                    await self.logger.info(f"Found manual text using normalized car_id: {normalized_car_id}")
+                return manual_text
         
-        # If no text in DB, log warning and return None
+        # If still no text, check for predefined manuals
+        # Example: check if we have a generic manual for the make/model
+        try:
+            parts = car_id.lower().split('-')
+            if len(parts) >= 3:
+                make, model, year = parts[0], parts[1], parts[2]
+                # Try general make-model without year
+                general_id = f"{make}-{model}"
+                
+                if hasattr(self, 'logger') and self.logger:
+                    await self.logger.info(f"Trying generic manual for: {general_id}")
+                
+                general_manual = await self.car_crud.get_owner_manual_text(general_id)
+                if general_manual:
+                    if hasattr(self, 'logger') and self.logger:
+                        await self.logger.info(f"Found generic manual for: {general_id}")
+                    return general_manual
+                    
+                # Try with different year variations for same model
+                # This would help if we have a manual for a different year of the same model
+                for offset in [-1, 1, -2, 2]:
+                    alt_year = str(int(year) + offset)
+                    alt_id = f"{make}-{model}-{alt_year}"
+                    
+                    if hasattr(self, 'logger') and self.logger:
+                        await self.logger.info(f"Trying alternative year: {alt_id}")
+                    
+                    alt_manual = await self.car_crud.get_owner_manual_text(alt_id)
+                    if alt_manual:
+                        if hasattr(self, 'logger') and self.logger:
+                            await self.logger.info(f"Found manual for alternative year: {alt_id}")
+                        return alt_manual
+        except Exception as e:
+            if hasattr(self, 'logger') and self.logger:
+                await self.logger.error(f"Error trying alternative car IDs: {str(e)}")
+        
+        # If no text found after all attempts, log warning and return None
         if hasattr(self, 'logger') and self.logger:
-            await self.logger.warning(f"No manual text found in database for car_id: {car_id}")
+            await self.logger.warning(f"No manual text found in database for car_id: {car_id} or any alternatives")
         return None
+        
+    def _normalize_car_id(self, car_id: str) -> str:
+        """
+        Normalize car ID to handle different formats and common variations.
+        For example: "echo-toyota-2001" -> "toyota-echo-2001"
+        """
+        if not car_id:
+            return car_id
+            
+        # Try to parse parts from the car_id
+        parts = car_id.lower().strip().split('-')
+        if len(parts) >= 3:
+            # Check for common pattern where make and model are reversed
+            # Common car makes that we can detect
+            common_makes = ['toyota', 'honda', 'ford', 'chevrolet', 'bmw', 'audi', 'mercedes', 'nissan', 
+                           'mazda', 'subaru', 'hyundai', 'kia', 'lexus', 'acura', 'volkswagen', 'vw']
+            
+            # If the first part isn't a known make but the second is, swap them
+            if parts[0] not in common_makes and parts[1] in common_makes:
+                model, make = parts[0], parts[1]
+                remaining = '-'.join(parts[2:])
+                return f"{make}-{model}-{remaining}"
+        
+        # If we couldn't normalize it, return the original
+        return car_id
 
     @staticmethod
     def score_normalizer(scores, reverse=False):

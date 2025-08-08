@@ -125,6 +125,11 @@ class ChatService(BaseService):
             if websocket:
                 await self.send_ws_progress(websocket, "Processing user message", MessageSource.CHAT_SERVICE, 0.1, session_id=conversation['id'])
             response_data = await self.orchestrator.route_request(message, user_id, context)
+            
+            # Update the diagnosis tree in the conversation context if returned by orchestrator
+            if response_data and 'diagnosis_tree' in response_data:
+                conversation['context']['diagnosis_tree'] = response_data['diagnosis_tree']
+            
             # Add assistant response to conversation
             conversation['messages'].append({
                 'role': 'assistant',

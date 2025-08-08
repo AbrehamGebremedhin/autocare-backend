@@ -3,7 +3,7 @@ from typing import Dict, Any, List, Optional
 from app.utils.audit_logging import audit_logger, AuditEventType
 from app.utils.limiter import enhanced_limiter
 from app.utils.logger import get_logger_instance
-from app.utils.auth_middleware import require_role, get_current_user
+from app.utils.auth_middleware_mobile import require_role, get_current_user
 from app.utils.exceptions import InsufficientPermissionsException
 from pydantic import BaseModel
 

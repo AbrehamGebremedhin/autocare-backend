@@ -230,11 +230,21 @@ async def send_message_in_session(session_id: str, request: ChatSessionMessageRe
             context=request.context,
             session=session
         )
-        # Update the session in the DB with the new messages and updated_at
+        # Update the session in the DB with the new messages, updated_at and diagnosis_tree
         updated_session = chat_service._get_conversation(session.get('user_id'), session=session)
+        
+        # Serialize diagnosis tree for storage
+        diagnosis_tree_dict = None
+        if 'context' in updated_session and updated_session['context'] and 'diagnosis_tree' in updated_session['context']:
+            from app.schemas.Chat_Session import ChatSession
+            diagnosis_tree = updated_session['context'].get('diagnosis_tree')
+            if diagnosis_tree:
+                diagnosis_tree_dict = ChatSession.serialize_diagnosis_tree(diagnosis_tree)
+        
         await chat_session_crud.update({'id': session_id}, {
             'messages': updated_session['messages'],
-            'updated_at': updated_session.get('last_updated', datetime.now().isoformat())
+            'updated_at': updated_session.get('last_updated', datetime.now().isoformat()),
+            'diagnosis_tree': diagnosis_tree_dict
         })
         return {"messages": updated_session['messages']}
     except Exception as e:

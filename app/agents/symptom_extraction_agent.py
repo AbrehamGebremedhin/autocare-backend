@@ -128,20 +128,21 @@ class SymptomExtractorAgent(BaseAgent):
             self.tree_manager_agent = tree_manager_agent
             # Ensure the tree manager is using the same tree reference
             if hasattr(tree_manager_agent, 'root') and tree_manager_agent.root != self.diagnosis_tree:
-                print(f"WARNING: TreeManagerAgent root differs from provided diagnosis_tree")
-                print(f"  TreeManager root id: {id(tree_manager_agent.root)}")
-                print(f"  Provided tree id: {id(self.diagnosis_tree)}")
+                # Note: Cannot use async logger in __init__, will log on first method call
+                self._init_warning = f"TreeManagerAgent root differs from provided diagnosis_tree. TreeManager root id: {id(tree_manager_agent.root)}, Provided tree id: {id(self.diagnosis_tree)}"
                 # Force the tree manager to use our tree
                 tree_manager_agent.root = self.diagnosis_tree
         elif self.diagnosis_tree is not None:
             self.tree_manager_agent = TreeManagerAgent(self.diagnosis_tree, llm_service=self.llm_service)
             # Verify the tree manager is using the correct tree
             if self.tree_manager_agent.root != self.diagnosis_tree:
-                print(f"ERROR: TreeManagerAgent created with wrong tree reference!")
-                print(f"  TreeManager root id: {id(self.tree_manager_agent.root)}")
-                print(f"  Expected tree id: {id(self.diagnosis_tree)}")
+                self._init_error = f"TreeManagerAgent created with wrong tree reference! TreeManager root id: {id(self.tree_manager_agent.root)}, Expected tree id: {id(self.diagnosis_tree)}"
         else:
             self.tree_manager_agent = None
+        
+        # Initialize warning/error flags for logging in async methods
+        self._init_warning = getattr(self, '_init_warning', None)
+        self._init_error = getattr(self, '_init_error', None)
 
     async def pre_process(self, task: Any) -> Dict[str, Any]:
         """
@@ -151,6 +152,8 @@ class SymptomExtractorAgent(BaseAgent):
         Returns:
             Dict[str, Any]: Context dictionary including manuals and scraped data.
         """
+        await self._log_entry("pre_process")
+        
         await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Pre-processing context"}))
         context: Dict[str, Any] = {}
         timings = {}
@@ -175,6 +178,7 @@ class SymptomExtractorAgent(BaseAgent):
         guide_links = [link for link in guide_links if isinstance(link, str) and link.startswith(valid_prefixes)]
         if not guide_links:
             # No guide links available, return empty context
+            await self._log_exit("pre_process", success=True, guide_links_count=0)
             return {}
 
         embedding_service = self.embedding_service
@@ -232,6 +236,10 @@ class SymptomExtractorAgent(BaseAgent):
         context["guide_links_text"] = guide_links_text
         context["timings"] = timings
         await self.logger.info(f"pre_process timings: {timings}")
+        
+        await self._log_exit("pre_process", success=True, 
+                           guide_links_count=len(guide_links_text),
+                           has_manual=bool(owner_manual_text))
         return context
 
     async def handle(self, task: Any) -> Any:
@@ -245,6 +253,8 @@ class SymptomExtractorAgent(BaseAgent):
         Returns:
             Any: Parsed JSON array of extracted issues, or a dict requesting more info if ambiguous.
         """
+        await self._log_entry("handle")
+        
         def is_ambiguous(result):
             # Consider ambiguous if result is empty or all likelihoods are below a threshold
             if not result or not isinstance(result, list):
@@ -317,12 +327,13 @@ class SymptomExtractorAgent(BaseAgent):
         await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Completed"}))
         await self.logger.info(f"handle timings: {timings}")
 
-        # Debug: Check what parsed_result contains
-        await self.logger.info(f"DEBUG: parsed_result type: {type(parsed_result)}, content: {parsed_result}")
+        # Log parsed result information
+        await self.logger.info(f"Parsed result type: {type(parsed_result)}, items count: {len(parsed_result) if isinstance(parsed_result, list) else 'N/A'}")
 
         # If still ambiguous after all attempts, ask user for more info
         if is_ambiguous(parsed_result):
-            await self.logger.info("DEBUG: Result is ambiguous, requesting more info")
+            await self.logger.info("Result is ambiguous, requesting more info from user")
+            await self._log_exit("handle", success=True, result_type="more_info_needed")
             return {
                 'need_more_info': True,
                 'info_type': 'symptom description',
@@ -337,7 +348,7 @@ class SymptomExtractorAgent(BaseAgent):
             for issue in parsed_result:
                 issue_name = issue.get('issue_name', 'Unknown Issue')
                 likelihood = issue.get('likelihood', 0) / 100.0  # Convert to 0-1 float
-                await self.logger.info(f"Adding symptom: {issue_name} with likelihood {likelihood} (original: {issue.get('likelihood', 0)})")
+                await self.logger.info(f"Adding symptom: {issue_name} with likelihood {likelihood}")
                 
                 await self.tree_manager_agent.add_symptom(
                     symptom=issue_name,
@@ -348,6 +359,12 @@ class SymptomExtractorAgent(BaseAgent):
             # Optionally prune and sort after adding with a lower threshold to preserve more symptoms
             await self.logger.info("Pruning tree with threshold 0.2 (20%)")
             self.tree_manager_agent.prune_tree(threshold=0.2)
+            
+            # Log pruning stats if available
+            if hasattr(self.tree_manager_agent, '_last_prune_stats'):
+                stats = self.tree_manager_agent._last_prune_stats
+                await self.logger.info(f"Pruning completed: {stats['initial_count']} -> {stats['final_count']} children (threshold: {stats['threshold']})")
+                
             self.tree_manager_agent.sort_tree()
             
             tree_after_count = len(self.diagnosis_tree.children) if self.diagnosis_tree else 0
@@ -370,9 +387,13 @@ class SymptomExtractorAgent(BaseAgent):
         # Ensure we return the actual tree that was modified
         actual_tree = self.tree_manager_agent.root if self.tree_manager_agent else self.diagnosis_tree
         
-        # Debug logging to verify tree state
+        # Log tree state
         if actual_tree:
-            print(f"DEBUG: Returning tree with {len(actual_tree.children)} children, tree id: {id(actual_tree)}")
+            await self.logger.info(f"Returning tree with {len(actual_tree.children)} children")
+        
+        await self._log_exit("handle", success=True, 
+                           symptoms_count=len(processed_result) if isinstance(processed_result, list) else 0,
+                           tree_children=len(actual_tree.children) if actual_tree else 0)
         
         return {
             'symptoms': processed_result,
@@ -390,6 +411,16 @@ class SymptomExtractorAgent(BaseAgent):
         Returns:
             Dict[str, Any]: Extracted symptoms and updated diagnosis tree.
         """
+        await self._log_entry("process", message_length=len(user_message), session_id=session_id)
+        
+        # Log any init warnings/errors
+        if self._init_warning:
+            await self.logger.warning(self._init_warning)
+            self._init_warning = None
+        if self._init_error:
+            await self.logger.error(self._init_error)
+            self._init_error = None
+        
         try:
             if websocket:
                 await self.send_ws_stage(websocket, "Symptom extraction started", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id)
@@ -399,16 +430,22 @@ class SymptomExtractorAgent(BaseAgent):
             
             # Return both symptoms and updated diagnosis tree
             if isinstance(result, dict) and 'symptoms' in result:
-                return {
+                process_result = {
                     "result": result['symptoms'],
                     "diagnosis_tree": result['diagnosis_tree']
                 }
             else:
                 # Fallback for backwards compatibility
-                return {"result": result, "diagnosis_tree": self.diagnosis_tree}
+                process_result = {"result": result, "diagnosis_tree": self.diagnosis_tree}
+            
+            await self._log_exit("process", success=True, 
+                               has_symptoms='symptoms' in result if isinstance(result, dict) else False)
+            return process_result
+            
         except Exception as e:
             if websocket:
                 await self.send_ws_error(websocket, "Error during symptom extraction", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id, details={"error": str(e)})
+            await self._log_exit("process", success=False, error=str(e))
             raise
 
     async def extract_symptoms(self, input_text: Any, context: str = "") -> List[Dict[str, Any]]:

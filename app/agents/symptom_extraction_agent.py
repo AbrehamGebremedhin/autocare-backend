@@ -9,6 +9,7 @@ from langchain.schema import Document
 import asyncio
 from functools import partial
 from app.services.embedding_service import EmbeddingService
+from app.services.search_engine_service import SearchEngineService
 from app.services.scraper_service import ScraperService
 import numpy as np
 import time
@@ -103,6 +104,7 @@ class SymptomExtractorAgent(BaseAgent):
         websocket_manager: Optional[IWebSocketManager] = None,
         llm_service: Optional[LLMService] = None,
         embedding_service: Optional[EmbeddingService] = None,
+        search_engine_service: Optional[SearchEngineService] = None,
         scraper_service: Optional[ScraperService] = None,
         tree_manager_agent: Optional[TreeManagerAgent] = None,
         **kwargs: Any
@@ -115,6 +117,7 @@ class SymptomExtractorAgent(BaseAgent):
         self.prompt = self.get_prompt_template()
         self.output_parser = JsonOutputParser()
         self.embedding_service = embedding_service or EmbeddingService()
+        self.search_engine_service = search_engine_service or SearchEngineService()
         self.scraper_service = scraper_service or ScraperService(headless=True)
         
         # Initialize diagnosis tree if not provided
@@ -213,16 +216,18 @@ class SymptomExtractorAgent(BaseAgent):
         ]
         scored_links.sort(key=lambda x: x[1], reverse=True)
         top_links = [link for link, score in scored_links[:3] if score > 0.3]
-        # Fetch owner manual text from DB
-        owner_manual_text = await self.car_crud.get_owner_manual_text(self.car_id) if self.car_crud and self.car_id else ""
-        context["owner_manual"] = owner_manual_text
-
-        # Vector search against owner manual text using user message
+        
+        # Fetch owner manual text from DB and perform vector search on it
         user_message_concat = self._concat_user_messages(task)
-        manual_chunks = await self.embedding_service.search_engine_service.embed_and_vector_search(
-            content_path=f"car_data/{self.car_id}_manual.pdf", query=user_message_concat, top_k=1
-        )
-        owner_manual_text = manual_chunks[0]["chunk"] if manual_chunks else ""
+        if self.search_engine_service and self.car_id:
+            # Use the optimized embed_and_vector_search that uses database text (not PDF)
+            manual_chunks = await self.search_engine_service.embed_and_vector_search(
+                car_id=self.car_id, query=user_message_concat, top_k=1
+            )
+            owner_manual_text = manual_chunks[0]["chunk"] if manual_chunks else ""
+        else:
+            owner_manual_text = ""
+        
         context["owner_manual"] = owner_manual_text
 
         # Start scraping in parallel with other work (if any)

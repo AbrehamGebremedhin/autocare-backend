@@ -101,8 +101,8 @@ class FetchCarDataService(BaseService):
         model = model.replace(" ", "-").lower()
         year = str(year).lower()
         data = {
-            "Owner_Manual": f"{self.BASE_URL}{model}/{make}/info/manuals/{year}",
-            "Car_guide_link": f"{self.BASE_URL}{model}/{make}/guides/"
+            "Owner_Manual": f"{self.BASE_URL}{make}/{model}/info/manuals/{year}",
+            "Car_guide_link": f"{self.BASE_URL}{make}/{model}/guides/"
         }
         return data
 

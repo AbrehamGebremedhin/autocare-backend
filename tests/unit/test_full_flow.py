@@ -66,7 +66,11 @@ class MockEmbeddingService:
     async def embed_texts(self, texts):
         return [[0.1] * 10 for _ in texts]
     
-    async def embed_and_vector_search(self, content_path, query, top_k=1):
+    async def embed_and_vector_search(self, car_id, query, top_k=1):
+        return [{"chunk": "Manual text chunk"}]
+
+class MockSearchEngineService:
+    async def embed_and_vector_search(self, car_id, query, top_k=1):
         return [{"chunk": "Manual text chunk"}]
 
 class MockScraperService:
@@ -108,6 +112,7 @@ async def test_full_symptom_extraction_flow():
         tree_manager_agent=tree_manager,
         llm_service=MockLLMService(),
         embedding_service=MockEmbeddingService(),
+        search_engine_service=MockSearchEngineService(),
         scraper_service=MockScraperService()
     )
     

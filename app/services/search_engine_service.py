@@ -2,6 +2,7 @@ from app.services.base_service import BaseService
 from app.services.embedding_service import EmbeddingService
 from app.services.parser_service import ParserService
 from app.services.scraper_service import ScraperService
+from app.services.car_vectorization_service import CarVectorizationService
 from app.db.milvus_handler import MilvusHandler
 from app.CRUD.car_crud import CarCRUD
 from typing import List, Dict, Any, Optional
@@ -41,6 +42,7 @@ class SearchEngineService(BaseService):
         scraper_service: Optional[ScraperService] = None,
         milvus_handler: Optional[MilvusHandler] = None,
         car_crud: Optional[CarCRUD] = None,
+        vectorization_service: Optional[CarVectorizationService] = None,
         embedding_cache: Optional[LRUCache] = None,
     ):
         super().__init__(websocket_manager=websocket_manager)
@@ -49,70 +51,29 @@ class SearchEngineService(BaseService):
         self.scraper_service = scraper_service or ScraperService(websocket_manager=websocket_manager)
         self.milvus_handler = milvus_handler or MilvusHandler()
         self.car_crud = car_crud or CarCRUD()
+        self.vectorization_service = vectorization_service or CarVectorizationService(websocket_manager=websocket_manager)
         # Cache for embeddings only - manual path cache no longer needed
         self._embedding_cache = embedding_cache or LRUCache(capacity=64)  # Increased capacity for better performance
 
     async def get_owner_manual_text(self, car_id: str) -> Optional[str]:
         """
-        Get the owner's manual text for the given car_id from the database.
-        This method eliminates redundant PDF downloading and parsing since text is already stored.
-        Returns the manual text or None if not found.
+        Get the owner's manual text for the given car_id from vectorized chunks.
+        This method retrieves a limited number of chunks for efficiency.
+        NOTE: This method should generally not be used - use embed_and_vector_search instead.
         """
-        # Try original car_id first
-        manual_text = await self.car_crud.get_owner_manual_text(car_id)
-        if manual_text:
-            return manual_text
-            
-        # If not found, try with possible alternative formats
-        normalized_car_id = self._normalize_car_id(car_id)
-        if normalized_car_id != car_id:
-            if hasattr(self, 'logger') and self.logger:
-                await self.logger.info(f"Trying normalized car_id: {normalized_car_id}")
-            manual_text = await self.car_crud.get_owner_manual_text(normalized_car_id)
-            if manual_text:
-                if hasattr(self, 'logger') and self.logger:
-                    await self.logger.info(f"Found manual text using normalized car_id: {normalized_car_id}")
-                return manual_text
-        
-        # If still no text, check for predefined manuals
-        # Example: check if we have a generic manual for the make/model
-        try:
-            parts = car_id.lower().split('-')
-            if len(parts) >= 3:
-                make, model, year = parts[0], parts[1], parts[2]
-                # Try general make-model without year
-                general_id = f"{make}-{model}"
-                
-                if hasattr(self, 'logger') and self.logger:
-                    await self.logger.info(f"Trying generic manual for: {general_id}")
-                
-                general_manual = await self.car_crud.get_owner_manual_text(general_id)
-                if general_manual:
-                    if hasattr(self, 'logger') and self.logger:
-                        await self.logger.info(f"Found generic manual for: {general_id}")
-                    return general_manual
-                    
-                # Try with different year variations for same model
-                # This would help if we have a manual for a different year of the same model
-                for offset in [-1, 1, -2, 2]:
-                    alt_year = str(int(year) + offset)
-                    alt_id = f"{make}-{model}-{alt_year}"
-                    
-                    if hasattr(self, 'logger') and self.logger:
-                        await self.logger.info(f"Trying alternative year: {alt_id}")
-                    
-                    alt_manual = await self.car_crud.get_owner_manual_text(alt_id)
-                    if alt_manual:
-                        if hasattr(self, 'logger') and self.logger:
-                            await self.logger.info(f"Found manual for alternative year: {alt_id}")
-                        return alt_manual
-        except Exception as e:
-            if hasattr(self, 'logger') and self.logger:
-                await self.logger.error(f"Error trying alternative car IDs: {str(e)}")
-        
-        # If no text found after all attempts, log warning and return None
+        # PERFORMANCE WARNING: This method retrieves ALL chunks and combines them
+        # It should only be used for specific cases where the full manual is needed
         if hasattr(self, 'logger') and self.logger:
-            await self.logger.warning(f"No manual text found in database for car_id: {car_id} or any alternatives")
+            await self.logger.warning(f"get_owner_manual_text called for {car_id} - this may impact performance")
+        
+        # Get only a reasonable number of chunks instead of all of them
+        chunks = await self.car_crud.get_owner_manual_chunks(car_id, query=None, top_k=50)  # Reduced from 1000
+        if chunks:
+            # Combine chunks into text (sorted by chunk_index for coherence)
+            sorted_chunks = sorted(chunks, key=lambda x: x.get('chunk_index', 0))
+            manual_text = '\n'.join([chunk.get('chunk', '') for chunk in sorted_chunks])
+            return manual_text if manual_text.strip() else None
+            
         return None
         
     def _normalize_car_id(self, car_id: str) -> str:
@@ -160,51 +121,44 @@ class SearchEngineService(BaseService):
 
     async def embed_and_vector_search(self, car_id: str, query: str, top_k: int = 12, chunk_size: int = 800) -> List[Dict[str, Any]]:
         """
-        Optimized embedding and vector search using pre-stored text from database.
-        Eliminates redundant PDF downloading and parsing.
-        Returns top_k relevant results.
+        Direct vector search for car manuals using Milvus.
+        This completely replaces the old slow method that did on-demand text processing.
         """
-        # Get manual text directly from database - no more PDF processing
-        manual_text = await self.get_owner_manual_text(car_id)
-        if not manual_text:
+        try:
+            import time
+            start_time = time.time()
+            
+            # Use the vectorization service to search directly in Milvus
+            results = await self.vectorization_service.search_car_manual(
+                query=query,
+                car_id=car_id,
+                top_k=top_k
+            )
+            
+            elapsed = time.time() - start_time
+            if hasattr(self, 'logger') and self.logger:
+                await self.logger.info(f"Vector search for {car_id} took {elapsed:.2f}s, found {len(results)} results")
+            
+            # If no results, try normalized car_id
+            if not results:
+                normalized_car_id = self._normalize_car_id(car_id)
+                if normalized_car_id != car_id:
+                    start_time = time.time()
+                    results = await self.vectorization_service.search_car_manual(
+                        query=query,
+                        car_id=normalized_car_id,
+                        top_k=top_k
+                    )
+                    elapsed = time.time() - start_time
+                    if hasattr(self, 'logger') and self.logger:
+                        await self.logger.info(f"Normalized vector search for {normalized_car_id} took {elapsed:.2f}s, found {len(results)} results")
+            
+            return results
+            
+        except Exception as e:
+            if hasattr(self, 'logger') and self.logger:
+                await self.logger.error(f"Error in vector search for car {car_id}: {str(e)}")
             return []
-        
-        # Use cache key based on car_id, query, and chunk_size for better cache efficiency
-        cache_key = f"manual_search:{car_id}:{hash(query)}:{chunk_size}"
-        cached_result = self._embedding_cache.get(cache_key)
-        if cached_result is not None:
-            return cached_result
-        
-        # Precompute and cache embeddings for static documents (owner manuals) by car_id
-        static_embedding_key = f"manual_embeddings:{car_id}:{chunk_size}"
-        static_data = self._embedding_cache.get(static_embedding_key)
-        
-        if static_data is not None:
-            chunks, chunk_embeddings = static_data
-        else:
-            # Chunk the text and create embeddings
-            chunks = await self.parser_service.chunk_text_optimized(manual_text, chunk_size=chunk_size)
-            if not chunks:
-                return []
-            chunk_embeddings = await self.embedding_service.embed_texts_batch(chunks)
-            # Cache the embeddings for future use
-            self._embedding_cache.set(static_embedding_key, (chunks, chunk_embeddings))
-        
-        # Perform vector search
-        query_embedding = await self.embedding_service.embed_text(query)
-        top_matches = await self.embedding_service.find_most_similar(query_embedding, chunk_embeddings, top_k=top_k)
-        
-        scores = [score for _, score in top_matches]
-        norm_scores = self.score_normalizer(scores, reverse=False)
-        
-        results = [
-            {"source": "owner_manual", "chunk": chunks[idx], "score": norm_score}
-            for (idx, _), norm_score in zip(top_matches, norm_scores)
-        ]
-        
-        # Cache the final results
-        self._embedding_cache.set(cache_key, results)
-        return results
 
     async def vector_search_ground_knowledge(self, query: str, top_k: int = 50) -> List[Dict[str, Any]]:
         """
@@ -297,8 +251,8 @@ class SearchEngineService(BaseService):
         Returns a list of LangChain Document objects.
         """
         # Run all three searches in parallel with increased limits for knowledge base
-        manual_text = await self.get_owner_manual_text(car_id)
-        manual_task = self.embed_and_vector_search(car_id, query, top_k=max(15, top_k//4)) if manual_text else asyncio.create_task(asyncio.sleep(0, result=[]))
+        # No need to check manual_text - just run the vector search directly
+        manual_task = self.embed_and_vector_search(car_id, query, top_k=max(15, top_k//4))
         ground_task = self.vector_search_ground_knowledge(query, top_k=max(60, int(top_k * 0.75)))  # Focus on knowledge base
         links_task = self.scrape_and_vector_search_links(car_id, query, top_k=max(5, top_k//15))
         

@@ -1,5 +1,6 @@
 from app.db.crud import BaseCRUD
 from app.services.fetch_car_data_service import FetchCarDataService
+from app.services.car_vectorization_service import CarVectorizationService
 from app.db.bucket_operations import SupabaseBucketManager
 from app.utils.logger import get_logger_instance, Logger
 from app.services.parser_service import ParserService
@@ -15,6 +16,7 @@ class CarCRUD(BaseCRUD):
     def __init__(self):
         super().__init__('Car')
         self.fetch_car_data_service = FetchCarDataService()
+        self.vectorization_service = CarVectorizationService()
         # Always use SupabaseBucketManager, never override from parent
         self.bucket_manager = SupabaseBucketManager()
         self.logger = get_logger_instance("car_crud")
@@ -38,150 +40,88 @@ class CarCRUD(BaseCRUD):
         except Exception:
             return []
 
-    async def update_car_with_links(self, car_obj, manual_link, guide_links):
+    async def create_or_get_car(self, data, websocket=None, session_id=None):
         """
-        Optimized car update with manual URL and guide links.
-        Only downloads and processes PDF if text is not already in database.
+        Create a car record if it doesn't exist, or return existing car.
+        Ensures cars are unique and handles vectorization.
         """
-        make = car_obj.get('make')
-        model = car_obj.get('model')
-        year = car_obj.get('year')
-        car_id = car_obj.get('id')
-        pdf_filename = f"{make}-{model}_{year}_EN_US.pdf"
-        bucket_name = "manuals"
-        logger = self.logger
-        
-        try:
-            # Check if text already exists in DB - if so, skip all PDF processing
-            if car_obj.get('text'):
-                await logger.info(f"Manual text already exists for car {car_id}, skipping PDF processing")
-                update_data = {
-                    'owner_manual_url': f"{bucket_name}/{pdf_filename}" if manual_link else "",
-                    'car_guide_links': self.ensure_list(guide_links) if guide_links else [],
-                    'text': car_obj.get('text')
-                }
-                await self.update({'id': car_id}, update_data)
-                car_obj.update(update_data)
-                car_obj['car_guide_links'] = self.ensure_list(car_obj.get('car_guide_links'))
-                return [car_obj]
-            
-            # Check if bucket exists and create if necessary
-            buckets = await self.bucket_manager.list_buckets()
-            bucket_names = [getattr(b, 'name', None) for b in buckets] if buckets else []
-            manual_exists = False
-            
-            if bucket_name in bucket_names:
-                try:
-                    client = self.bucket_manager.client
-                    files = await asyncio.get_running_loop().run_in_executor(
-                        None, lambda: client.storage.from_(bucket_name).list()
-                    )
-                    file_names = [f['name'] if isinstance(f, dict) else getattr(f, 'name', None) for f in files]
-                    manual_exists = pdf_filename in file_names
-                except Exception as e:
-                    manual_exists = False
-                    await logger.error(f"Error listing files in bucket: {e}")
-            else:
-                try:
-                    await self.bucket_manager.create_bucket(bucket_name)
-                except Exception as e:
-                    await logger.error(f"Error creating bucket: {e}")
-                    return [car_obj]
-            
-            text = None
-            
-            # Only process PDF if manual doesn't exist and we have a link
-            if not manual_exists and manual_link:
-                try:
-                    # Download PDF temporarily for text extraction
-                    await self.fetch_car_data_service.download_pdf(manual_link, pdf_filename)
-                    
-                    # Extract text from the PDF (optimized parser)
-                    try:
-                        chunks = await self.parser_service.parse_pdf_optimized(pdf_filename)
-                        if chunks:
-                            text = '\n'.join(chunks)
-                            car_obj['text'] = text
-                    except Exception as e:
-                        await logger.error(f"Error extracting text from PDF: {e}")
-                    
-                    # Upload to bucket and clean up local file
-                    await self.bucket_manager.upload_file(bucket_name, pdf_filename, pdf_filename)
-                    if os.path.exists(pdf_filename):
-                        os.remove(pdf_filename)
-                        
-                except Exception as e:
-                    await logger.error(f"Error downloading/uploading manual: {e}")
-            
-            # If manual exists in bucket but we don't have text, try to download and extract
-            elif manual_exists and not text:
-                try:
-                    # Download from bucket to extract text
-                    file_bytes = await self.bucket_manager.download_file(bucket_name, pdf_filename)
-                    if file_bytes:
-                        chunks = await self.parser_service.parse_pdf_bytes_optimized(file_bytes)
-                        if chunks:
-                            text = '\n'.join(chunks)
-                            car_obj['text'] = text
-                except Exception as e:
-                    await logger.error(f"Error extracting text from bucket PDF: {e}")
-            
-            # Update car record with optimized data
-            update_data = {
-                'owner_manual_url': f"{bucket_name}/{pdf_filename}" if manual_link else "",
-                'car_guide_links': self.ensure_list(guide_links) if guide_links else [],
-                'text': car_obj.get('text') or text or ''
-            }
-            
-            try:
-                await self.update({'id': car_id}, update_data)
-                car_obj.update(update_data)
-                car_obj['car_guide_links'] = self.ensure_list(car_obj.get('car_guide_links'))
-            except Exception as e:
-                await logger.error(f"Error updating car record: {e}")
-            
-            return [car_obj]
-            
-        except Exception as e:
-            await logger.error(f"update_car_with_links unexpected error: {e}")
-            return [car_obj]
-
-    async def create(self, data):
-        """Create a car record, fetch and attach manual and guide links."""
         make = data.get('make')
         model = data.get('model')
         year = data.get('year')
+        
+        if not (make and model and year):
+            raise ValueError("Make, model, and year are required.")
+        
+        # Generate unique car ID
         if not data.get('id'):
             data['id'] = self.unique_logic(make, model, year)
         car_id = data['id']
-        # Check if car with this id already exists
+        
+        # Check if car already exists
         existing = await self.read({'id': car_id})
         if existing and isinstance(existing, list) and existing:
-            return existing
-        # Ensure NOT NULL fields are not None
+            existing_car = existing[0]
+            await self.logger.info(f"Car {car_id} already exists, returning existing car")
+            
+            # Check vectorization status
+            status = await self.vectorization_service.get_car_vectorization_status(car_id)
+            existing_car['is_vectorized'] = status['is_vectorized']
+            existing_car['vector_chunk_count'] = status['chunk_count']
+            
+            return [existing_car]
+        
+        # Initialize required fields
         data['owner_manual_url'] = data.get('owner_manual_url') or ""
         data['service_manual_url'] = data.get('service_manual_url') or ""
         data['car_guide_links'] = self.ensure_list(data.get('car_guide_links'))
-        # Ensure text is not null
-        if data.get('text') is None:
-            data['text'] = ''
-        # 1. Create the car record first
-        # Ensure text field is initialized to empty string if not present
-        if 'text' not in data or data['text'] is None:
-            data['text'] = ''
-            
+        data['is_vectorized'] = False
+        data['vector_chunk_count'] = 0
+        
+        # Create the car record
         car = await super().create(data)
         if not car or not isinstance(car, list) or not car[0]:
             return car
+        
         car_obj = car[0]
-        make = car_obj.get('make')
-        model = car_obj.get('model')
-        year = car_obj.get('year')
-        car_id = car_obj.get('id')
-        if not (make and model and year and car_id):
-            return car
-        # 2. Fetch manual link and guide links
+        
+        # Fetch and vectorize manual synchronously (wait for completion)
+        await self.logger.info(f"Starting synchronous vectorization for car {car_obj.get('id')}")
+        vectorization_result = await self._fetch_and_vectorize_manual(car_obj, websocket, session_id)
+        
+        if vectorization_result.get("success"):
+            await self.logger.info(f"Car {car_obj.get('id')} successfully vectorized with {vectorization_result.get('chunk_count', 0)} chunks")
+        else:
+            await self.logger.warning(f"Car {car_obj.get('id')} vectorization failed: {vectorization_result.get('error', 'Unknown error')}")
+        
+        return car
+
+    async def _fetch_and_vectorize_manual(
+        self, 
+        car_obj=None, 
+        websocket=None, 
+        session_id=None, 
+        car_id=None, 
+        make=None, 
+        model=None, 
+        year=None,
+        chunk_size=800,
+        overlap=200
+    ):
+        """Background task to fetch and vectorize car manual with configurable chunking"""
+        # Support both car_obj and individual parameters
+        if car_obj:
+            make = car_obj.get('make')
+            model = car_obj.get('model')  
+            year = car_obj.get('year')
+            car_id = car_obj.get('id')
+        elif car_id and make and model and year:
+            # Individual parameters provided
+            pass
+        else:
+            return {"success": False, "error": "Either car_obj or all individual parameters must be provided"}
+        
         try:
+            # Fetch manual link and guide links
             manual_url_dict = self.fetch_car_data_service.build_url(make, model, year)
             manual_link = await self.fetch_car_data_service.scrape_links(
                 manual_url_dict['Owner_Manual'], req_type="owner_manual"
@@ -189,12 +129,102 @@ class CarCRUD(BaseCRUD):
             guide_links = await self.fetch_car_data_service.scrape_links(
                 manual_url_dict['Car_guide_link'], req_type="car_guide_link"
             )
-            return await self.update_car_with_links(car_obj, manual_link, guide_links)
+            
+            # Update car with links
+            update_data = {
+                'owner_manual_url': manual_link or "",
+                'car_guide_links': self.ensure_list(guide_links) if guide_links else []
+            }
+            
+            # Handle manual PDF and vectorization
+            if manual_link:
+                pdf_filename = f"{make}-{model}_{year}_EN_US.pdf"
+                bucket_name = "manuals"
+                
+                # Ensure bucket exists
+                await self._ensure_bucket_exists(bucket_name)
+                
+                # Check if PDF already exists in bucket
+                pdf_exists = await self._check_pdf_exists(bucket_name, pdf_filename)
+                
+                if not pdf_exists:
+                    # Download and upload PDF
+                    await self.fetch_car_data_service.download_pdf(manual_link, pdf_filename)
+                    await self.bucket_manager.upload_file(bucket_name, pdf_filename, pdf_filename)
+                    if os.path.exists(pdf_filename):
+                        os.remove(pdf_filename)
+                
+                # Vectorize manual from PDF
+                result = await self.vectorization_service.vectorize_car_manual_from_pdf(
+                    car_id=car_id,
+                    make=make,
+                    model=model,
+                    year=year,
+                    pdf_filename=pdf_filename,
+                    websocket=websocket,
+                    session_id=session_id,
+                    chunk_size=chunk_size,
+                    overlap=overlap
+                )
+                
+                if result['success']:
+                    update_data.update({
+                        'is_vectorized': True,
+                        'vector_chunk_count': result['chunk_count']
+                    })
+                    await self.logger.info(f"Successfully vectorized car {car_id} with {result['chunk_count']} chunks")
+                else:
+                    await self.logger.error(f"Failed to vectorize car {car_id}: {result.get('error')}")
+            
+            # Update car record
+            await self.update({'id': car_id}, update_data)
+            
+            # Return result for API endpoint use
+            if 'result' in locals() and result['success']:
+                return result
+            else:
+                return {"success": False, "error": "Manual vectorization failed"}
+            
         except Exception as e:
-            # Log error, but return car as created
-            logger = self.logger
-            await logger.error(f"Car post-create logic error: {e}")
-            return car
+            await self.logger.error(f"Error in background vectorization for car {car_id}: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+    async def _ensure_bucket_exists(self, bucket_name: str):
+        """Ensure bucket exists, create if not"""
+        try:
+            buckets = await self.bucket_manager.list_buckets()
+            bucket_names = [getattr(b, 'name', None) for b in buckets] if buckets else []
+            
+            if bucket_name not in bucket_names:
+                await self.bucket_manager.create_bucket(bucket_name)
+                await self.logger.info(f"Created bucket: {bucket_name}")
+        except Exception as e:
+            await self.logger.error(f"Error ensuring bucket {bucket_name}: {str(e)}")
+
+    async def _check_pdf_exists(self, bucket_name: str, pdf_filename: str) -> bool:
+        """Check if PDF exists in bucket"""
+        try:
+            client = self.bucket_manager.client
+            files = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: client.storage.from_(bucket_name).list()
+            )
+            file_names = [f['name'] if isinstance(f, dict) else getattr(f, 'name', None) for f in files]
+            return pdf_filename in file_names
+        except Exception as e:
+            await self.logger.error(f"Error checking if PDF exists: {str(e)}")
+            return False
+
+    async def create(self, data):
+        """Create a car record - now redirects to create_or_get_car for uniqueness"""
+        return await self.create_or_get_car(data)
+
+    async def search_car_manual(self, query: str, car_id: str = None, top_k: int = 5) -> List[Dict]:
+        """Search car manual using vectorized chunks in Milvus"""
+        return await self.vectorization_service.search_car_manual(
+            query=query, 
+            car_id=car_id, 
+            top_k=top_k
+        )
 
     async def get_car_by_make_model_year(self, make: str, model: str, year: int):
         """Retrieve a car by make, model, and year."""
@@ -271,70 +301,60 @@ class CarCRUD(BaseCRUD):
         # If we couldn't normalize it, return the original
         return car_id
 
-    async def get_owner_manual_text(self, car_id: str, cache: RedisCache = None) -> str:
+    async def get_owner_manual_chunks(self, car_id: str, query: str = None, top_k: int = 5) -> List[Dict]:
         """
-        Retrieve the owner manual text for a car from the database.
-        Agents and services should use this method to get the manual text instead of downloading/parsing the PDF.
+        Retrieve vectorized manual chunks for a car from Milvus.
+        This replaces the old get_owner_manual_text method.
         """
         try:
-            # Try to get car data
-            car = await self.get_car_by_id(car_id, cache=cache)
+            # If query provided, do semantic search
+            if query:
+                results = await self.search_car_manual(query=query, car_id=car_id, top_k=top_k)
+                await self.logger.info(f"Found {len(results)} relevant chunks for car {car_id} with query")
+                return results
             
-            if car:
-                # Car found in database
-                if car.get('text'):
-                    # Found text, log success and return it
-                    await self.logger.info(f"Successfully retrieved manual text for car {car_id} ({len(car.get('text', ''))} characters)")
-                    return car['text']
-                else:
-                    # Car found but no text field or empty text
-                    # Log detailed info about the car record
-                    keys = list(car.keys())
-                    text_field_exists = 'text' in car
-                    text_length = len(car.get('text', '')) if text_field_exists else 0
-                    
-                    owner_manual_url = car.get('owner_manual_url', '')
-                    has_url = bool(owner_manual_url)
-                    
-                    await self.logger.warning(
-                        f"Car {car_id} exists but has insufficient manual text. Details: "
-                        f"keys={keys}, text_field_exists={text_field_exists}, "
-                        f"text_length={text_length}, has_url={has_url}, url={owner_manual_url}"
-                    )
-                    
-                    # Check if we need to fetch text from URL
-                    if has_url and not text_length:
-                        await self.logger.info(f"Attempting to fetch text from URL for car {car_id}")
-                        # Here we could trigger a job to fetch and parse the manual
-                        # For now, just return empty string
-            else:
-                # Car not found - try to provide alternative IDs that might work
-                normalized_id = self._normalize_car_id(car_id)
-                suggestion = f" (try using '{normalized_id}')" if normalized_id != car_id else ""
-                
-                # Check if this could be a valid ID format but just not in DB
-                parts = car_id.split('-')
-                if len(parts) >= 3:
-                    make, model, year = parts[0], parts[1], parts[2]
-                    await self.logger.warning(
-                        f"Car {car_id} not found in database{suggestion}. "
-                        f"Parsed as make='{make}', model='{model}', year='{year}'"
-                    )
-                else:
-                    await self.logger.warning(
-                        f"Car {car_id} not found in database{suggestion}. "
-                        f"ID format might be invalid - should be 'make-model-year'"
-                    )
-                    
-            # If we reach here, we couldn't find text - return empty string
-            return ''
+            # Otherwise get limited chunks for the car (not all)
+            status = await self.vectorization_service.get_car_vectorization_status(car_id)
+            
+            if not status['is_vectorized']:
+                await self.logger.warning(f"Car {car_id} is not vectorized yet")
+                return []
+            
+            # Get limited chunks (not all) - respecting the top_k parameter
+            # This prevents performance issues when retrieving all 500+ chunks
+            results = await asyncio.get_running_loop().run_in_executor(
+                None, 
+                lambda: self.vectorization_service.milvus_handler.car_collection.query(
+                    expr=f'car_id == "{car_id}"',
+                    output_fields=["id", "car_id", "make", "model", "year", "content_chunk", "chunk_index"],
+                    limit=min(top_k, 100)  # Respect top_k but cap at 100 to prevent performance issues
+                )
+            )
+            
+            # Format results
+            formatted_results = []
+            for result in results:
+                formatted_results.append({
+                    "id": result.get("id", ""),
+                    "car_id": result.get("car_id", ""),
+                    "make": result.get("make", ""),
+                    "model": result.get("model", ""),
+                    "year": result.get("year", 0),
+                    "chunk": result.get("content_chunk", ""),
+                    "chunk_index": result.get("chunk_index", 0),
+                    "score": 1.0,  # No semantic scoring for all chunks
+                    "source": "owner_manual"
+                })
+            
+            # Sort by chunk_index
+            formatted_results.sort(key=lambda x: x.get("chunk_index", 0))
+            
+            await self.logger.info(f"Retrieved {len(formatted_results)} chunks for car {car_id}")
+            return formatted_results
             
         except Exception as e:
-            # Enhanced error handling with stack trace
-            import traceback
-            tb_str = traceback.format_exc()
-            await self.logger.error(f"Error in get_owner_manual_text for {car_id}: {str(e)}\n{tb_str}")
-            return ''
+            await self.logger.error(f"Error retrieving manual chunks for car {car_id}: {str(e)}")
+            return []
 
     async def batch_get_cars_by_ids(self, car_ids: List[str], cache: RedisCache = None) -> Dict[str, dict]:
         """

@@ -244,15 +244,19 @@ class DiagnosisAgent(BaseAgent):
         await self._ensure_car_info()
         
         try:
-            # Try to get manual text and handle potential issues
+            # Try to get manual chunks using direct Milvus search
             manual_chunks = await self.search_engine_service.embed_and_vector_search(
-                car_id=self.car_id, query=user_message, top_k=1
+                car_id=self.car_id, query=user_message, top_k=3  # Reduced from 1 to 3 for better context
             )
-            manual_context = manual_chunks[0]["chunk"] if manual_chunks else ""
-            
-            # If no manual chunks, look for a fallback
-            if not manual_chunks:
-                await self.logger.warning(f"No manual chunks found for car_id {self.car_id}, using fallback search")
+            manual_context = ""
+            if manual_chunks:
+                # Combine the top chunks into context
+                manual_context = "\n\n".join([
+                    f"[Manual Section {i+1}]: {chunk['chunk']}"
+                    for i, chunk in enumerate(manual_chunks)
+                ])
+            else:
+                await self.logger.warning(f"No manual chunks found for car_id {self.car_id}")
                 # Try normalized car ID if original failed
                 normalized_car_id = self.car_id
                 # If car ID format looks like model-make-year, try to normalize it to make-model-year
@@ -267,65 +271,74 @@ class DiagnosisAgent(BaseAgent):
                         if normalized_car_id != self.car_id:
                             await self.logger.info(f"Trying normalized car_id: {normalized_car_id}")
                             manual_chunks = await self.search_engine_service.embed_and_vector_search(
-                                car_id=normalized_car_id, query=user_message, top_k=1
+                                car_id=normalized_car_id, query=user_message, top_k=3
                             )
-                            manual_context = manual_chunks[0]["chunk"] if manual_chunks else ""
+                            if manual_chunks:
+                                manual_context = "\n\n".join([
+                                    f"[Manual Section {i+1}]: {chunk['chunk']}"
+                                    for i, chunk in enumerate(manual_chunks)
+                                ])
         except Exception as e:
             await self.logger.error(f"Error retrieving manual text: {str(e)}")
             manual_context = ""
             
-        # Continue with general search
-        docs = await self.search_engine_service.search(self.car_id, user_message, top_k=80)
+        # Continue with general search - REDUCED for performance
+        docs = await self.search_engine_service.search(self.car_id, user_message, top_k=30)  # Reduced from 80 to 30
         
         # Separate and process knowledge base docs more comprehensively
         kb_docs = [d for d in docs if d.metadata.get("source") == "ground_knowledge"]
         
-        # Create rich knowledge base context with source attribution
+        # Create rich knowledge base context with source attribution - REDUCED for performance
         kb_context_parts = []
-        for i, doc in enumerate(kb_docs[:25]):  # Increased from 15 to 25 for richer context
+        for i, doc in enumerate(kb_docs[:8]):  # Reduced from 25 to 8 for faster processing
             book_title = doc.metadata.get("book_title", "Unknown Source")
             page_num = doc.metadata.get("page_number", "N/A")
-            content = doc.page_content
+            content = doc.page_content[:1000]  # Limit content length to 1000 chars
             kb_context_parts.append(f"[Source: {book_title}, Page: {page_num}]\n{content}")
         
         kb_context = "\n\n---KNOWLEDGE BASE ENTRY---\n\n".join(kb_context_parts)
         
-        # Enhanced online context processing
+        # Enhanced online context processing - REDUCED for performance
         online_docs = [d for d in docs if d.metadata.get("source") == "car_guide_link"]
         online_context = []
-        for doc in online_docs:
+        for doc in online_docs[:3]:  # Limit to 3 online sources
             url = doc.metadata.get("url", "Unknown URL")
-            content = doc.page_content
+            content = doc.page_content[:800]  # Limit content length to 800 chars
             online_context.append(f"[Online Source: {url}]\n{content}")
             
+        # REMOVED additional searches for performance - these were adding 60+ more documents
         # Additional context searches for specific automotive areas
-        additional_searches = [
-            f"{user_message} symptoms causes diagnosis",
-            f"{self.car_make} {self.car_model} {self.car_year} common problems",
-            f"automotive troubleshooting {user_message}",
-            f"repair guide {user_message}"
-        ]
+        # additional_searches = [
+        #     f"{user_message} symptoms causes diagnosis",
+        #     f"{self.car_make} {self.car_model} {self.car_year} common problems",
+        #     f"automotive troubleshooting {user_message}",
+        #     f"repair guide {user_message}"
+        # ]
         
-        # Perform additional targeted searches for comprehensive coverage
-        additional_docs = []
-        for search_query in additional_searches:
-            extra_docs = await self.search_engine_service.vector_search_ground_knowledge(search_query, top_k=15)
-            additional_docs.extend(extra_docs)
+        # # Perform additional targeted searches for comprehensive coverage
+        # additional_docs = []
+        # for search_query in additional_searches:
+        #     extra_docs = await self.search_engine_service.vector_search_ground_knowledge(search_query, top_k=15)
+        #     additional_docs.extend(extra_docs)
         
-        # Add additional context from targeted searches
-        if additional_docs:
-            additional_context_parts = []
-            seen_content = set()  # Avoid duplicates
-            for doc in additional_docs:
-                content = doc.get("chunk", "")
-                if content and content not in seen_content:
-                    book_title = doc.get("book_title", "Unknown Source")
-                    page_num = doc.get("page_number", "N/A")
-                    additional_context_parts.append(f"[Additional Source: {book_title}, Page: {page_num}]\n{content}")
-                    seen_content.add(content)
-            
-            if additional_context_parts:
-                kb_context += "\n\n---ADDITIONAL RELEVANT KNOWLEDGE---\n\n" + "\n\n---\n\n".join(additional_context_parts[:15])
+        # # Add additional context from targeted searches
+        # if additional_docs:
+        #     additional_context_parts = []
+        #     seen_content = set()  # Avoid duplicates
+        #     for doc in additional_docs:
+        #         content = doc.get("chunk", "")
+        #         if content and content not in seen_content:
+        #             book_title = doc.get("book_title", "Unknown Source")
+        # Removed additional context processing for performance
+        
+        # Log context sizes for performance monitoring
+        manual_size = len(manual_context) if manual_context else 0
+        kb_size = len(kb_context) if kb_context else 0  
+        online_size = len("\n".join(online_context)) if online_context else 0
+        total_context_size = manual_size + kb_size + online_size
+        
+        await self.logger.info(f"Context sizes - Manual: {manual_size}, KB: {kb_size}, Online: {online_size}, Total: {total_context_size} chars")
+        
         return {
             "manual_context": manual_context,
             "kb_context": kb_context,
@@ -556,14 +569,16 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
                 await self.logger.info(f"Sending diagnosis start stage via WebSocket - session_id={session_id}")
                 await self.send_ws_stage(websocket, "Diagnosis started", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id)
             
-            # Fetch the full car object from the DB to check for vector data
+            # Fetch the full car object from the DB to check for vectorization status
             car = await self.car_crud.get_car_by_id(self.car_id) if self.car_crud and self.car_id else None
             if car:
-                vector_data = car.get('vector')
-                if vector_data:
-                    await self.logger.info(f"Vector data present for car {self.car_id}: type={type(vector_data)}, length={len(vector_data) if hasattr(vector_data, '__len__') else 'N/A'}")
+                # Check new vectorization fields instead of old 'vector' field
+                is_vectorized = car.get('is_vectorized', False)
+                chunk_count = car.get('vector_chunk_count', 0)
+                if is_vectorized and chunk_count > 0:
+                    await self.logger.info(f"Vector data present for car {self.car_id}: vectorized={is_vectorized}, chunks={chunk_count}")
                 else:
-                    await self.logger.info(f"No vector data present for car {self.car_id}")
+                    await self.logger.info(f"No vector data present for car {self.car_id} (vectorized={is_vectorized}, chunks={chunk_count})")
             
             result = await self.diagnose(user_message)
             

@@ -15,8 +15,10 @@ class MilvusHandler(IMilvusHandler):
         self.host = host or os.getenv("MILVUS_HOST", "localhost")  # Changed default from 'milvus' to 'localhost'
         self.port = port or os.getenv("MILVUS_PORT", "19530")
         self.collection_name = collection_name
+        self.car_collection_name = "CarManuals"
         self._connect()
         self._ensure_collection()
+        self._ensure_car_collection()
 
     def _connect(self):
         connections.connect(alias="default", host=self.host, port=self.port)
@@ -44,6 +46,39 @@ class MilvusHandler(IMilvusHandler):
                         "params": {"nlist": 128}
                     }
                 )
+
+    def _ensure_car_collection(self):
+        """Ensure car manuals collection exists"""
+        if self.car_collection_name not in utility.list_collections():
+            fields = [
+                FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, auto_id=False, max_length=128),
+                FieldSchema(name="car_id", dtype=DataType.VARCHAR, max_length=64),
+                FieldSchema(name="make", dtype=DataType.VARCHAR, max_length=64),
+                FieldSchema(name="model", dtype=DataType.VARCHAR, max_length=64),
+                FieldSchema(name="year", dtype=DataType.INT32),
+                FieldSchema(name="content_chunk", dtype=DataType.VARCHAR, max_length=8192),
+                FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=768),
+                FieldSchema(name="chunk_index", dtype=DataType.INT32),
+                FieldSchema(name="source", dtype=DataType.VARCHAR, max_length=32),
+                FieldSchema(name="metadata", dtype=DataType.JSON)
+            ]
+            schema = CollectionSchema(fields, description="Car manual chunks")
+            Collection(self.car_collection_name, schema)
+        
+        self.car_collection = Collection(self.car_collection_name)
+        # Ensure index exists on the vector field
+        if "vector" in [f.name for f in self.car_collection.schema.fields]:
+            if not self.car_collection.indexes:
+                self.car_collection.create_index(
+                    field_name="vector",
+                    index_params={
+                        "index_type": "IVF_FLAT",
+                        "metric_type": "L2",
+                        "params": {"nlist": 128}
+                    }
+                )
+        # Load the collection into memory
+        self.car_collection.load()
 
     def insert(self, data: List[Dict[str, Any]]):
         # Data should be a list of dicts with keys matching the schema
@@ -143,3 +178,70 @@ class MilvusHandler(IMilvusHandler):
 
     def count(self):
         return self.collection.num_entities
+    
+    def insert_car_manual(self, data: List[Dict[str, Any]]):
+        """Insert car manual chunks into Milvus"""
+        valid_data = []
+        for record in data:
+            # Check content_chunk length
+            content_chunk = record.get("content_chunk", "")
+            if isinstance(content_chunk, str) and len(content_chunk) > 8192:
+                record["content_chunk"] = content_chunk[:8192]
+            
+            # Check vector dimension (768)
+            vector = record.get("vector", [])
+            if isinstance(vector, list) and len(vector) == 768:
+                valid_data.append(record)
+            else:
+                print(f"Warning: Skipping car manual record with vector dimension {len(vector) if isinstance(vector, list) else 'invalid'}, expected 768")
+        
+        if not valid_data:
+            print("Warning: No valid car manual records to insert after filtering")
+            return
+        
+        # Ensure all required fields are present
+        for idx, record in enumerate(valid_data):
+            chunk = record.get("content_chunk", "")
+            if not isinstance(chunk, str):
+                chunk = str(chunk)
+            if len(chunk) > 8192:
+                chunk = chunk[:8192]
+            record["content_chunk"] = chunk
+        
+        # Build insert_data for car collection
+        fields = ["id", "car_id", "make", "model", "year", "content_chunk", "vector", "chunk_index", "source", "metadata"]
+        insert_data = []
+        for f in fields:
+            col = [d.get(f) for d in valid_data]
+            insert_data.append(col)
+        
+        # Ensure the collection is loaded before inserting
+        self.car_collection.load()
+        self.car_collection.insert(insert_data)
+
+    def search_car_manual(self, query_vector: List[float], car_id: str = None, top_k: int = 5):
+        """Search car manual chunks"""
+        self.car_collection.load()
+        search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
+        
+        # Build filter expression
+        filter_expr = 'source == "owner_manual"'
+        if car_id:
+            filter_expr += f' and car_id == "{car_id}"'
+        
+        results = self.car_collection.search(
+            data=[query_vector],
+            anns_field="vector",
+            param=search_params,
+            limit=top_k,
+            expr=filter_expr,
+            output_fields=["id", "car_id", "make", "model", "year", "content_chunk", "chunk_index", "metadata"]
+        )
+        return results
+
+    def delete_car_manual_by_car_id(self, car_id: str):
+        """Delete all chunks for a specific car"""
+        # Ensure the collection is loaded before deleting
+        self.car_collection.load()
+        expr = f'car_id == "{car_id}"'
+        self.car_collection.delete(expr)

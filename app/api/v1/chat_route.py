@@ -8,6 +8,7 @@ from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.schemas.Chat_Session import ChatSession
 from datetime import datetime
 from app.services.user_service import user_service
+from app.utils.text_sanitizer import sanitize_user_message
 import re
 
 router = APIRouter(
@@ -46,7 +47,9 @@ class ChatMessageRequest(BaseModel):
             raise ValueError('HTML tags are not allowed in messages')
         if re.search(r'javascript:|data:|vbscript:', v, re.IGNORECASE):
             raise ValueError('Potentially dangerous URLs are not allowed')
-        return v.strip()
+        # Apply text sanitization (normalize "my car's" to "the car's", etc.)
+        sanitized = sanitize_user_message(v.strip())
+        return sanitized
     
     @validator('context')
     def validate_context(cls, v):
@@ -73,7 +76,9 @@ class ChatSessionMessageRequest(BaseModel):
             raise ValueError('HTML tags are not allowed in messages')
         if re.search(r'javascript:|data:|vbscript:', v, re.IGNORECASE):
             raise ValueError('Potentially dangerous URLs are not allowed')
-        return v.strip()
+        # Apply text sanitization (normalize "my car's" to "the car's", etc.)
+        sanitized = sanitize_user_message(v.strip())
+        return sanitized
 
 class CreateChatSessionRequest(BaseModel):
     user_id: str

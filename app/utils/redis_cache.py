@@ -110,8 +110,20 @@ class RedisCache(IRedisCache):
         """Set value in Redis with error handling"""
         try:
             async with self.get_connection() as redis_conn:
+                # Handle AIMessage objects from LangChain
+                if hasattr(value, "content") and hasattr(value, "type"):
+                    # This is likely a LangChain message object
+                    value = {"content": value.content, "type": value.type}
+                
+                # Ensure value is JSON serializable
                 if not isinstance(value, str):
-                    value = json.dumps(value)
+                    try:
+                        value = json.dumps(value)
+                    except TypeError as e:
+                        # If JSON serialization fails, convert to string
+                        await self.logger.error(f"JSON serialization failed: {str(e)} - converting to string")
+                        value = str(value)
+                
                 await redis_conn.set(key, value, ex=expire)
         except ExternalServiceException:
             raise

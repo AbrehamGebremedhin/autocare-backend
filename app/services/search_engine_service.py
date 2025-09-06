@@ -146,6 +146,7 @@ class SearchEngineService(BaseService):
                     start_time = time.time()
                     results = await self.vectorization_service.search_car_manual(
                         query=query,
+                        
                         car_id=normalized_car_id,
                         top_k=top_k
                     )
@@ -244,17 +245,15 @@ class SearchEngineService(BaseService):
             })
         return results
 
-    async def search(self, car_id: str, query: str, top_k: int = 80) -> List[Document]:
+    async def search(self, car_id: str, query: str, top_k: int = 40) -> List[Document]:
         """
-        Perform a comprehensive search using owner's manual, ground knowledge, and car guide links.
-        Enhanced to leverage the 38,936 document knowledge base more effectively.
+        PERFORMANCE OPTIMIZED: Comprehensive search with reduced scope for faster processing.
         Returns a list of LangChain Document objects.
         """
-        # Run all three searches in parallel with increased limits for knowledge base
-        # No need to check manual_text - just run the vector search directly
-        manual_task = self.embed_and_vector_search(car_id, query, top_k=max(15, top_k//4))
-        ground_task = self.vector_search_ground_knowledge(query, top_k=max(60, int(top_k * 0.75)))  # Focus on knowledge base
-        links_task = self.scrape_and_vector_search_links(car_id, query, top_k=max(5, top_k//15))
+        # Run all three searches in parallel with OPTIMIZED limits for performance
+        manual_task = self.embed_and_vector_search(car_id, query, top_k=max(8, top_k//5))  # Reduced scope
+        ground_task = self.vector_search_ground_knowledge(query, top_k=max(25, int(top_k * 0.6)))  # Reduced from 0.75 to 0.6
+        links_task = self.scrape_and_vector_search_links(car_id, query, top_k=max(3, top_k//15))  # Reduced scope
         
         manual_results, ground_results, link_results = await asyncio.gather(manual_task, ground_task, links_task)
         
@@ -301,10 +300,11 @@ class SearchEngineService(BaseService):
         seen_chunks = set()
         for doc in all_results:
             chunk = doc.get("chunk", "")
-            # Skip very similar content to ensure diversity
-            if len(chunk) > 50 and chunk not in seen_chunks:
+            # Skip very similar content to ensure diversity - IMPROVED filtering
+            chunk_key = chunk[:200] if len(chunk) > 200 else chunk  # Use first 200 chars as key
+            if len(chunk) > 50 and chunk_key not in seen_chunks:
                 documents.append(Document(page_content=chunk, metadata={k: v for k, v in doc.items() if k != "chunk"}))
-                seen_chunks.add(chunk)
+                seen_chunks.add(chunk_key)
                 if len(documents) >= top_k:
                     break
         
@@ -317,7 +317,7 @@ class SearchEngineService(BaseService):
         """
         car_id = kwargs.get("car_id")
         query = kwargs.get("query")
-        top_k = kwargs.get("top_k", 80)  # Increased default to leverage knowledge base better
+        top_k = kwargs.get("top_k", 40)  # PERFORMANCE: Reduced default from 80 to 40
         if websocket:
             await self.send_ws_stage(websocket, "Search started", MessageSource.CHAT_SERVICE, session_id=session_id, details={"car_id": car_id, "query": query})
         if not car_id or not query:

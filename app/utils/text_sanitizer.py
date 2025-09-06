@@ -2,6 +2,7 @@
 Text sanitization utilities for user input processing.
 """
 import re
+import logging
 from typing import Dict, List, Optional
 from app.utils.logger import get_logger_instance
 
@@ -32,7 +33,9 @@ class TextSanitizer:
     }
     
     def __init__(self):
-        self.logger = get_logger_instance("TextSanitizer")
+        # Get a regular logging instance, not the async one
+        # Use the standard Python logger directly
+        self.logger = logging.getLogger("TextSanitizer")
     
     def sanitize_message(self, message: str, normalize_possessives: bool = True, normalize_references: bool = True) -> str:
         """
@@ -66,7 +69,8 @@ class TextSanitizer:
             
             # Log sanitization if changes were made
             if sanitized != original:
-                self.logger.info(f"Sanitized message: '{original}' -> '{sanitized}'")
+                # Use synchronous logging since this might be called in a sync context
+                self.logger.logger.info(f"Sanitized message: '{original}' -> '{sanitized}'", extra={"log_type": "info"})
             
             return sanitized
             

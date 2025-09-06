@@ -11,10 +11,12 @@ import numpy as np
 import traceback
 from app.core.interfaces import IWebSocketManager
 import json
+from datetime import datetime
 from app.services.search_engine_service import SearchEngineService
 from app.agents.base_agent import BaseAgent
 from app.utils.message_types import MessageSource
 from app.utils.monitoring import monitor_and_handle
+from app.agents.session_context_agent import SessionContextAgent
 
 class DiagnosisAgent(BaseAgent):
     """
@@ -32,6 +34,7 @@ class DiagnosisAgent(BaseAgent):
         llm_service: Optional[LLMService] = None,
         embedding_service: Optional[EmbeddingService] = None,
         scraper_service: Optional[ScraperService] = None,
+        session_context_manager: Optional[SessionContextAgent] = None,
         **kwargs
     ):
         """
@@ -43,6 +46,7 @@ class DiagnosisAgent(BaseAgent):
         self.embedding_service = embedding_service or EmbeddingService()
         self.scraper_service = scraper_service or ScraperService(headless=True)
         self.search_engine_service = search_engine_service or SearchEngineService()
+        self.session_context_manager = session_context_manager or SessionContextAgent()
         self.car_make = car_make
         self.car_model = car_model
         self.car_year = car_year
@@ -55,9 +59,17 @@ class DiagnosisAgent(BaseAgent):
             CRITICAL: ALWAYS USE THE DIAGNOSIS TREE AS YOUR PRIMARY REFERENCE
             The diagnosis tree contains structured symptom data extracted from the user's descriptions. This tree represents the most likely issues based on the user's reported symptoms, with likelihood percentages indicating priority. ALWAYS prioritize your diagnosis and recommendations based on the tree's highest likelihood symptoms first.
 
+            SESSION CONTEXT AWARENESS:
+            - This conversation is part of a focused session on a specific automotive issue
+            - ALWAYS prioritize the original issue context when interpreting new messages
+            - If session context is provided, use it to maintain diagnostic focus
+            - Connect all symptoms and follow-ups to the original issue category
+            - Do not drift to unrelated automotive topics
+
             CORE PRINCIPLES:
             - START with the highest likelihood symptoms from the diagnosis tree
             - Use the tree's hierarchical structure to understand symptom relationships
+            - Maintain focus on the session's original issue context
             - Provide detailed technical explanations that build user understanding
             - Include multiple diagnostic approaches so users can choose what works for them
             - Give specific part numbers, specifications, and technical details when possible
@@ -72,32 +84,41 @@ class DiagnosisAgent(BaseAgent):
             - Do NOT tell the user to refer to the owner's manual. Extract and use information directly.
             - You have access to a comprehensive automotive knowledge base with nearly 39,000 documents covering all automotive systems, repair procedures, and technical specifications.
             - ASSUME the user wants to do the repair themselves and provide detailed guidance to make that possible.
+            - If session context is provided, use it to interpret user messages within the original issue scope.
 
             CONTEXT SOURCES PRIORITY ORDER:
-            1. DIAGNOSIS TREE: Primary structured symptom and issue data (USE THIS FIRST)
-            2. Knowledge base: Comprehensive automotive repair and diagnostic information (38,936 documents)
-            3. Owner's manual/context: Official technical specifications and procedures
-            4. Online context: Recent technical discussions and repair experiences
+            1. SESSION CONTEXT: Original issue context and accumulated symptoms from this conversation
+            2. DIAGNOSIS TREE: Primary structured symptom and issue data (USE THIS FIRST)
+            3. Knowledge base: Comprehensive automotive repair and diagnostic information (38,936 documents)
+            4. Owner's manual/context: Official technical specifications and procedures
+            5. Online context: Recent technical discussions and repair experiences
 
-            INSTRUCTIONS FOR TREE-GUIDED DIY-FOCUSED ANALYSIS:
-            1. EXAMINE the diagnosis tree carefully - identify the highest likelihood symptoms (>70%)
-            2. PRIORITIZE your diagnosis around these high-likelihood symptoms from the tree
-            3. For each tree symptom, provide detailed technical explanations with specific repair procedures
-            4. Use the tree's hierarchical relationships to understand symptom connections
-            5. Include multiple diagnostic approaches - visual inspection, electrical testing, mechanical testing, etc.
-            6. Provide specific torque specifications, part numbers, fluid specifications, and technical details.
-            7. Explain the underlying automotive systems so users understand what they're working on.
-            8. Give detailed step-by-step repair procedures with professional-level detail.
-            9. Include troubleshooting steps for when things don't go as expected.
-            10. Provide cost-effective alternatives and workarounds where appropriate.
-            11. Explain how to verify the repair was successful and prevent recurrence.
-            12. Include tips and tricks from professional mechanics.
-            13. Provide detailed safety guidance specific to each procedure, not generic warnings.
-            14. Include maintenance schedules and inspection points to prevent similar issues.
+            INSTRUCTIONS FOR SESSION-AWARE TREE-GUIDED DIY-FOCUSED ANALYSIS:
+            1. EXAMINE session context first if provided - understand the original issue scope
+            2. EXAMINE the diagnosis tree carefully - identify the highest likelihood symptoms (>70%)
+            3. PRIORITIZE your diagnosis around these high-likelihood symptoms from the tree
+            4. CONNECT all symptoms to the original issue context if session context is available
+            5. For each tree symptom, provide detailed technical explanations with specific repair procedures
+            6. Use the tree's hierarchical relationships to understand symptom connections
+            7. Include multiple diagnostic approaches - visual inspection, electrical testing, mechanical testing, etc.
+            8. Provide specific torque specifications, part numbers, fluid specifications, and technical details.
+            9. Explain the underlying automotive systems so users understand what they're working on.
+            10. Give detailed step-by-step repair procedures with professional-level detail.
+            11. Include troubleshooting steps for when things don't go as expected.
+            12. Provide cost-effective alternatives and workarounds where appropriate.
+            13. Explain how to verify the repair was successful and prevent recurrence.
+            14. Include tips and tricks from professional mechanics.
+            15. Provide detailed safety guidance specific to each procedure, not generic warnings.
+            16. Include maintenance schedules and inspection points to prevent similar issues.
 
-            OUTPUT (COMPREHENSIVE DIY-FOCUSED JSON):
+            OUTPUT (COMPREHENSIVE SESSION-AWARE DIY-FOCUSED JSON):
             {{
-                "diagnosis_summary": "TREE-GUIDED technical diagnosis starting with the highest likelihood symptoms from the diagnosis tree, with detailed repair-focused analysis and system explanations",
+                "diagnosis_summary": "SESSION-AWARE technical diagnosis starting with the highest likelihood symptoms from the diagnosis tree, focused on the original issue context, with detailed repair-focused analysis and system explanations",
+                "session_context_analysis": {{
+                    "original_issue_focus": "How this diagnosis relates to the session's original issue",
+                    "symptom_connections": "How new symptoms connect to the original issue context",
+                    "diagnostic_focus": "Maintained focus on the original issue category"
+                }},
                 "tree_analysis": {{
                     "primary_symptoms": ["List the highest likelihood symptoms from the tree (>70%)"],
                     "secondary_symptoms": ["Medium likelihood symptoms from the tree (30-70%)"],
@@ -105,6 +126,7 @@ class DiagnosisAgent(BaseAgent):
                     "tree_guided_diagnosis": "Primary diagnosis based specifically on the tree's highest likelihood symptoms"
                 }},
                 "supporting_evidence": [
+                    {{"source": "session_context", "evidence": "How session context informs this diagnosis", "confidence": "High/Medium/Low", "context_relevance": "Connection to original issue"}},
                     {{"source": "diagnosis_tree", "evidence": "Technical evidence FROM THE TREE", "confidence": "High/Medium/Low", "diy_relevance": "How this tree data helps DIY diagnosis", "tree_symptom": "Specific symptom from tree"}},
                     {{"source": "owner_manual", "evidence": "Technical specifications and procedures", "confidence": "High/Medium/Low", "specific_details": "Torque specs, part numbers, etc."}},
                     {{"source": "knowledge_base", "evidence": "Detailed repair procedures", "book_title": "...", "page": "...", "confidence": "High/Medium/Low", "diy_tips": "Professional insights for DIYers"}},
@@ -226,13 +248,14 @@ class DiagnosisAgent(BaseAgent):
             - Car make: {car_make}
             - Car model: {car_model}
             - Car year: {car_year}
+            - Session context: {session_context}
             - User messages (last 5, most recent last): {user_message}
             - Diagnosis tree: {tree_summary}
             - Owner's manual/context: {manual_context}
             - Knowledge base (from 38,936 documents): {kb_context}
             - Online context: {online_context}
 
-            Ensure the JSON is valid and well-formed. Provide comprehensive technical details that enable successful DIY repairs.
+            Ensure the JSON is valid and well-formed. Provide comprehensive technical details that enable successful DIY repairs while maintaining focus on the session's original issue.
             Return ONLY a valid JSON object. Do NOT include any extra text, markdown, or explanations outside the JSON.
             """
         )
@@ -243,93 +266,93 @@ class DiagnosisAgent(BaseAgent):
         await self.broadcast_stage(json.dumps(stage_msg))
         await self._ensure_car_info()
         
-        try:
-            # Try to get manual chunks using direct Milvus search
-            manual_chunks = await self.search_engine_service.embed_and_vector_search(
-                car_id=self.car_id, query=user_message, top_k=3  # Reduced from 1 to 3 for better context
-            )
-            manual_context = ""
-            if manual_chunks:
-                # Combine the top chunks into context
-                manual_context = "\n\n".join([
-                    f"[Manual Section {i+1}]: {chunk['chunk']}"
-                    for i, chunk in enumerate(manual_chunks)
-                ])
-            else:
-                await self.logger.warning(f"No manual chunks found for car_id {self.car_id}")
-                # Try normalized car ID if original failed
-                normalized_car_id = self.car_id
-                # If car ID format looks like model-make-year, try to normalize it to make-model-year
-                parts = self.car_id.lower().split('-')
-                if len(parts) >= 3:
-                    common_makes = ['toyota', 'honda', 'ford', 'chevrolet', 'bmw', 'audi', 'mercedes', 'nissan', 
-                                  'mazda', 'subaru', 'hyundai', 'kia', 'lexus', 'acura', 'volkswagen', 'vw']
-                    if parts[0] not in common_makes and parts[1] in common_makes:
-                        normalized_car_id = f"{parts[1]}-{parts[0]}-{parts[2]}"
-                        
-                        # Try again with normalized ID if different
-                        if normalized_car_id != self.car_id:
-                            await self.logger.info(f"Trying normalized car_id: {normalized_car_id}")
-                            manual_chunks = await self.search_engine_service.embed_and_vector_search(
-                                car_id=normalized_car_id, query=user_message, top_k=3
-                            )
-                            if manual_chunks:
-                                manual_context = "\n\n".join([
-                                    f"[Manual Section {i+1}]: {chunk['chunk']}"
-                                    for i, chunk in enumerate(manual_chunks)
-                                ])
-        except Exception as e:
-            await self.logger.error(f"Error retrieving manual text: {str(e)}")
-            manual_context = ""
+        # PERFORMANCE OPTIMIZATION: Run searches in parallel
+        async def get_manual_context():
+            try:
+                # Try to get manual chunks using direct Milvus search - REDUCED for performance
+                manual_chunks = await self.search_engine_service.embed_and_vector_search(
+                    car_id=self.car_id, query=user_message, top_k=2  # Reduced from 3 to 2 for performance
+                )
+                if manual_chunks:
+                    # Combine the top chunks into context - REDUCED content length
+                    return "\n\n".join([
+                        f"[Manual Section {i+1}]: {chunk['chunk'][:600]}"  # Reduced from full chunk to 600 chars
+                        for i, chunk in enumerate(manual_chunks)
+                    ])
+                else:
+                    # Try normalized car ID if original failed
+                    normalized_car_id = self.car_id
+                    parts = self.car_id.lower().split('-')
+                    if len(parts) >= 3:
+                        common_makes = ['toyota', 'honda', 'ford', 'chevrolet', 'bmw', 'audi', 'mercedes', 'nissan', 
+                                      'mazda', 'subaru', 'hyundai', 'kia', 'lexus', 'acura', 'volkswagen', 'vw']
+                        if parts[0] not in common_makes and parts[1] in common_makes:
+                            normalized_car_id = f"{parts[1]}-{parts[0]}-{parts[2]}"
+                            
+                            # Try again with normalized ID if different
+                            if normalized_car_id != self.car_id:
+                                await self.logger.info(f"Trying normalized car_id: {normalized_car_id}")
+                                manual_chunks = await self.search_engine_service.embed_and_vector_search(
+                                    car_id=normalized_car_id, query=user_message, top_k=2
+                                )
+                                if manual_chunks:
+                                    return "\n\n".join([
+                                        f"[Manual Section {i+1}]: {chunk['chunk'][:600]}"
+                                        for i, chunk in enumerate(manual_chunks)
+                                    ])
+                return ""
+            except Exception as e:
+                await self.logger.error(f"Error retrieving manual text: {str(e)}")
+                return ""
+        
+        async def get_knowledge_context():
+            # MAJOR PERFORMANCE IMPROVEMENT: Drastically reduce search scope
+            docs = await self.search_engine_service.search(self.car_id, user_message, top_k=15)  # Reduced from 30 to 15
             
-        # Continue with general search - REDUCED for performance
-        docs = await self.search_engine_service.search(self.car_id, user_message, top_k=30)  # Reduced from 80 to 30
-        
-        # Separate and process knowledge base docs more comprehensively
-        kb_docs = [d for d in docs if d.metadata.get("source") == "ground_knowledge"]
-        
-        # Create rich knowledge base context with source attribution - REDUCED for performance
-        kb_context_parts = []
-        for i, doc in enumerate(kb_docs[:8]):  # Reduced from 25 to 8 for faster processing
-            book_title = doc.metadata.get("book_title", "Unknown Source")
-            page_num = doc.metadata.get("page_number", "N/A")
-            content = doc.page_content[:1000]  # Limit content length to 1000 chars
-            kb_context_parts.append(f"[Source: {book_title}, Page: {page_num}]\n{content}")
-        
-        kb_context = "\n\n---KNOWLEDGE BASE ENTRY---\n\n".join(kb_context_parts)
-        
-        # Enhanced online context processing - REDUCED for performance
-        online_docs = [d for d in docs if d.metadata.get("source") == "car_guide_link"]
-        online_context = []
-        for doc in online_docs[:3]:  # Limit to 3 online sources
-            url = doc.metadata.get("url", "Unknown URL")
-            content = doc.page_content[:800]  # Limit content length to 800 chars
-            online_context.append(f"[Online Source: {url}]\n{content}")
+            # Process only knowledge base docs - FURTHER REDUCED for performance
+            kb_docs = [d for d in docs if d.metadata.get("source") == "ground_knowledge"]
             
-        # REMOVED additional searches for performance - these were adding 60+ more documents
-        # Additional context searches for specific automotive areas
-        # additional_searches = [
-        #     f"{user_message} symptoms causes diagnosis",
-        #     f"{self.car_make} {self.car_model} {self.car_year} common problems",
-        #     f"automotive troubleshooting {user_message}",
-        #     f"repair guide {user_message}"
-        # ]
+            # Create knowledge base context - HEAVILY REDUCED for performance
+            kb_context_parts = []
+            for i, doc in enumerate(kb_docs[:4]):  # Reduced from 8 to 4 for much faster processing
+                book_title = doc.metadata.get("book_title", "Unknown Source")
+                page_num = doc.metadata.get("page_number", "N/A")
+                content = doc.page_content[:500]  # Reduced from 1000 to 500 chars
+                kb_context_parts.append(f"[Source: {book_title}, Page: {page_num}]\n{content}")
+            
+            return "\n\n---KNOWLEDGE BASE ENTRY---\n\n".join(kb_context_parts)
         
-        # # Perform additional targeted searches for comprehensive coverage
-        # additional_docs = []
-        # for search_query in additional_searches:
-        #     extra_docs = await self.search_engine_service.vector_search_ground_knowledge(search_query, top_k=15)
-        #     additional_docs.extend(extra_docs)
+        async def get_online_context():
+            # Get online context - REDUCED for performance
+            docs = await self.search_engine_service.search(self.car_id, user_message, top_k=10)  # Reduced search scope
+            online_docs = [d for d in docs if d.metadata.get("source") == "car_guide_link"]
+            
+            online_context = []
+            for doc in online_docs[:2]:  # Reduced from 3 to 2 online sources
+                url = doc.metadata.get("url", "Unknown URL")
+                content = doc.page_content[:400]  # Reduced from 800 to 400 chars
+                online_context.append(f"[Online Source: {url}]\n{content}")
+            return online_context
         
-        # # Add additional context from targeted searches
-        # if additional_docs:
-        #     additional_context_parts = []
-        #     seen_content = set()  # Avoid duplicates
-        #     for doc in additional_docs:
-        #         content = doc.get("chunk", "")
-        #         if content and content not in seen_content:
-        #             book_title = doc.get("book_title", "Unknown Source")
-        # Removed additional context processing for performance
+        # PERFORMANCE OPTIMIZATION: Run all context retrieval in parallel
+        import asyncio
+        manual_context, kb_context, online_context = await asyncio.gather(
+            get_manual_context(),
+            get_knowledge_context(), 
+            get_online_context(),
+            return_exceptions=True
+        )
+        
+        # Handle any exceptions from parallel execution
+        if isinstance(manual_context, Exception):
+            await self.logger.error(f"Manual context error: {manual_context}")
+            manual_context = ""
+        if isinstance(kb_context, Exception):
+            await self.logger.error(f"KB context error: {kb_context}")
+            kb_context = ""
+        if isinstance(online_context, Exception):
+            await self.logger.error(f"Online context error: {online_context}")
+            online_context = []
         
         # Log context sizes for performance monitoring
         manual_size = len(manual_context) if manual_context else 0
@@ -337,7 +360,7 @@ class DiagnosisAgent(BaseAgent):
         online_size = len("\n".join(online_context)) if online_context else 0
         total_context_size = manual_size + kb_size + online_size
         
-        await self.logger.info(f"Context sizes - Manual: {manual_size}, KB: {kb_size}, Online: {online_size}, Total: {total_context_size} chars")
+        await self.logger.info(f"OPTIMIZED Context sizes - Manual: {manual_size}, KB: {kb_size}, Online: {online_size}, Total: {total_context_size} chars (Target <5000)")
         
         return {
             "manual_context": manual_context,
@@ -440,21 +463,34 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
         
         return diagnosis_summary
 
-    async def diagnose(self, user_messages: List[str]) -> dict:
+    async def diagnose(self, user_messages: List[str], session_id: Optional[str] = None) -> dict:
         stage_msg = {"type": "stage", "stage": "Starting diagnosis"}
         await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
         await self.broadcast_stage(json.dumps(stage_msg))
         """
         Main entry: generate diagnosis using tree, last 5 user messages, and multi-source context.
+        Session-aware: integrates with session context for focused diagnosis.
         Improved error handling.
         Args:
             user_messages (List[str]): List of user messages (use only the last 5).
+            session_id (Optional[str]): Session identifier for context management.
         """
         await self._ensure_car_info()
         try:
             # Use only the last 5 messages
             last_messages = user_messages[-5:] if isinstance(user_messages, list) else [user_messages]
             user_message_concat = "\n".join(last_messages)
+            
+            # SESSION CONTEXT INTEGRATION
+            session_context_str = ""
+            if session_id:
+                session_context = self.session_context_manager.get_original_context(session_id)
+                if session_context:
+                    session_context_str = self.session_context_manager.get_context_reminder(session_id)
+                    await self.logger.info(f"Session {session_id}: Using context for diagnosis - {session_context.issue_category} issue")
+                else:
+                    await self.logger.info(f"Session {session_id}: No existing context found for diagnosis")
+            
             context = await self.retrieve_context(user_message_concat)
             stage_msg = {"type": "stage", "stage": "Context retrieved"}
             await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
@@ -462,6 +498,7 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
             tree_summary = self.summarize_tree()
             prompt_vars = {
                 "user_message": user_message_concat,
+                "session_context": session_context_str,
                 "tree_summary": tree_summary,
                 "manual_context": context["manual_context"],
                 "kb_context": context["kb_context"],
@@ -500,7 +537,14 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
             parsed_response = None
             step_by_step_guide = None
             try:
-                parsed_response = json.loads(response) if isinstance(response, str) else response
+                # Handle AIMessage objects from LangChain
+                if hasattr(response, 'content'):
+                    response_text = response.content
+                else:
+                    response_text = response
+                
+                # Handle JSON string or object
+                parsed_response = json.loads(response_text) if isinstance(response_text, str) else response_text
                 step_by_step_guide = parsed_response.get("step_by_step_guide")
             except Exception as e:
                 await self.logger.error(f"[diagnosis] Failed to parse LLM response as JSON: {e}\nRaw response: {response}")
@@ -556,18 +600,86 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
     async def process(self, user_message: str, websocket=None, session_id=None):
         """
         Accepts the user messages (list), runs the diagnosis, and returns the result and success status.
+        Session-aware: integrates with session context management.
         Uses only the last 5 user messages.
         """
         await self._log_entry("process", message_length=len(str(user_message)), session_id=session_id)
-        stage_msg = {"type": "stage", "stage": "Processing diagnosis"}
-        await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
-        await self.broadcast_stage(json.dumps(stage_msg))
         
         await self._ensure_car_info()
         try:
+            # Stage 1: Diagnosis started
             if websocket:
                 await self.logger.info(f"Sending diagnosis start stage via WebSocket - session_id={session_id}")
                 await self.send_ws_stage(websocket, "Diagnosis started", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id)
+            
+            # Stage 2: Analyzing diagnosis tree
+            if websocket:
+                tree_summary = None
+                if self.diagnosis_tree:
+                    tree_summary = {
+                        "root_issue": self.diagnosis_tree.issue_name,
+                        "total_symptoms": len(self.diagnosis_tree.children),
+                        "main_symptoms": [
+                            {
+                                "name": child.issue_name,
+                                "likelihood": round(child.likelyhood * 100, 1),
+                                "type": child.data.get("issue_type") if child.data else "Unknown"
+                            }
+                            for child in sorted(self.diagnosis_tree.children, key=lambda x: x.likelyhood, reverse=True)[:3]
+                        ] if self.diagnosis_tree.children else []
+                    }
+                
+                await self.send_ws_stage(
+                    websocket, 
+                    "Analyzing diagnosis tree and symptoms", 
+                    MessageSource.DIAGNOSTIC_AGENT, 
+                    session_id=session_id,
+                    details={"tree_analysis": tree_summary}
+                )
+            
+            # SESSION CONTEXT INTEGRATION
+            if session_id:
+                # Check if message is relevant to session context
+                session_context = self.session_context_manager.get_original_context(session_id)
+                if session_context:
+                    is_relevant = await self.session_context_manager.is_message_relevant(user_message, session_id)
+                    if not is_relevant:
+                        await self.logger.info(f"Session {session_id}: Message not relevant to original issue - {session_context.primary_issue}")
+                        # Return focused response instead of general diagnosis
+                        return {
+                            "success": True,
+                            "result": {
+                                "diagnosis_summary": f"This session is focused on your {session_context.issue_category} issue: '{session_context.primary_issue}'. Your question seems unrelated to this original issue. Would you like to start a new session for a different automotive concern, or would you like to continue with the current {session_context.issue_category} diagnosis?",
+                                "session_context_analysis": {
+                                    "original_issue_focus": session_context.primary_issue,
+                                    "symptom_connections": "Message not connected to original symptoms",
+                                    "diagnostic_focus": f"Please stay focused on the {session_context.issue_category} issue"
+                                },
+                                "tree_analysis": {},
+                                "supporting_evidence": [],
+                                "diy_repair_procedures": [],
+                                "alternative_diagnoses": [],
+                                "diagnostic_procedures": [],
+                                "system_education": {},
+                                "cost_breakdown": {},
+                                "safety_protocols": [],
+                                "quality_assurance": [],
+                                "maintenance_schedule": {},
+                                "professional_consultation_indicators": [],
+                                "confidence": "High - Maintaining session focus"
+                            },
+                            "step_by_step_guide": [],
+                            "error": None,
+                            "error_type": None,
+                            "user_message": None
+                        }
+                    else:
+                        # Message is relevant to session context - continue with diagnosis
+                        await self.logger.info(f"Session {session_id}: Processing relevant follow-up message")
+            
+            # Stage 3: Gathering car information and context
+            if websocket:
+                await self.send_ws_stage(websocket, "Gathering car information and manual context", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id)
             
             # Fetch the full car object from the DB to check for vectorization status
             car = await self.car_crud.get_car_by_id(self.car_id) if self.car_crud and self.car_id else None
@@ -580,11 +692,103 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
                 else:
                     await self.logger.info(f"No vector data present for car {self.car_id} (vectorized={is_vectorized}, chunks={chunk_count})")
             
-            result = await self.diagnose(user_message)
+            # Stage 4: Running diagnosis analysis
+            if websocket:
+                await self.send_ws_stage(websocket, "Running comprehensive diagnosis analysis", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id)
             
+            result = await self.diagnose(user_message, session_id=session_id)
+            
+            # Stage 5: Processing diagnosis results
+            if websocket:
+                diagnosis_summary = None
+                if result.get("success", False) and result.get("diagnosis"):
+                    diagnosis_data = result.get("diagnosis", {})
+                    diagnosis_summary = {
+                        "primary_diagnosis": diagnosis_data.get("diagnosis_summary", "Unknown"),
+                        "confidence": diagnosis_data.get("confidence", "Unknown"),
+                        "repair_procedures_count": len(diagnosis_data.get("diy_repair_procedures", [])),
+                        "alternatives_count": len(diagnosis_data.get("alternative_diagnoses", [])),
+                        "safety_concerns": len(diagnosis_data.get("safety_protocols", [])),
+                        "requires_professional": len(diagnosis_data.get("professional_consultation_indicators", [])) > 0
+                    }
+                
+                await self.send_ws_stage(
+                    websocket, 
+                    "Processing diagnosis results and generating recommendations", 
+                    MessageSource.DIAGNOSTIC_AGENT, 
+                    session_id=session_id,
+                    details={"diagnosis_summary": diagnosis_summary}
+                )
+            
+            # Update session context with diagnosis if available
+            if session_id and result.get("success", False) and result.get("diagnosis"):
+                # Note: We don't update the session context from diagnosis - that's mixing responsibilities
+                # The session context agent manages session focus, not diagnosis outcomes
+                await self.logger.info(f"Session {session_id}: Diagnosis completed successfully")
+            
+            # Send tree data immediately after diagnosis completion
+            if websocket and self.diagnosis_tree:
+                try:
+                    tree_data = {
+                        "full_tree": self.diagnosis_tree.to_dict(),
+                        "summary": {
+                            "total_nodes": len(self.diagnosis_tree.children),
+                            "root_issue": self.diagnosis_tree.issue_name,
+                            "high_likelihood_symptoms": [
+                                child.issue_name for child in self.diagnosis_tree.children 
+                                if getattr(child, "likelyhood", 0) > 0.7
+                            ]
+                        }
+                    }
+                    
+                    tree_message = {
+                        "type": "tree_data",
+                        "source": "diagnosis_agent",
+                        "content": "Complete tree data after diagnosis",
+                        "timestamp": datetime.now().isoformat() + "Z",
+                        "data": {
+                            "tree_data": tree_data,
+                            "stage": "diagnosis_complete",
+                            "diagnosis_available": result.get("success", False)
+                        }
+                    }
+                    
+                    await websocket.send_text(json.dumps(tree_message))
+                    await self.logger.info(f"Sent complete tree data via WebSocket after diagnosis")
+                except Exception as e:
+                    await self.logger.error(f"Failed to send tree data via WebSocket: {e}")
+            
+            # Stage 6: Diagnosis complete
             if websocket:
                 await self.logger.info(f"Sending diagnosis completion result via WebSocket - session_id={session_id}, result_success={result.get('success', False)}")
-                await self.send_ws_result(websocket, "Diagnosis complete", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id, details=result)
+                
+                # Include final tree data in completion
+                final_tree_data = None
+                if self.diagnosis_tree:
+                    final_tree_data = {
+                        "total_nodes": len(self.diagnosis_tree.children),
+                        "root_issue": self.diagnosis_tree.issue_name,
+                        "children": [
+                            {
+                                "issue_name": child.issue_name,
+                                "likelihood": round(child.likelyhood * 100, 1),
+                                "type": child.data.get("issue_type") if child.data else "Unknown",
+                                "category": child.data.get("issue_category") if child.data else "Unknown",
+                                "description": child.data.get("description") if child.data else None,
+                                "severity": child.data.get("severity") if child.data else "Unknown"
+                            }
+                            for child in self.diagnosis_tree.children
+                        ]
+                    }
+                
+                result_details = {
+                    "success": result.get("success", False),
+                    "has_diagnosis": "diagnosis" in result and result["diagnosis"] is not None,
+                    "has_step_guide": "step_by_step_guide" in result and len(result.get("step_by_step_guide", [])) > 0,
+                    "diagnosis_data": diagnosis_summary if 'diagnosis_summary' in locals() else None,
+                    "final_tree_data": final_tree_data  # Include complete tree data
+                }
+                await self.send_ws_result(websocket, "Diagnosis complete", MessageSource.DIAGNOSTIC_AGENT, session_id=session_id, details=result_details)
             
             process_result = {
                 "success": result.get("success", False),
@@ -595,7 +799,7 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
                 "user_message": result.get("user_message") if not result.get("success", False) else None
             }
             
-            await self._log_exit("process", success=process_result["success"])
+            await self._log_exit("process", success=process_result["success"], has_session_context=session_id is not None)
             return process_result
             
         except Exception as e:

@@ -86,3 +86,4 @@ async def get_optional_user(request: Request, credentials=None) -> Dict[str, Any
     }
     
     return default_user
+

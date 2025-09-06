@@ -26,9 +26,47 @@ class UserInteractionAgent(BaseAgent):
         """
         super().__init__(websocket_manager=websocket_manager, logger_name="UserInteractionAgent", **kwargs)
         self.llm_service = llm_service or LLMService()
+        
+        # Simple response prompt for basic questions
+        self.simple_response_prompt = PromptTemplate.from_template(
+            """
+            You are an automotive expert providing helpful, concise answers to general automotive questions.
+            
+            USER MESSAGE: "{user_message}"
+            SESSION CONTEXT: "{session_context}"
+            CONVERSATION CONTEXT: "{conversation_context}"
+            
+            Provide a helpful, informative response that directly answers the user's question.
+            Keep it conversational but informative. Include practical tips where relevant.
+            
+            IMPORTANT: If conversation context is provided, use it to understand what the user is referring to.
+            For example, if they previously asked about "diesel and benzene" and now ask "which one is more flammable",
+            answer specifically about diesel vs benzene flammability, not general automotive fluids.
+            
+            If the question relates to an ongoing diagnostic session, reference that context appropriately.
+            If you need more specific information to provide a better answer, ask targeted follow-up questions.
+            
+            Format your response as JSON:
+            {{
+                "response": "Your helpful response to the user's question",
+                "followup_questions": [
+                    {{"question": "...", "purpose": "...", "category": "clarification"}}
+                ]
+            }}
+            
+            Return ONLY valid JSON.
+            """
+        )
+        
         self.prompt = PromptTemplate.from_template(
             """
             You are an expert automotive assistant specializing in empowering DIY car repair enthusiasts. Your primary mission is to transform complex automotive diagnostic information into clear, actionable guidance that enables users to successfully diagnose and repair their vehicles themselves.
+
+            {session_context}
+
+            IMPORTANT: If session context is provided above, ALWAYS keep your response focused on that original issue. 
+            When users ask follow-up questions or mention additional symptoms, interpret them within the context 
+            of the original problem. Do not deviate to unrelated automotive topics unless explicitly asked.
 
             Your users are motivated DIY enthusiasts who want to:
             - Understand what's wrong with their car at a technical level
@@ -84,7 +122,8 @@ class UserInteractionAgent(BaseAgent):
             - User message: {user_message}
             - Diagnosis result: {diagnosis_result}
 
-            Output:
+ 
+                       Output:
             {{"technical_diagnosis": "...",
             "primary_repair_procedure": {{"name": "...", "difficulty": "...", "overview": "..."}},
             "diy_difficulty_assessment": {{"level": "...", "challenges": ["..."], "success_factors": ["..."]}},
@@ -127,10 +166,155 @@ class UserInteractionAgent(BaseAgent):
                     return text[start:i+1]
         return None
 
+    def _clean_json_response(self, response_text: str) -> str:
+        """Clean LLM response to extract valid JSON."""
+        if not response_text:
+            return "{}"
+        
+        # Remove markdown formatting
+        response_text = response_text.strip()
+        if response_text.startswith('```json'):
+            response_text = response_text[7:]
+        if response_text.startswith('```'):
+            response_text = response_text[3:]
+        if response_text.endswith('```'):
+            response_text = response_text[:-3]
+        
+        # Find JSON content
+        start_idx = response_text.find('{')
+        end_idx = response_text.rfind('}')
+        
+        if start_idx != -1 and end_idx != -1 and start_idx <= end_idx:
+            return response_text[start_idx:end_idx + 1]
+        
+        return "{}"
+
+    async def generate_simple_response(self, user_message: str, session_context: str = "", conversation_history: list = None) -> dict:
+        """
+        Generate a simple, conversational response for general questions.
+        Now includes conversation history for context-aware responses.
+        """
+        try:
+            # Build conversation context from history
+            conversation_context = ""
+            if conversation_history:
+                await self.logger.info(f"[SIMPLE_RESPONSE] Processing {len(conversation_history)} conversation history messages")
+                recent_messages = conversation_history[-3:]  # Last 3 messages for context
+                for msg in recent_messages:
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content', '')
+                    if isinstance(content, dict):
+                        # Extract the main text from complex responses
+                        content = content.get('technical_diagnosis', str(content)[:200])
+                    elif isinstance(content, str):
+                        content = content[:200]  # Limit length
+                    conversation_context += f"{role}: {content}\n"
+                await self.logger.info(f"[SIMPLE_RESPONSE] Built conversation context: {conversation_context[:300]}")
+            else:
+                await self.logger.info("[SIMPLE_RESPONSE] No conversation history provided")
+            
+            formatted_prompt = self.simple_response_prompt.format(
+                user_message=user_message,
+                session_context=session_context or "No session context available",
+                conversation_context=conversation_context or "No previous conversation context"
+            )
+            
+            response = await self.llm_service.generate_response(formatted_prompt)
+            
+            # Handle AIMessage objects from LangChain
+            if hasattr(response, 'content'):
+                response_text = response.content
+            else:
+                response_text = str(response)
+            
+            # Try to parse JSON, fall back to plain text if needed
+            try:
+                clean_response = self._clean_json_response(response_text)
+                result = json.loads(clean_response)
+                response_content = result.get("response", response_text)
+                followup_questions = result.get("followup_questions", [])
+            except (json.JSONDecodeError, TypeError):
+                # If JSON parsing fails, use the raw response
+                response_content = response_text
+                followup_questions = []
+            
+            # Return in the expected format but only with simple response
+            return {
+                "technical_diagnosis": response_content,
+                "primary_repair_procedure": {},
+                "diy_difficulty_assessment": {},
+                "required_tools_and_parts": {},
+                "step_by_step_repair_guide": [],
+                "alternative_approaches": [],
+                "diagnostic_verification": [],
+                "safety_protocols": [],
+                "troubleshooting_guide": [],
+                "quality_verification": [],
+                "learning_insights": [],
+                "upgrade_opportunities": [],
+                "maintenance_prevention": {},
+                "followup_questions": followup_questions,
+                "response_type": "simple",
+                "success": True
+            }
+            
+        except Exception as e:
+            await self.logger.error(f"Failed to generate simple response: {e}")
+            raise e
+
     async def generate_user_message(self, user_message: str, diagnosis_result: Any, websocket=None, session_id=None) -> dict:
+        # Stage 1: Starting user message generation
         if websocket:
-            await self.send_ws_stage(websocket, "Generating user-facing message", MessageSource.CHAT_SERVICE, session_id=session_id)
+            await self.send_ws_stage(websocket, "Starting user message generation", MessageSource.USER_INTERACTION, session_id=session_id)
         await self.logger.info(f"UserInteractionAgent - Generating user-facing message for: {user_message}")
+        
+        # Stage 2: Gathering session context
+        if websocket:
+            await self.send_ws_stage(websocket, "Gathering session context", MessageSource.USER_INTERACTION, session_id=session_id)
+        
+        # Get session context if available - try multiple sources
+        session_context = ""
+        if session_id:
+            try:
+                from app.agents.session_context_agent import SessionContextAgent
+                context_manager = SessionContextAgent()
+                session_context = context_manager.get_context_reminder(session_id)
+            except Exception as e:
+                await self.logger.warning(f"Could not retrieve session context for {session_id}: {e}")
+        
+        # If no session context from session_id, check if it's passed in diagnosis_result
+        if not session_context and isinstance(diagnosis_result, dict):
+            session_context = diagnosis_result.get('session_context', "")
+        
+        # Ensure we have some session guidance even if context loading fails
+        if not session_context and session_id:
+            session_context = "\nIMPORTANT: Maintain focus on the user's original automotive issue. Interpret follow-up questions and symptoms within the context of their primary concern."
+        
+        # Stage 3: Determining response type
+        if websocket:
+            response_type = "comprehensive" if not (isinstance(diagnosis_result, dict) and diagnosis_result.get("simple_response")) else "simple"
+            await self.send_ws_stage(
+                websocket, 
+                f"Determining response type: {response_type}", 
+                MessageSource.USER_INTERACTION, 
+                session_id=session_id,
+                details={"response_type": response_type}
+            )
+        
+        # Check if this is a simple response request from orchestrator
+        if isinstance(diagnosis_result, dict) and diagnosis_result.get("simple_response"):
+            await self.logger.info("Processing simple response request from orchestrator")
+            if websocket:
+                await self.send_ws_stage(websocket, "Generating simple response", MessageSource.USER_INTERACTION, session_id=session_id)
+            # Get conversation history from diagnosis_result if available
+            conversation_history = diagnosis_result.get('conversation_history', [])
+            return await self.generate_simple_response(user_message, session_context, conversation_history)
+        
+        # Otherwise, proceed with full diagnostic response
+        await self.logger.info("Generating full diagnostic response")
+        if websocket:
+            await self.send_ws_stage(websocket, "Generating comprehensive diagnostic response", MessageSource.USER_INTERACTION, session_id=session_id)
+        
         try:
             # Extract step_by_step_guide if present
             step_by_step_guide = None
@@ -238,14 +422,34 @@ class UserInteractionAgent(BaseAgent):
                 merged_diagnosis = str(diagnosis_result)
             prompt_vars = {
                 "user_message": user_message,
-                "diagnosis_result": merged_diagnosis
+                "diagnosis_result": merged_diagnosis,
+                "session_context": session_context
             }
             prompt = self.prompt.format(**prompt_vars)
+            
+            # Stage 4: Processing with AI assistant
+            if websocket:
+                await self.send_ws_stage(websocket, "Processing with AI assistant to generate user response", MessageSource.USER_INTERACTION, session_id=session_id)
+            
             # Use the LLMService for direct prompt calls
             response = await self.llm_service.generate_response(prompt)
+            
+            # Stage 5: Parsing AI response
+            if websocket:
+                await self.send_ws_stage(websocket, "Parsing AI response and formatting output", MessageSource.USER_INTERACTION, session_id=session_id)
+            
+            # Handle AIMessage objects from LangChain and dict responses
+            if hasattr(response, 'content'):
+                response = response.content
+            elif isinstance(response, dict) and 'content' in response:
+                response = response['content']
+            elif isinstance(response, dict):
+                response = str(response)
+                
             response = self._sanitize_output(response)
+            
             # Try to parse the response as JSON, robustly
-            raw_response = response.strip()
+            raw_response = response.strip() if isinstance(response, str) else str(response).strip()
             parsed_response = None
             try:
                 # Try direct JSON parse first
@@ -319,13 +523,53 @@ class UserInteractionAgent(BaseAgent):
                 })
                 
                 parsed_response["followup_questions"] = default_questions[:3]  # Limit to 3 questions
+            
+            # Stage 4: Finalizing user message
+            if websocket:
+                await self.send_ws_stage(websocket, "Finalizing user message and formatting response", MessageSource.USER_INTERACTION, session_id=session_id)
+            
             # Serialize datetimes before sending to websocket or returning
             parsed_response = serialize_datetimes(parsed_response)
+            
+            # Stage 5: User message generation complete
             if websocket:
-                await self.send_ws_result(websocket, "User message generated", MessageSource.CHAT_SERVICE, session_id=session_id, details=parsed_response)
-            stage_msg = {"type": "stage", "stage": "User message generated"}
-            await self.logger.info(f"Broadcasting stage: {stage_msg['stage']}")
-            await self.broadcast_stage(json.dumps(stage_msg))
+                # Include tree data if available in diagnosis result
+                tree_data = None
+                if isinstance(diagnosis_result, dict) and 'diagnosis_tree' in diagnosis_result:
+                    tree = diagnosis_result['diagnosis_tree']
+                    if tree and hasattr(tree, 'children'):
+                        tree_data = {
+                            "total_nodes": len(tree.children),
+                            "root_issue": tree.issue_name if hasattr(tree, 'issue_name') else "Unknown",
+                            "children": [
+                                {
+                                    "issue_name": child.issue_name,
+                                    "likelihood": round(child.likelyhood * 100, 1),
+                                    "type": child.data.get("issue_type") if child.data else "Unknown",
+                                    "category": child.data.get("issue_category") if child.data else "Unknown",
+                                    "description": child.data.get("description") if child.data else None,
+                                    "severity": child.data.get("severity") if child.data else "Unknown"
+                                }
+                                for child in tree.children
+                            ]
+                        }
+                
+                result_summary = {
+                    "has_diagnosis": bool(parsed_response.get("technical_diagnosis")),
+                    "repair_procedures_count": len(parsed_response.get("step_by_step_repair_guide", [])),
+                    "safety_protocols_count": len(parsed_response.get("safety_protocols", [])),
+                    "followup_questions_count": len(parsed_response.get("followup_questions", [])),
+                    "difficulty_level": parsed_response.get("diy_difficulty_assessment", {}).get("level", "Unknown"),
+                    "final_tree_data": tree_data  # Include complete tree data in final user message
+                }
+                await self.send_ws_result(
+                    websocket, 
+                    "User message generated successfully", 
+                    MessageSource.USER_INTERACTION, 
+                    session_id=session_id, 
+                    details=result_summary
+                )
+            
             return {
                 **parsed_response,
                 "success": True,
@@ -333,7 +577,7 @@ class UserInteractionAgent(BaseAgent):
             }
         except Exception as e:
             if websocket:
-                await self.send_ws_error(websocket, f"Error in user message generation - {type(e).__name__}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
+                await self.send_ws_error(websocket, f"Error in user message generation - {type(e).__name__}", MessageSource.USER_INTERACTION, session_id=session_id, details={"error": str(e)})
             error_stage = f"Error in user message generation - {type(e).__name__}"
             stage_msg = {"type": "stage", "stage": error_stage}
             await self.logger.info(f"Broadcasting error stage: {stage_msg['stage']}")

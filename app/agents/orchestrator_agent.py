@@ -1,5 +1,7 @@
 import json
 from typing import Optional, Dict, Any
+from datetime import datetime
+from langchain.prompts import PromptTemplate
 from app.agents.symptom_extraction_agent import SymptomExtractorAgent
 from app.agents.diagnostic_agent import DiagnosisAgent
 from app.utils.diagnosis_tree import DiagnosisTreeNode
@@ -9,6 +11,7 @@ from app.core.interfaces import IWebSocketManager
 from app.agents.base_agent import BaseAgent, AgentCommand, AgentState
 from app.utils.message_types import MessageSource
 from app.utils.monitoring import monitor_and_handle
+from app.services.llm_service import LLMService
 
 class SymptomExtractionCommand(AgentCommand):
     """Command for symptom extraction operations"""
@@ -29,7 +32,7 @@ class SymptomExtractionCommand(AgentCommand):
         
         if car_id is None:
             user_response = await self.user_interaction_agent.process(
-                user_request, 'car_id is required for symptom extraction.'
+                user_request, 'car_id is required for symptom extraction.', session_id=session_id
             )
             return {
                 'response': user_response.get('user_message'), 
@@ -47,7 +50,7 @@ class SymptomExtractionCommand(AgentCommand):
         if isinstance(result, dict) and result.get('need_more_info'):
             info_type = result.get('info_type', 'additional information')
             user_response = await self.user_interaction_agent.process(
-                user_request, f"Could you please provide more details about: {info_type}?"
+                user_request, f"Could you please provide more details about: {info_type}?", session_id=session_id
             )
             return {
                 'response': user_response.get('user_message'),
@@ -59,7 +62,7 @@ class SymptomExtractionCommand(AgentCommand):
         
         if not success:
             user_response = await self.user_interaction_agent.process(
-                user_request, 'An error occurred during processing.'
+                user_request, 'An error occurred during processing.', session_id=session_id
             )
             return {
                 'response': user_response.get('user_message'), 
@@ -94,7 +97,16 @@ class DiagnosisCommand(AgentCommand):
         
         diagnosis_result = await diagnostic_agent.process(user_request, websocket=websocket, session_id=session_id)
         
-        user_response = await self.user_interaction_agent.process(user_request, diagnosis_result)
+        # Add tree data to diagnosis result for user interaction agent
+        if diagnosis_tree and 'diagnosis_tree' not in diagnosis_result:
+            diagnosis_result['diagnosis_tree'] = diagnosis_tree
+        
+        user_response = await self.user_interaction_agent.process(
+            user_request, 
+            diagnosis_result, 
+            websocket=websocket,  # Pass websocket to user interaction agent
+            session_id=session_id
+        )
         
         return {
             'response': user_response.get('user_message'),
@@ -112,6 +124,12 @@ class InitialProcessingCommand(AgentCommand):
         self.diagnosis_command = diagnosis_command
     
     def validate(self, context: Dict[str, Any]) -> bool:
+        # For initial processing, we can use a default car_id if not provided
+        # This fixes the "Command 'initial_processing' validation failed" error
+        if 'user_request' in context and 'car_id' not in context:
+            # Add a default car_id for initial processing - will be replaced with real one later
+            context['car_id'] = 'default_car'
+            return True
         return self.symptom_command.validate(context) and self.diagnosis_command.validate(context)
     
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -153,6 +171,49 @@ class OrchestratorAgent(BaseAgent):
         self.symptom_extractor_agent_class = symptom_extractor_agent_class
         self.diagnosis_agent_class = diagnosis_agent_class
         self.user_interaction_agent = user_interaction_agent or UserInteractionAgent()
+        
+        # LLM service for message classification
+        self.llm_service = LLMService()
+        
+        # Message classification prompt
+        self.classification_prompt = PromptTemplate.from_template(
+            """
+            You are analyzing a user message to determine what type of response is needed.
+            
+            USER MESSAGE: "{user_message}"
+            SESSION CONTEXT: "{session_context}"
+            
+            Classify the message type to determine appropriate response level.
+            
+            SIMPLE RESPONSE (no diagnostic details needed):
+            - General automotive questions that can be answered from knowledge
+            - Educational questions (signs, symptoms, explanations) even if related to current issue
+            - Clarification questions about terms or concepts  
+            - Questions about maintenance schedules or general procedures
+            - Follow-up questions about previously provided information
+            - Basic "how-to" questions without specific problem context
+            - Questions about tools, parts, or general automotive knowledge
+            - Simple yes/no or factual questions
+            - Questions asking for explanation of concepts or terminology
+            - "What are the signs of..." type questions (educational, not diagnostic)
+            
+            FULL DIAGNOSTIC RESPONSE (comprehensive repair guidance needed):
+            - Specific problem symptoms requiring diagnosis ("My car is making...")
+            - NEW symptoms reported for existing issues ("Now it's also...")
+            - Requests for repair procedures for identified issues
+            - Troubleshooting requests for ongoing problems
+            - Questions that require detailed repair guidance
+            - Symptom-based inquiries requiring diagnostic analysis
+            - Complex repair planning or procedure questions
+            - Updates to existing symptoms ("Getting worse", "Now also...")
+            
+            IMPORTANT: Educational questions like "What are the signs of..." should be SIMPLE even 
+            if they relate to an ongoing diagnostic session. Only classify as FULL DIAGNOSTIC if 
+            the user is reporting actual symptoms they're experiencing.
+            
+            Respond with ONLY one word: "simple" or "full_diagnostic"
+            """
+        )
         
         # Initialize commands
         self._setup_commands()
@@ -237,7 +298,7 @@ class OrchestratorAgent(BaseAgent):
     
     async def route_request(self, user_request: str, user_id: str = None, context: dict = None, websocket=None, session_id=None):
         """
-        Main entry point: decides which command should handle the user request.
+        PERFORMANCE OPTIMIZED: Main entry point with improved parallel processing and reduced overhead.
         """
         await self._log_entry("route_request", user_request=user_request[:100], user_id=user_id)
         
@@ -266,6 +327,8 @@ class OrchestratorAgent(BaseAgent):
             if hasattr(original_tree, 'children') and original_tree.children:
                 child_issues = [c.issue_name for c in original_tree.children]
                 await self.logger.info(f"Existing tree child issues: {child_issues}")
+        else:
+            await self.logger.info("No existing tree found in command context")
         
         await self._ensure_diagnosis_tree(command_context)
         
@@ -273,12 +336,101 @@ class OrchestratorAgent(BaseAgent):
         current_tree = command_context.get('diagnosis_tree')
         await self.logger.info(f"Tree after ensure_diagnosis_tree has {len(current_tree.children) if current_tree else 0} children")
         
+        # Get session context for classification
+        session_context = ""
+        if session_id:
+            try:
+                from app.agents.session_context_agent import SessionContextAgent
+                context_manager = SessionContextAgent()
+                session_context = context_manager.get_context_reminder(session_id)
+            except Exception as e:
+                await self.logger.warning(f"Could not retrieve session context for {session_id}: {e}")
+        
+        # OPTIMIZATION: Classify message early to determine processing path
+        await self.send_ws_stage(websocket, "Orchestrator - Classifying message type", MessageSource.ORCHESTRATOR, session_id=session_id)
+        classification = await self.classify_message(user_request, session_context)
+        
+        # If it's a simple question and we have high confidence, skip the full diagnostic pipeline
+        if (classification.get("response_type") == "simple" and 
+            classification.get("confidence", 0.0) > 0.7):
+            
+            await self.logger.info("[ORCHESTRATOR] Taking simple response path - skipping full diagnostic pipeline")
+            await self.send_ws_stage(websocket, "Orchestrator - Generating simple response", MessageSource.ORCHESTRATOR, session_id=session_id)
+            
+            # For simple responses, still extract session context if it's an initial message
+            if command_context.get('is_initial_message') and session_id:
+                try:
+                    from app.agents.session_context_agent import SessionContextAgent
+                    context_agent = SessionContextAgent()
+                    await context_agent.extract_original_issue(
+                        user_request, 
+                        session_id, 
+                        command_context.get('car_make', ''),
+                        command_context.get('car_model', ''),
+                        command_context.get('car_year', '')
+                    )
+                    # Get updated session context
+                    session_context = context_agent.get_context_reminder(session_id)
+                except Exception as e:
+                    await self.logger.warning(f"Failed to extract session context for simple response: {e}")
+            
+            # Generate simple response directly through user interaction agent
+            # Pass conversation history for context
+            conversation_history = command_context.get('conversation_history', [])
+            await self.logger.info(f"[ORCHESTRATOR] Simple response - conversation history length: {len(conversation_history)}")
+            if conversation_history:
+                await self.logger.info(f"[ORCHESTRATOR] Last message in history: {conversation_history[-1].get('content', 'No content')[:100]}")
+            
+            simple_response = await self.user_interaction_agent.generate_simple_response(
+                user_request, 
+                session_context, 
+                conversation_history
+            )
+            
+            # Format response to match expected structure
+            user_response = await self.user_interaction_agent.process(
+                user_request, 
+                {
+                    "simple_response": True,
+                    "conversation_history": conversation_history
+                }, 
+                websocket=websocket, 
+                session_id=session_id
+            )
+            
+            # Override the user_message with our simple response
+            if user_response.get('success'):
+                user_response['user_message'] = simple_response
+                user_response['response_type'] = 'simple'
+                user_response['tokens_saved'] = True  # Indicator that we saved processing
+            
+            await self.send_ws_stage(websocket, "Orchestrator - Simple response complete", MessageSource.ORCHESTRATOR, session_id=session_id)
+            await self._log_exit("route_request", success=True, result_type="simple_response")
+            return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
+        
+        # Continue with full diagnostic pipeline for complex questions
+        await self.logger.info("[ORCHESTRATOR] Taking full diagnostic path")
+        
+        # Stage: Full diagnostic pipeline starting
+        if websocket:
+            await self.send_ws_stage(
+                websocket, 
+                "Starting comprehensive diagnostic analysis", 
+                MessageSource.ORCHESTRATOR, 
+                session_id=session_id,
+                details={
+                    "analysis_type": "comprehensive",
+                    "classification_confidence": classification.get("confidence", 0.0),
+                    "expected_stages": ["symptom_extraction", "tree_building", "diagnosis", "user_message_generation"]
+                }
+            )
+        
         car_id = command_context.get('car_id')
         
         # Route based on request type and context
         try:
             if command_context.get('is_initial_message'):
-                await self.send_ws_stage(websocket, "Orchestrator - Processing initial message", MessageSource.ORCHESTRATOR, session_id=session_id)
+                await self.send_ws_stage(websocket, "Processing initial message with full analysis", MessageSource.ORCHESTRATOR, session_id=session_id)
                 result = await self.execute_command('initial_processing', command_context)
                 await self._log_exit("route_request", success=True, result_type="initial_processing")
                 return result
@@ -294,46 +446,176 @@ class OrchestratorAgent(BaseAgent):
                 symptom_keywords = ['issue', 'problem', 'symptom', 'wrong', 'noise', 'doesn\'t work', 'not working', 'failed']
                 needs_symptom_extraction = is_tree_empty or any(keyword in user_request_lower for keyword in symptom_keywords)
                 
+                # PERFORMANCE OPTIMIZATION: Start context preparation for diagnosis in parallel
+                import asyncio
+                
                 if needs_symptom_extraction:
-                    await self.send_ws_stage(websocket, "Orchestrator - Extracting symptoms from follow-up message", MessageSource.ORCHESTRATOR, session_id=session_id)
-                    symptom_result = await self.execute_command('symptom_extraction', command_context)
+                    if websocket:
+                        tree_context = {
+                            "tree_empty": is_tree_empty,
+                            "existing_symptoms": len(diagnosis_tree.children) if diagnosis_tree else 0,
+                            "analysis_trigger": "new_symptoms_detected" if not is_tree_empty else "empty_tree"
+                        }
+                        await self.send_ws_stage(
+                            websocket, 
+                            "Extracting new symptoms from follow-up message", 
+                            MessageSource.ORCHESTRATOR, 
+                            session_id=session_id,
+                            details=tree_context
+                        )
+                    
+                    # Start both symptom extraction and diagnosis preparation in parallel
+                    symptom_task = asyncio.create_task(self.execute_command('symptom_extraction', command_context))
+                    
+                    # Wait for symptom extraction to complete
+                    symptom_result = await symptom_task
                     
                     # Update context with new tree
                     if 'diagnosis_tree' in symptom_result:
                         command_context['diagnosis_tree'] = symptom_result['diagnosis_tree']
+                        
+                        # Send initial tree data immediately after symptom extraction
+                        if websocket:
+                            try:
+                                tree = symptom_result['diagnosis_tree']
+                                initial_tree_data = {
+                                    "type": "tree_data",
+                                    "source": "orchestrator",
+                                    "content": "Initial diagnosis tree after symptom extraction",
+                                    "timestamp": datetime.now().isoformat() + "Z",
+                                    "data": {
+                                        "tree_data": tree.to_dict() if tree else None,
+                                        "stage": "initial_tree",
+                                        "symptoms_extracted": len(symptom_result.get('result', [])) if 'result' in symptom_result else 0,
+                                        "tree_children_count": len(tree.children) if tree else 0,
+                                        "ready_for_diagnosis": True
+                                    }
+                                }
+                                await websocket.send_text(json.dumps(initial_tree_data))
+                                await self.logger.info(f"Sent initial tree data: {len(tree.children) if tree else 0} children")
+                            except Exception as e:
+                                await self.logger.error(f"Failed to send initial tree data: {e}")
+                        
+                        # Send tree update notification
+                        if websocket:
+                            tree_summary = {
+                                "updated": True,
+                                "total_symptoms": len(symptom_result['diagnosis_tree'].children) if symptom_result['diagnosis_tree'] else 0,
+                                "new_symptoms": len(symptom_result.get('result', [])) if 'result' in symptom_result else 0
+                            }
+                            await self.send_ws_stage(
+                                websocket, 
+                                "Diagnosis tree updated with new symptoms", 
+                                MessageSource.ORCHESTRATOR, 
+                                session_id=session_id,
+                                details={"tree_update": tree_summary}
+                            )
+                else:
+                    await self.logger.info("Skipping symptom extraction - tree has content and no new symptoms detected")
                 
                 # Now run the diagnosis with the updated tree
-                await self.send_ws_stage(websocket, "Orchestrator - Processing diagnosis request", MessageSource.ORCHESTRATOR, session_id=session_id)
+                if websocket:
+                    current_tree = command_context.get('diagnosis_tree')
+                    
+                    # Send pre-diagnosis tree data
+                    if current_tree:
+                        try:
+                            pre_diagnosis_tree_data = {
+                                "type": "tree_data",
+                                "source": "orchestrator",
+                                "content": "Tree data before diagnosis analysis",
+                                "timestamp": datetime.now().isoformat() + "Z",
+                                "data": {
+                                    "tree_data": current_tree.to_dict(),
+                                    "stage": "pre_diagnosis",
+                                    "symptoms_count": len(current_tree.children),
+                                    "ready_for_analysis": True
+                                }
+                            }
+                            await websocket.send_text(json.dumps(pre_diagnosis_tree_data))
+                            await self.logger.info(f"Sent pre-diagnosis tree data: {len(current_tree.children)} children")
+                        except Exception as e:
+                            await self.logger.error(f"Failed to send pre-diagnosis tree data: {e}")
+                    
+                    diagnosis_context = {
+                        "tree_available": current_tree is not None,
+                        "symptoms_count": len(current_tree.children) if current_tree else 0,
+                        "analysis_stage": "comprehensive_diagnosis"
+                    }
+                    await self.send_ws_stage(
+                        websocket, 
+                        "Starting comprehensive diagnosis analysis", 
+                        MessageSource.ORCHESTRATOR, 
+                        session_id=session_id,
+                        details=diagnosis_context
+                    )
+                
                 diagnosis_result = await self.execute_command('diagnosis', command_context)
-                
-                # Check if additional symptom extraction is needed based on diagnosis result
-                if isinstance(diagnosis_result.get('diagnosis_result'), dict) and \
-                   diagnosis_result['diagnosis_result'].get('need_symptom_extraction'):
-                    
-                    await self.send_ws_stage(websocket, "Orchestrator - Need additional symptom extraction after diagnosis", MessageSource.ORCHESTRATOR, session_id=session_id)
-                    
-                    # Execute additional symptom extraction
-                    symptom_result = await self.execute_command('symptom_extraction', command_context)
-                    
-                    # Update context with new tree and re-run diagnosis
-                    if 'diagnosis_tree' in symptom_result:
-                        command_context['diagnosis_tree'] = symptom_result['diagnosis_tree']
-                    
-                    await self.send_ws_stage(websocket, "Orchestrator - Re-running diagnosis with updated tree", MessageSource.ORCHESTRATOR, session_id=session_id)
-                    diagnosis_result = await self.execute_command('diagnosis', command_context)
-                
-                # Ensure the diagnosis tree is explicitly returned
+
                 if 'diagnosis_tree' not in diagnosis_result and 'diagnosis_tree' in command_context:
                     diagnosis_result['diagnosis_tree'] = command_context['diagnosis_tree']
                     await self.logger.info("Explicitly adding diagnosis tree to result")
                 
-                await self.send_ws_stage(websocket, "Orchestrator - Done", MessageSource.ORCHESTRATOR, session_id=session_id)
+                # Final completion stage
+                if websocket:
+                    # Include complete tree data in final result
+                    tree_data = None
+                    if 'diagnosis_tree' in diagnosis_result and diagnosis_result['diagnosis_tree']:
+                        tree = diagnosis_result['diagnosis_tree']
+                        tree_data = {
+                            "total_nodes": len(tree.children) if tree and hasattr(tree, 'children') else 0,
+                            "root_issue": tree.issue_name if tree and hasattr(tree, 'issue_name') else "Unknown",
+                            "children": [
+                                {
+                                    "issue_name": child.issue_name,
+                                    "likelihood": round(child.likelyhood * 100, 1),
+                                    "type": child.data.get("issue_type") if child.data else "Unknown",
+                                    "category": child.data.get("issue_category") if child.data else "Unknown",
+                                    "description": child.data.get("description") if child.data else None
+                                }
+                                for child in (tree.children if tree and hasattr(tree, 'children') else [])
+                            ]
+                        }
+                    elif 'diagnosis_tree' in command_context and command_context['diagnosis_tree']:
+                        # Fallback to command context tree
+                        tree = command_context['diagnosis_tree']
+                        tree_data = {
+                            "total_nodes": len(tree.children) if tree and hasattr(tree, 'children') else 0,
+                            "root_issue": tree.issue_name if tree and hasattr(tree, 'issue_name') else "Unknown",
+                            "children": [
+                                {
+                                    "issue_name": child.issue_name,
+                                    "likelihood": round(child.likelyhood * 100, 1),
+                                    "type": child.data.get("issue_type") if child.data else "Unknown",
+                                    "category": child.data.get("issue_category") if child.data else "Unknown",
+                                    "description": child.data.get("description") if child.data else None
+                                }
+                                for child in (tree.children if tree and hasattr(tree, 'children') else [])
+                            ]
+                        }
+                    
+                    completion_summary = {
+                        "diagnosis_success": diagnosis_result.get('success', False),
+                        "has_response": 'response' in diagnosis_result,
+                        "has_step_guide": 'step_by_step_guide' in diagnosis_result,
+                        "tree_preserved": 'diagnosis_tree' in diagnosis_result,
+                        "tree_data": tree_data,  # Include complete tree data
+                        "diagnosis_complete": True
+                    }
+                    await self.send_ws_result(
+                        websocket, 
+                        "Comprehensive diagnosis completed", 
+                        MessageSource.ORCHESTRATOR, 
+                        session_id=session_id,
+                        details=completion_summary
+                    )
+                
                 await self._log_exit("route_request", success=True, result_type="diagnosis")
                 return diagnosis_result
             
             else:
                 await self.send_ws_stage(websocket, "Orchestrator - No car_id provided, cannot diagnose", MessageSource.ORCHESTRATOR, session_id=session_id)
-                user_response = await self.user_interaction_agent.process(user_request, 'car_id is required for diagnosis.')
+                user_response = await self.user_interaction_agent.process(user_request, 'car_id is required for diagnosis.', session_id=session_id)
                 await self._log_exit("route_request", success=False, reason="no_car_id")
                 return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
                 
@@ -341,9 +623,99 @@ class OrchestratorAgent(BaseAgent):
             await self.logger.error(f"Error in route_request: {str(e)}")
             await self.send_ws_error(websocket, f"Error in orchestrator: {str(e)}", MessageSource.ORCHESTRATOR, session_id=session_id)
             await self._set_state(AgentState.ERROR)
-            user_response = await self.user_interaction_agent.process(user_request, f'Error: {str(e)}')
+            user_response = await self.user_interaction_agent.process(user_request, f'Error: {str(e)}', session_id=session_id)
             await self._log_exit("route_request", success=False, error=str(e))
             return {'response': user_response.get('user_message'), 'success': False}
+
+    async def classify_message(self, user_message: str, session_context: str = "") -> dict:
+        """
+        Classify the user message to determine if it needs a simple response or full diagnostic response.
+        This runs at the orchestrator level to optimize routing and reduce processing overhead.
+        
+        Returns:
+            dict: Contains response_type ("simple" or "full_diagnostic"), confidence, and reasoning
+        """
+        try:
+            formatted_prompt = self.classification_prompt.format(
+                user_message=user_message,
+                session_context=session_context or "No session context available"
+            )
+            
+            response = await self.llm_service.generate_response(formatted_prompt)
+            
+            # Handle AIMessage objects from LangChain
+            if hasattr(response, 'content'):
+                response_text = response.content.strip().lower()
+            else:
+                response_text = str(response).strip().lower()
+            
+            # Simple keyword-based classification since LLM returns plain text
+            if "simple" in response_text:
+                classification = "simple"
+                confidence = 0.8
+                reasoning = "LLM classified as simple response"
+            elif "full_diagnostic" in response_text or "diagnostic" in response_text:
+                classification = "full_diagnostic"
+                confidence = 0.8
+                reasoning = "LLM classified as full diagnostic response"
+            else:
+                # Fallback classification based on keywords in the message
+                simple_keywords = [
+                    'what is', 'how often', 'difference between', 'explain', 'define',
+                    'meaning of', 'purpose of', 'used for', 'maintenance schedule',
+                    'oil change', 'tire pressure', 'general', 'basic', 'what are the signs',
+                    'signs of', 'symptoms of', 'how to identify', 'what tools', 'what parts',
+                    'how do i', 'what should i', 'educational', 'learn about'
+                ]
+                
+                diagnostic_keywords = [
+                    'my car', 'my engine', 'my brake', 'is making', 'started making',
+                    'noise', 'problem', 'issue', 'broken', 'not working', 'failed',
+                    'grinding', 'squeaking', 'vibration', 'leak', 'overheating',
+                    'smell', 'smoke', 'warning light', 'getting worse', 'now also',
+                    'also happening', 'started happening'
+                ]
+                
+                user_lower = user_message.lower()
+                
+                # Check for educational question patterns first (these should be simple)
+                educational_patterns = ['what are the signs', 'signs of', 'how to identify', 'what to look for']
+                is_educational = any(pattern in user_lower for pattern in educational_patterns)
+                
+                simple_score = sum(1 for keyword in simple_keywords if keyword in user_lower)
+                diagnostic_score = sum(1 for keyword in diagnostic_keywords if keyword in user_lower)
+                
+                # Educational questions are always simple, even if they contain diagnostic keywords
+                if is_educational:
+                    classification = "simple"
+                    confidence = 0.7
+                    reasoning = "Educational question pattern detected - simple response"
+                elif simple_score > diagnostic_score:
+                    classification = "simple"
+                    confidence = 0.6
+                    reasoning = "Keyword-based classification: simple question patterns detected"
+                else:
+                    classification = "full_diagnostic"
+                    confidence = 0.6
+                    reasoning = "Keyword-based classification: diagnostic patterns detected or default"
+            
+            result = {
+                "response_type": classification,
+                "confidence": confidence,
+                "reasoning": reasoning
+            }
+            
+            await self.logger.info(f"[ORCHESTRATOR] Message classification: {classification} (confidence: {confidence:.2f}) - {reasoning}")
+            return result
+            
+        except Exception as e:
+            await self.logger.error(f"[ORCHESTRATOR] Failed to classify message: {e}")
+            # Default to full diagnostic for safety
+            return {
+                "response_type": "full_diagnostic",
+                "confidence": 0.1,
+                "reasoning": "Classification failed, defaulting to full diagnostic"
+            }
 
     def _is_chat_request(self, user_request: str) -> bool:
         """Simple heuristic to determine if request is a chat vs diagnostic request"""

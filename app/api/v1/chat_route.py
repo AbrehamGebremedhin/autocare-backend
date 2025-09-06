@@ -118,6 +118,7 @@ async def create_chat_session(request: CreateChatSessionRequest):
         session_data = {
             'id': session_id,
             'user_id': request.user_id,
+            'title': 'New Chat Session',
             'messages': [],
             'created_at': now,
             'updated_at': now,
@@ -224,10 +225,15 @@ async def delete_message_from_session(session_id: str, message_index: int):
 )
 async def send_message_in_session(session_id: str, request: ChatSessionMessageRequest):
     try:
+        # Try to find the session in the database
         sessions = await chat_session_crud.read({'id': session_id})
+        
         if not sessions:
+            # If session not found, provide a more detailed error message
             raise HTTPException(status_code=404, detail="Session not found")
+            
         session = sessions[0]
+        
         # Use chat_service to generate assistant response and update conversation
         response = await chat_service.send_message(
             user_id=session.get('user_id'),
@@ -235,20 +241,39 @@ async def send_message_in_session(session_id: str, request: ChatSessionMessageRe
             context=request.context,
             session=session
         )
+        
         # Update the session in the DB with the new messages, updated_at and diagnosis_tree
         updated_session = chat_service._get_conversation(session.get('user_id'), session=session)
         
         # Serialize diagnosis tree for storage
+        from app.schemas.Chat_Session import ChatSession
         diagnosis_tree_dict = None
         if 'context' in updated_session and updated_session['context'] and 'diagnosis_tree' in updated_session['context']:
-            from app.schemas.Chat_Session import ChatSession
             diagnosis_tree = updated_session['context'].get('diagnosis_tree')
             if diagnosis_tree:
                 diagnosis_tree_dict = ChatSession.serialize_diagnosis_tree(diagnosis_tree)
+            else:
+                # Diagnosis tree is None in updated_session context
+                pass
+        else:
+            # No diagnosis tree found in updated_session context
+            pass
         
+        # If we don't have a diagnosis tree, create a default one to satisfy not-null constraint
+        if diagnosis_tree_dict is None:
+            from app.utils.diagnosis_tree import DiagnosisTreeNode
+            default_tree = DiagnosisTreeNode(issue_name='root', likelyhood=1.0)
+            diagnosis_tree_dict = ChatSession.serialize_diagnosis_tree(default_tree)
+        
+        # Ensure updated_at is always a string
+        updated_at_str = updated_session.get('last_updated')
+        if not isinstance(updated_at_str, str):
+            updated_at_str = datetime.now().isoformat()
+            
         await chat_session_crud.update({'id': session_id}, {
+            'title': updated_session.get('title', 'Chat Session'),
             'messages': updated_session['messages'],
-            'updated_at': updated_session.get('last_updated', datetime.now().isoformat()),
+            'updated_at': updated_at_str,
             'diagnosis_tree': diagnosis_tree_dict
         })
         return {"messages": updated_session['messages']}

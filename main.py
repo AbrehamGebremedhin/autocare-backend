@@ -9,7 +9,10 @@ from app.utils.logger import Logger as AppLogger, get_logger_instance
 from app.db.base import SupabaseDBHandler as AppDBHandler
 from app.utils.redis_cache import get_redis_cache, RedisCache
 from app.utils.startup_checks import check_milvus_connection, check_supabase_connection, check_redis_connection
+import json
+from datetime import datetime
 from app.core.interfaces import ILogger, IDBHandler, IWebSocketManager
+from app.utils.message_types import MessageSource
 from typing import Any
 from pydantic import BaseModel
 from app.utils.limiter import limiter, rate_limit_middleware
@@ -266,7 +269,8 @@ class StartupChecker:
 # SOLID: WebSocketHandler depends on abstractions
 class WebSocketHandler:
     """
-    Handles WebSocket connections and messaging.
+    Enhanced WebSocket handler that supports chat service integration and 
+    real-time diagnostic notifications.
     """
     def __init__(self, manager: IWebSocketManager, logger: ILogger):
         self.manager = manager
@@ -275,10 +279,47 @@ class WebSocketHandler:
     async def handle(self, websocket: WebSocket) -> None:
         await self.manager.connect(websocket)
         try:
+            # Send welcome message with supported features
+            await self.manager.send_info(
+                websocket, 
+                "WebSocket connected - real-time chat notifications enabled", 
+                MessageSource.SYSTEM,
+                details={
+                    "features": ["chat_notifications", "diagnostic_stages", "tree_updates"],
+                    "connection_time": datetime.now().isoformat()
+                }
+            )
+            
             while True:
                 data = await websocket.receive_text()
-                # Echo back the raw JSON string, not a wrapped message
-                await self.manager.send_personal_message(data, websocket)
+                
+                # Try to parse as JSON for structured messages
+                try:
+                    message = json.loads(data)
+                    message_type = message.get("type", "unknown")
+                    
+                    if message_type == "chat":
+                        # Handle chat message through chat service
+                        await self._handle_chat_message(websocket, message)
+                    elif message_type == "ping":
+                        # Respond to ping with pong
+                        await self.manager.send_info(websocket, "pong", MessageSource.SYSTEM)
+                    elif message_type == "test":
+                        # Handle test messages - echo back with acknowledgment
+                        await self.manager.send_info(
+                            websocket, 
+                            f"Test message received: {message.get('data', '')}", 
+                            MessageSource.SYSTEM,
+                            details={"original_message": message}
+                        )
+                    else:
+                        # Echo back other message types
+                        await self.manager.send_personal_message(data, websocket)
+                        
+                except json.JSONDecodeError:
+                    # Handle plain text messages
+                    await self.manager.send_personal_message(data, websocket)
+                    
         except WebSocketDisconnect:
             await self.manager.disconnect(websocket)
             await self.logger.info("WebSocket disconnected.")
@@ -286,6 +327,88 @@ class WebSocketHandler:
             await self.logger.error(f"WebSocket error: {str(exc)}")
             await self.manager.disconnect(websocket)
             await websocket.close(code=1011)
+    
+    async def _handle_chat_message(self, websocket: WebSocket, message: dict):
+        """
+        Handle chat messages through the chat service with real-time notifications.
+        """
+        try:
+            # Import here to avoid circular imports
+            from app.services.chat_service import ChatService
+            
+            user_id = message.get("user_id")
+            session_id = message.get("session_id")
+            content = message.get("message", "")
+            context = message.get("context", {})
+            
+            if not user_id or not content:
+                await self.manager.send_error(
+                    websocket, 
+                    "Missing required fields: user_id and message", 
+                    MessageSource.CHAT_SERVICE
+                )
+                return
+            
+            # Send initial processing notification
+            await self.manager.send_stage(
+                websocket, 
+                "Processing chat message", 
+                MessageSource.CHAT_SERVICE,
+                session_id=session_id
+            )
+            
+            # Create chat service instance
+            chat_service = ChatService()
+            
+            if session_id:
+                # For session-based messages, we need to get the session first
+                from app.CRUD import ChatSessionCRUD
+                chat_session_crud = ChatSessionCRUD()
+                sessions = await chat_session_crud.read({'id': session_id})
+                
+                if sessions:
+                    session = sessions[0]
+                    response = await chat_service.send_message(
+                        user_id=user_id,
+                        message=content,
+                        context=context,
+                        session=session,
+                        websocket=websocket  # Pass websocket for real-time updates
+                    )
+                else:
+                    await self.manager.send_error(
+                        websocket,
+                        f"Session {session_id} not found",
+                        MessageSource.CHAT_SERVICE,
+                        session_id=session_id
+                    )
+                    return
+            else:
+                # Create new session
+                response = await chat_service.send_message(
+                    user_id=user_id,
+                    message=content,
+                    context=context,
+                    websocket=websocket  # Pass websocket for real-time updates
+                )
+            
+            # Send final response
+            await self.manager.send_result(
+                websocket, 
+                "Chat message processed", 
+                MessageSource.CHAT_SERVICE,
+                session_id=session_id,
+                details=response
+            )
+            
+        except Exception as e:
+            await self.logger.error(f"Error handling chat message: {str(e)}")
+            await self.manager.send_error(
+                websocket, 
+                f"Error processing chat message: {str(e)}", 
+                MessageSource.CHAT_SERVICE,
+                session_id=message.get("session_id")
+            )
 
 @app.on_event("startup")
 async def startup_event():
@@ -315,7 +438,10 @@ async def shutdown_event():
 
         # Close orchestrator agent
         if hasattr(orchestrator_agent, "close") and callable(getattr(orchestrator_agent, "close")):
-            orchestrator_agent.close()
+            if asyncio.iscoroutinefunction(orchestrator_agent.close):
+                await orchestrator_agent.close()
+            else:
+                orchestrator_agent.close()
             await logger.info("Orchestrator agent closed")
 
         # Close logger last
@@ -354,6 +480,7 @@ async def websocket_endpoint(
     """
     WebSocket endpoint for real-time communication.
     Accepts and echoes messages. Used for chat and live features.
+    Enhanced to support chat service integration for real-time notifications.
     """
     handler = WebSocketHandler(websocket_manager, logger)
     await handler.handle(websocket)

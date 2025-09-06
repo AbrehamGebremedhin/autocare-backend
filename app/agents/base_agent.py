@@ -134,10 +134,19 @@ class BaseAgent(abc.ABC):
                     self.car_model = self.car_model or car.get('model')
                     self.car_year = self.car_year or car.get('year')
 
-    def _sanitize_output(self, text: str) -> str:
+    def _sanitize_output(self, text) -> str:
         """
         Remove or rewrite any LLM output that tells the user to refer to the owner's manual or asks for car make/model/year.
+        Handles both string and AIMessage objects.
         """
+        # Handle AIMessage or other objects with content attribute (from LangChain)
+        if hasattr(text, 'content'):
+            text = text.content
+        
+        # Make sure we're working with a string
+        if not isinstance(text, str):
+            text = str(text)
+            
         text = re.sub(r"(?i)refer to (the|your) owner's manual[\.,]?", "", text)
         text = re.sub(r"(?i)see (the|your) owner's manual[\.,]?", "", text)
         text = re.sub(r"(?i)consult (the|your) owner's manual[\.,]?", "", text)

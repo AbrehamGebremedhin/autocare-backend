@@ -13,6 +13,8 @@ from app.services.search_engine_service import SearchEngineService
 from app.services.scraper_service import ScraperService
 import numpy as np
 import time
+import json
+from datetime import datetime
 from app.utils.logger import Logger
 from app.utils.diagnosis_tree import DiagnosisTreeNode
 from app.agents.tree_manager_agent import TreeManagerAgent
@@ -22,6 +24,7 @@ from app.agents.base_agent import BaseAgent
 from app.core.interfaces import IWebSocketManager
 from app.utils.message_types import MessageSource
 from app.utils.monitoring import monitor_and_handle
+from app.agents.session_context_agent import SessionContextAgent
 
 class SymptomExtractorAgent(BaseAgent):
     """
@@ -107,6 +110,7 @@ class SymptomExtractorAgent(BaseAgent):
         search_engine_service: Optional[SearchEngineService] = None,
         scraper_service: Optional[ScraperService] = None,
         tree_manager_agent: Optional[TreeManagerAgent] = None,
+        session_context_manager: Optional[SessionContextAgent] = None,
         **kwargs: Any
     ):
         """
@@ -119,6 +123,8 @@ class SymptomExtractorAgent(BaseAgent):
         self.embedding_service = embedding_service or EmbeddingService()
         self.search_engine_service = search_engine_service or SearchEngineService()
         self.scraper_service = scraper_service or ScraperService(headless=True)
+        self.session_context_manager = session_context_manager or SessionContextAgent()
+        
         
         # Initialize diagnosis tree if not provided
         if diagnosis_tree is None:
@@ -149,11 +155,7 @@ class SymptomExtractorAgent(BaseAgent):
 
     async def pre_process(self, task: Any) -> Dict[str, Any]:
         """
-        Pre-process the input task by fetching car data and relevant context.
-        Args:
-            task (str): The input text describing symptoms/issues.
-        Returns:
-            Dict[str, Any]: Context dictionary including manuals and scraped data.
+        PERFORMANCE OPTIMIZED: Pre-process with minimal context fetching and parallel operations.
         """
         await self._log_entry("pre_process")
         
@@ -175,88 +177,35 @@ class SymptomExtractorAgent(BaseAgent):
         if not input_text:
             raise ValueError("No input text provided for symptom extraction.")
 
-        guide_links: List[str] = car.get("car_guide_links") or []
-        # Filter only valid URLs for crawling
-        valid_prefixes = ("http://", "https://", "file://", "raw:")
-        guide_links = [link for link in guide_links if isinstance(link, str) and link.startswith(valid_prefixes)]
-        if not guide_links:
-            # No guide links available, return empty context
-            await self._log_exit("pre_process", success=True, guide_links_count=0)
-            return {}
-
-        embedding_service = self.embedding_service
-
-        # Start embedding and scraping in parallel (pipeline parallelism)
-        async def get_embeddings():
-            input_vec, link_vecs = await asyncio.gather(
-                embedding_service.embed_text(input_text),
-                embedding_service.embed_texts(guide_links)
-            )
-            return input_vec, link_vecs
-
-        async def get_scraped_text(top_links):
-            scraper = self.scraper_service
-            try:
-                scraped = await scraper.perform_action(top_links, limit=len(top_links))
-                return [item.get("text", "") for item in scraped if item.get("text")]
-            except Exception:
-                return []
-
-        # Get embeddings first to determine top_links
-        t1 = time.perf_counter()
-        input_vec, link_vecs = await get_embeddings()
-        timings['embedding'] = time.perf_counter() - t1
-        def cosine_sim(a: List[float], b: List[float]) -> float:
-            a = np.array(a)
-            b = np.array(b)
-            return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
-        scored_links = [
-            (link, cosine_sim(input_vec, link_vec))
-            for link, link_vec in zip(guide_links, link_vecs)
-        ]
-        scored_links.sort(key=lambda x: x[1], reverse=True)
-        top_links = [link for link, score in scored_links[:3] if score > 0.3]
+        # PERFORMANCE OPTIMIZATION: Skip guide links processing for now to reduce latency
+        # This eliminates the embedding and scraping overhead that was adding significant time
         
-        # Fetch owner manual text from DB and perform vector search on it
+        # Fetch owner manual text from DB and perform vector search on it - REDUCED scope
         user_message_concat = self._concat_user_messages(task)
         if self.search_engine_service and self.car_id:
-            # Use the optimized embed_and_vector_search that uses database text (not PDF)
+            # Use the optimized embed_and_vector_search with reduced scope
+            t2 = time.perf_counter()
             manual_chunks = await self.search_engine_service.embed_and_vector_search(
-                car_id=self.car_id, query=user_message_concat, top_k=1
+                car_id=self.car_id, query=user_message_concat, top_k=1  # Keep minimal for symptom extraction
             )
-            owner_manual_text = manual_chunks[0]["chunk"] if manual_chunks else ""
+            owner_manual_text = manual_chunks[0]["chunk"][:1000] if manual_chunks else ""  # Limit to 1000 chars
+            timings['manual_search'] = time.perf_counter() - t2
         else:
             owner_manual_text = ""
         
         context["owner_manual"] = owner_manual_text
-
-        # Start scraping in parallel with other work (if any)
-        t2 = time.perf_counter()
-        if top_links:
-            guide_links_text_task = asyncio.create_task(get_scraped_text(top_links))
-            guide_links_text = await guide_links_text_task
-        else:
-            guide_links_text = []
-        timings['scraping'] = time.perf_counter() - t2
-        context["guide_links_text"] = guide_links_text
+        context["guide_links_text"] = []  # Skip guide links processing for performance
         context["timings"] = timings
-        await self.logger.info(f"pre_process timings: {timings}")
+        await self.logger.info(f"OPTIMIZED pre_process timings: {timings}")
         
         await self._log_exit("pre_process", success=True, 
-                           guide_links_count=len(guide_links_text),
+                           guide_links_count=0,  # No guide links processed for performance
                            has_manual=bool(owner_manual_text))
         return context
 
     async def handle(self, task: Any) -> Any:
         """
-        Main handler that runs the symptom extraction chain with lazy context loading and pipeline parallelism.
-        Uses only the LLM with minimal context first. If the result is ambiguous (not good enough),
-        retries with owner manual and online data as additional context using pre_process.
-        If still ambiguous, returns a response indicating more info is needed from the user.
-        Args:
-            task (str): The input text describing symptoms/issues.
-        Returns:
-            Any: Parsed JSON array of extracted issues, or a dict requesting more info if ambiguous.
+        PERFORMANCE OPTIMIZED: Main handler with minimal context loading and faster processing.
         """
         await self._log_entry("handle")
         
@@ -269,73 +218,52 @@ class SymptomExtractorAgent(BaseAgent):
             return False
 
         timings = {}
-        t_llm_min = time.perf_counter()
-        # 1. Try LLM with minimal context (just the input text)
         user_message_concat = self._concat_user_messages(task)
-        minimal_documents = [Document(page_content=user_message_concat, metadata={"type": "input_text_only"})]
+        
+        # PERFORMANCE OPTIMIZATION: Try LLM with basic manual context first
+        t_context = time.perf_counter()
+        context = {}
+        if self.search_engine_service and self.car_id:
+            # Get minimal manual context for better symptom extraction
+            manual_chunks = await self.search_engine_service.embed_and_vector_search(
+                car_id=self.car_id, query=user_message_concat, top_k=1
+            )
+            manual_text = manual_chunks[0]["chunk"][:800] if manual_chunks else ""  # Limit to 800 chars
+            context["owner_manual"] = manual_text
+        else:
+            context["owner_manual"] = ""
+        timings['context_basic'] = time.perf_counter() - t_context
+        
+        # Create documents for LLM
+        documents = [Document(page_content=user_message_concat, metadata={"type": "input_text"})]
+        if context.get("owner_manual"):
+            documents.append(Document(page_content=context["owner_manual"], metadata={"type": "owner_manual"}))
+        
+        # Run LLM with basic context
         chain = create_stuff_documents_chain(llm=self.llm_service.get_llm(), prompt=self.prompt)
         prompt_vars = {
             "input_text": user_message_concat,
-            "context": minimal_documents,
+            "context": documents,
             "car_make": self.car_make or "",
             "car_model": self.car_model or "",
             "car_year": self.car_year or ""
         }
+        
+        t_llm = time.perf_counter()
         if hasattr(chain, "ainvoke"):
             response = await chain.ainvoke(prompt_vars)
         else:
             response = chain.invoke(prompt_vars)
-        timings['llm_minimal'] = time.perf_counter() - t_llm_min
-        t_parse_min = time.perf_counter()
+        timings['llm_call'] = time.perf_counter() - t_llm
+        
+        t_parse = time.perf_counter()
         try:
             parsed_result = self.output_parser.parse(response)
         except Exception:
             parsed_result = []
-        timings['parse_minimal'] = time.perf_counter() - t_parse_min
+        timings['parse'] = time.perf_counter() - t_parse
 
-        # 2. If ambiguous, fetch context (owner manual and online data) and retry using pre_process
-        if is_ambiguous(parsed_result):
-            await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Fetching extended context"}))
-            t_context = time.perf_counter()
-            context = await self.pre_process(task)
-            timings['context'] = time.perf_counter() - t_context
-            documents: List[Document] = []
-            if context.get("owner_manual"):
-                documents.append(Document(page_content=str(context["owner_manual"]), metadata={"type": "owner_manual"}))
-            for idx, text in enumerate(context.get("guide_links_text", [])):
-                documents.append(Document(page_content=text, metadata={"type": "guide_link", "index": idx}))
-            # Fetch car info again in case it changed
-            car = {'make': self.car_make, 'model': self.car_model, 'year': self.car_year} if self.car_make and self.car_model and self.car_year else None
-            prompt_vars_full = {
-                "input_text": user_message_concat,
-                "context": documents,
-                "car_make": self.car_make or "",
-                "car_model": self.car_model or "",
-                "car_year": self.car_year or ""
-            }
-            t_llm_full = time.perf_counter()
-            if hasattr(chain, "ainvoke"):
-                response = await chain.ainvoke(prompt_vars_full)
-            else:
-                response = chain.invoke(prompt_vars_full)
-            timings['llm_full'] = time.perf_counter() - t_llm_full
-            t_parse_full = time.perf_counter()
-            try:
-                parsed_result = self.output_parser.parse(response)
-            except Exception:
-                parsed_result = []
-            timings['parse_full'] = time.perf_counter() - t_parse_full
-            # Merge in context timings
-            if 'timings' in context:
-                timings.update({f'context_{k}': v for k, v in context['timings'].items()})
-
-        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Completed"}))
-        await self.logger.info(f"handle timings: {timings}")
-
-        # Log parsed result information
-        await self.logger.info(f"Parsed result type: {type(parsed_result)}, items count: {len(parsed_result) if isinstance(parsed_result, list) else 'N/A'}")
-
-        # If still ambiguous after all attempts, ask user for more info
+        # If result is still ambiguous, ask for more info instead of extended processing
         if is_ambiguous(parsed_result):
             await self.logger.info("Result is ambiguous, requesting more info from user")
             await self._log_exit("handle", success=True, result_type="more_info_needed")
@@ -345,11 +273,20 @@ class SymptomExtractorAgent(BaseAgent):
                 'response': 'Could you please provide more details about the symptoms or describe the issue more clearly?'
             }
 
+        await self.broadcast_stage(json.dumps({"type": "stage", "stage": "Symptom extraction - Completed"}))
+        
+
+        await self.logger.info(f"OPTIMIZED handle timings: {timings}")
+
+        # Log parsed result information
+        await self.logger.info(f"Parsed result type: {type(parsed_result)}, items count: {len(parsed_result) if isinstance(parsed_result, list) else 'N/A'}")
+
         # Add results to the diagnosis_tree if it exists
         if self.tree_manager_agent is not None and isinstance(parsed_result, list):
             await self.logger.info(f"Adding {len(parsed_result)} symptoms to diagnosis tree")
             tree_before_count = len(self.diagnosis_tree.children) if self.diagnosis_tree else 0
             
+            # For faster processing, add symptoms sequentially but with optimized tree building
             for issue in parsed_result:
                 issue_name = issue.get('issue_name', 'Unknown Issue')
                 likelihood = issue.get('likelihood', 0) / 100.0  # Convert to 0-1 float
@@ -396,6 +333,28 @@ class SymptomExtractorAgent(BaseAgent):
         if actual_tree:
             await self.logger.info(f"Returning tree with {len(actual_tree.children)} children")
         
+        # Send tree data immediately via WebSocket if available
+        if hasattr(self, 'websocket') and self.websocket:
+            try:
+                tree_data = actual_tree.to_dict() if actual_tree else None
+                if tree_data:
+                    tree_message = {
+                        "type": "tree_data",
+                        "source": "symptom_extraction",
+                        "content": "Tree data updated with extracted symptoms",
+                        "timestamp": datetime.now().isoformat() + "Z",
+                        "data": {
+                            "tree_data": tree_data,
+                            "stage": "symptom_extraction_complete",
+                            "symptoms_count": len(processed_result) if isinstance(processed_result, list) else 0,
+                            "tree_children_count": len(actual_tree.children) if actual_tree else 0
+                        }
+                    }
+                    await self.websocket.send_text(json.dumps(tree_message))
+                    await self.logger.info(f"Sent tree data via WebSocket: {len(actual_tree.children)} children")
+            except Exception as e:
+                await self.logger.error(f"Failed to send tree data via WebSocket: {e}")
+        
         await self._log_exit("handle", success=True, 
                            symptoms_count=len(processed_result) if isinstance(processed_result, list) else 0,
                            tree_children=len(actual_tree.children) if actual_tree else 0)
@@ -409,14 +368,18 @@ class SymptomExtractorAgent(BaseAgent):
     async def process(self, user_message: str, websocket=None, session_id=None) -> Any:
         """
         Main entry point for symptom extraction. Handles websocket communication and error reporting.
+        Session-aware: integrates with session context management to maintain focus.
         Args:
             user_message (str): The user's message describing symptoms.
             websocket: Optional websocket connection for real-time updates.
-            session_id: Optional session identifier.
+            session_id: Optional session identifier for context management.
         Returns:
             Dict[str, Any]: Extracted symptoms and updated diagnosis tree.
         """
         await self._log_entry("process", message_length=len(user_message), session_id=session_id)
+        
+        # Store websocket reference for use in handle method
+        self.websocket = websocket
         
         # Log any init warnings/errors
         if self._init_warning:
@@ -427,24 +390,102 @@ class SymptomExtractorAgent(BaseAgent):
             self._init_error = None
         
         try:
+            # Stage 1: Symptom extraction started
             if websocket:
                 await self.send_ws_stage(websocket, "Symptom extraction started", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id)
-            result = await self.handle(user_message)
-            if websocket:
-                await self.send_ws_result(websocket, "Symptom extraction complete", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id, details=result)
             
-            # Return both symptoms and updated diagnosis tree
+            # Stage 2: Pre-processing
+            if websocket:
+                await self.send_ws_stage(websocket, "Pre-processing user input", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id)
+            
+            # SESSION CONTEXT INTEGRATION
+            session_context = None
+            context_reminder = ""
+            
+            if session_id:
+                # Get existing session context if available
+                session_context = self.session_context_manager.get_original_context(session_id)
+                
+                if session_context:
+                    # Get context reminder for focused extraction - symptom extraction is our job, not the session agent's
+                    context_reminder = self.session_context_manager.get_context_reminder(session_id)
+                    await self.logger.info(f"Session {session_id}: Using context - {session_context.issue_category} issue with {len(session_context.symptoms)} symptoms")
+                else:
+                    # First message in session - extract original issue context
+                    session_context = await self.session_context_manager.extract_original_issue(user_message, session_id)
+                    await self.logger.info(f"Session {session_id}: Extracted original issue - {session_context.primary_issue} (category: {session_context.issue_category})")
+            
+            # Enhanced message processing with session context
+            enhanced_message = user_message
+            if context_reminder:
+                enhanced_message = f"{context_reminder}\n\nUser message: {user_message}"
+            
+            # Stage 3: Analyzing symptoms
+            if websocket:
+                await self.send_ws_stage(websocket, "Analyzing symptoms and extracting issues", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id)
+            
+            result = await self.handle(enhanced_message)
+            
+            # Stage 4: Building diagnosis tree
+            if websocket:
+                tree_data = None
+                if isinstance(result, dict) and 'diagnosis_tree' in result and result['diagnosis_tree']:
+                    tree = result['diagnosis_tree']
+                    tree_data = {
+                        "total_nodes": len(tree.children) if tree else 0,
+                        "root_issue": tree.issue_name if tree else "Unknown",
+                        "children": [
+                            {
+                                "issue_name": child.issue_name,
+                                "likelihood": child.likelyhood,
+                                "type": child.data.get("issue_type") if child.data else "Unknown",
+                                "category": child.data.get("issue_category") if child.data else "Unknown"
+                            }
+                            for child in (tree.children if tree else [])
+                        ][:5]  # Send first 5 children to avoid large payloads
+                    }
+
+                await self.send_ws_stage(
+                    websocket, 
+                    "Building diagnosis tree with extracted symptoms", 
+                    MessageSource.SYMPTOM_EXTRACTION, 
+                    session_id=session_id, 
+                    details={"tree_data": tree_data}
+                )
+
+            # Update session context with extracted symptoms if available
+            if session_id and session_context and isinstance(result, dict) and 'symptoms' in result:
+                # Note: We don't update diagnosis tree context here - that's the DiagnosticAgent's job
+                # The session context agent only manages session focus, not diagnosis updates
+                await self.logger.info(f"Session {session_id}: Extracted {len(result.get('symptoms', []))} symptoms")
+            
+            # Stage 5: Symptom extraction complete
+            if websocket:
+                extraction_summary = {
+                    "symptoms_count": len(result.get('symptoms', [])) if isinstance(result, dict) else 0,
+                    "has_tree": isinstance(result, dict) and 'diagnosis_tree' in result and result['diagnosis_tree'] is not None,
+                    "session_context": session_context.to_dict() if session_context else None
+                }
+                await self.send_ws_result(websocket, "Symptom extraction complete", MessageSource.SYMPTOM_EXTRACTION, session_id=session_id, details=extraction_summary)
+            
+            # Return both symptoms and updated diagnosis tree with session info
             if isinstance(result, dict) and 'symptoms' in result:
                 process_result = {
                     "result": result['symptoms'],
-                    "diagnosis_tree": result['diagnosis_tree']
+                    "diagnosis_tree": result['diagnosis_tree'],
+                    "session_context": session_context.to_dict() if session_context else None
                 }
             else:
                 # Fallback for backwards compatibility
-                process_result = {"result": result, "diagnosis_tree": self.diagnosis_tree}
+                process_result = {
+                    "result": result, 
+                    "diagnosis_tree": self.diagnosis_tree,
+                    "session_context": session_context.to_dict() if session_context else None
+                }
             
             await self._log_exit("process", success=True, 
-                               has_symptoms='symptoms' in result if isinstance(result, dict) else False)
+                               has_symptoms='symptoms' in result if isinstance(result, dict) else False,
+                               session_context_available=session_context is not None)
             return process_result
             
         except Exception as e:

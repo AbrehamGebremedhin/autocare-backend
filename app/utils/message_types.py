@@ -14,4 +14,8 @@ class MessageSource(str, Enum):
     DIAGNOSTIC_AGENT = "diagnostic_agent"
     SYMPTOM_EXTRACTION = "symptom_extraction"
     ORCHESTRATOR = "orchestrator"
+    TREE_MANAGER = "tree_manager"
+    USER_INTERACTION = "user_interaction"
+    SYSTEM = "system"
+    WEBSOCKET = "websocket"
     # Add more as needed for your system components

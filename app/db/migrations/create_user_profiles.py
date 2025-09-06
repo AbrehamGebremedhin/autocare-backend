@@ -74,11 +74,8 @@ CREATE POLICY "Admins can manage all profiles" ON user_profiles
     );
 """
             
-            print("\n" + "="*60)
-            print("SQL TO RUN IN SUPABASE DASHBOARD:")
-            print("="*60)
-            print(sql_commands)
-            print("="*60)
+            # Store SQL commands for manual execution if needed
+            # This would normally be logged or returned for manual intervention
             
             return False  # Return False to indicate manual intervention needed
             

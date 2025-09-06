@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     GEMINI_KEY: str = Field(..., description="Google Gemini API key")
     GEMINI_MODEL_1: str = Field(default="gemini-pro", description="Primary Gemini model")
     GEMINI_MODEL_2: str = Field(default="gemini-pro-vision", description="Secondary Gemini model")
+    
+    # DeepSeek API key
+    DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek AI API key")
+    DEEPSEEK_DEFAULT_MODEL: str = Field(default="deepseek-chat", description="Default DeepSeek model")
 
     # YouTube API key
     YOUTUBE_API_KEY: str = Field(..., description="YouTube Data API key")
@@ -109,6 +113,9 @@ def get_settings() -> Settings:
     try:
         return Settings()
     except Exception as e:
-        print(f"Configuration error: {str(e)}")
-        print("Please check your .env file and ensure all required variables are set.")
+        # Log to proper logger instead of print in production
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Configuration error: {str(e)}")
+        logger.error("Please check your .env file and ensure all required variables are set.")
         raise

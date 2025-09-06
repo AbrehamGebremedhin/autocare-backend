@@ -94,21 +94,17 @@ class MilvusHandler(IMilvusHandler):
             vector = record.get("vector", [])
             if isinstance(vector, list) and len(vector) == 768:
                 valid_data.append(record)
-            else:
-                print(f"Warning: Skipping record with vector dimension {len(vector) if isinstance(vector, list) else 'invalid'}, expected 768")
+            # Skip invalid records silently
         
         if not valid_data:
-            print("Warning: No valid records to insert after filtering")
             return
         
         # FINAL ENFORCEMENT: Truncate all content_chunk fields in valid_data before insert
         for idx, record in enumerate(valid_data):
             chunk = record.get("content_chunk", "")
             if not isinstance(chunk, str):
-                print(f"[MILVUS FINAL ENFORCEMENT] Chunk at index {idx} is not a string (type: {type(chunk)}). Repr: {repr(chunk)[:100]!r}")
                 chunk = str(chunk)
             if len(chunk) > 8192:
-                print(f"[MILVUS FINAL ENFORCEMENT] Chunk at index {idx} too long before insert (length: {len(chunk)}). Truncating. Preview: {chunk[:100]!r}")
                 chunk = chunk[:8192]
             record["content_chunk"] = chunk
             if not isinstance(record["content_chunk"], str):
@@ -116,10 +112,6 @@ class MilvusHandler(IMilvusHandler):
             if len(record["content_chunk"]) > 8192:
                 raise ValueError(f"[MILVUS FINAL ENFORCEMENT ERROR] Chunk at index {idx} still exceeds 8192 chars after truncation! Length: {len(record['content_chunk'])}. Preview: {record['content_chunk'][:100]!r}")
         
-        # Diagnostic: print type and length of every content_chunk before insert_data
-        for idx, record in enumerate(valid_data):
-            chunk = record.get("content_chunk", "")
-            print(f"[MILVUS DIAGNOSTIC] idx={idx}, type={type(chunk)}, len={len(chunk) if isinstance(chunk, str) else 'N/A'}")
         def truncate_utf8_bytes(s, max_bytes):
             if not isinstance(s, str):
                 s = str(s)
@@ -192,11 +184,9 @@ class MilvusHandler(IMilvusHandler):
             vector = record.get("vector", [])
             if isinstance(vector, list) and len(vector) == 768:
                 valid_data.append(record)
-            else:
-                print(f"Warning: Skipping car manual record with vector dimension {len(vector) if isinstance(vector, list) else 'invalid'}, expected 768")
+            # Skip invalid records silently
         
         if not valid_data:
-            print("Warning: No valid car manual records to insert after filtering")
             return
         
         # Ensure all required fields are present

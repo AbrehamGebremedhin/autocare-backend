@@ -275,6 +275,7 @@ def mock_environment_variables():
         "MILVUS_URI": "http://localhost:19530",
         "OPENAI_API_KEY": "test-openai-key",
         "ANTHROPIC_API_KEY": "test-anthropic-key",
+        "DEEPSEEK_API_KEY": "test-deepseek-key",
         "CELERY_BROKER_URL": "redis://localhost:6379/0",
         "CELERY_RESULT_BACKEND": "redis://localhost:6379/0"
     }
@@ -360,11 +361,24 @@ def mock_supabase_client():
     client.table = MagicMock(return_value=table_mock)
     client.from_ = MagicMock(return_value=table_mock)
     
-    # Mock auth operations
+    # Mock auth operations - updated for OAuth
     auth_mock = MagicMock()
+    admin_mock = MagicMock()
+    
+    # OAuth-related mocks
+    admin_mock.create_user = AsyncMock()
+    admin_mock.get_user_by_id = AsyncMock()
+    admin_mock.update_user_by_id = AsyncMock()
+    admin_mock.list_users = AsyncMock()
+    
+    auth_mock.admin = admin_mock
+    auth_mock.get_user = AsyncMock()
+    auth_mock.sign_out = AsyncMock()
+    
+    # Legacy auth methods (keep for backward compatibility in tests)
     auth_mock.sign_up = AsyncMock()
     auth_mock.sign_in_with_password = AsyncMock()
-    auth_mock.get_user = AsyncMock()
+    
     client.auth = auth_mock
     
     return client

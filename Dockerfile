@@ -42,7 +42,6 @@ EXPOSE 8000
 # Set environment variables for host services
 ENV REDIS_HOST=host.docker.internal
 ENV MILVUS_HOST=host.docker.internal
-ENV OLLAMA_HOST=host.docker.internal
 ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

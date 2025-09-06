@@ -37,21 +37,17 @@ class AbstractTreeNode(ABC):
 
     def prune(self, threshold: float = 0.3):
         """Prune children whose likelyhood is below the threshold (as a fraction, e.g., 0.3 for 30%)."""
-        print(f"PRUNE DEBUG: Starting prune on '{self.issue_name}' with {len(self.children)} children, threshold: {threshold}")
         pruned_children = []
         for child in self.children:
             if child.likelyhood < threshold:
-                print(f"PRUNE DEBUG: Removing child '{child.issue_name}' with likelihood {child.likelyhood} (below threshold {threshold})")
                 pruned_children.append(child)
             else:
-                print(f"PRUNE DEBUG: Keeping child '{child.issue_name}' with likelihood {child.likelyhood} (above threshold {threshold})")
                 child.prune(threshold)
         
         # Remove the pruned children
         for child in pruned_children:
             self.children.remove(child)
         
-        print(f"PRUNE DEBUG: Finished prune on '{self.issue_name}'. Removed {len(pruned_children)} children, {len(self.children)} remaining")
         return pruned_children
 
     def sort_children_by_likelyhood(self, reverse: bool = True):

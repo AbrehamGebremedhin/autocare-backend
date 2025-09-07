@@ -9,26 +9,53 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - REDIS_HOST=host.docker.internal
-      - MILVUS_HOST=host.docker.internal
-      - OLLAMA_HOST=host.docker.internal
+      # Database settings
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - SUPABASE_PASSWORD=${SUPABASE_PASSWORD}
+
+      # Redis settings for session management and caching
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+      # Milvus settings
+      - MILVUS_HOST=milvus-standalone
+      - MILVUS_PORT=19530
+
+      # Environment configuration
       - ENV=production
+      - DEBUG=false
+
+      # Enhanced concurrency settings
+      - MAX_CONCURRENT_SESSIONS=10000
+      - MAX_CONNECTIONS_PER_USER=5
+      - DB_POOL_MIN_SIZE=10
+      - DB_POOL_MAX_SIZE=100
+      - AGENT_POOL_SIZE=50
+      - RATE_LIMIT_REQUESTS_PER_MINUTE=100
+      - RATE_LIMIT_REQUESTS_PER_HOUR=2000
+
+      # Performance optimization
+      - REDIS_POOL_SIZE=20
+      - WEBSOCKET_MAX_CONNECTIONS=1000
+      - SESSION_TTL_HOURS=24
+      - CACHE_TTL_SECONDS=3600
+
     restart: unless-stopped
 
-    # Resource limits for security and stability
+    # Enhanced resource limits for concurrent users
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 1G
+          cpus: "4.0"
+          memory: 8G
         reservations:
-          cpus: "0.5"
-          memory: 512M
+          cpus: "2.0"
+          memory: 4G
 
     # Security settings
     security_opt:
       - no-new-privileges:true
-    read_only: false # Set to true if app doesn't need write access
     cap_drop:
       - ALL
     cap_add:
@@ -37,22 +64,128 @@ services:
       - SETGID
       - SETUID
 
-    # Volume mounts with read-only where possible
+    # Volume mounts
     volumes:
-      - ./logs:/app/logs # Only mount logs directory
-      - ./car_data:/app/car_data:ro # Read-only data
+      - ./logs:/app/logs
+      - ./car_data:/app/car_data:ro
 
-    # Health check
+    # Enhanced health check
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
 
-    # Network configuration
+    depends_on:
+      redis:
+        condition: service_healthy
+      milvus-standalone:
+        condition: service_healthy
+
     networks:
       - autocare-network
+
+  # Redis for session management and caching
+  redis:
+    image: redis:7-alpine
+    container_name: autocare-redis
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    networks:
+      - autocare-network
+
+  # Milvus for vector search
+  etcd:
+    container_name: milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.5
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - autocare-network
+
+  minio:
+    container_name: milvus-minio
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - autocare-network
+
+  milvus-standalone:
+    container_name: milvus-standalone
+    image: milvusdb/milvus:v2.3.3
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - "etcd"
+      - "minio"
+    networks:
+      - autocare-network
+
+volumes:
+  redis_data:
+  milvus_data:
+  etcd_data:
+  minio_data:
 
 networks:
   autocare-network:

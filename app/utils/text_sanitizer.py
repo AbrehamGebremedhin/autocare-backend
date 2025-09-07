@@ -70,7 +70,7 @@ class TextSanitizer:
             # Log sanitization if changes were made
             if sanitized != original:
                 # Use synchronous logging since this might be called in a sync context
-                self.logger.logger.info(f"Sanitized message: '{original}' -> '{sanitized}'", extra={"log_type": "info"})
+                self.logger.info(f"Sanitized message: '{original}' -> '{sanitized}'", extra={"log_type": "info"})
             
             return sanitized
             

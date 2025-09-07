@@ -14,9 +14,9 @@ class EnhancedRateLimiter:
         self.user_limits: Dict[str, Dict[str, Any]] = {}
         self.ip_limits: Dict[str, Dict[str, Any]] = {}
         self.global_limits = {
-            'requests_per_minute': 100,
-            'requests_per_hour': 1000,
-            'burst_threshold': 20
+            'requests_per_minute': 300,  # Increased from 100
+            'requests_per_hour': 3000,   # Increased from 1000
+            'burst_threshold': 100       # Increased from 20
         }
     
     def get_identifier(self, request: Request) -> tuple:

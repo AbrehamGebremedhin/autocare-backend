@@ -12,6 +12,8 @@ from app.agents.base_agent import BaseAgent, AgentCommand, AgentState
 from app.utils.message_types import MessageSource
 from app.utils.monitoring import monitor_and_handle
 from app.services.llm_service import LLMService
+from app.utils.orchestrator_websocket import OrchestratorWebSocketMixin
+from app.utils.tree_formatter import TreeDataFormatter
 
 class SymptomExtractionCommand(AgentCommand):
     """Command for symptom extraction operations"""
@@ -149,7 +151,7 @@ class InitialProcessingCommand(AgentCommand):
             'diagnosis_tree': context.get('diagnosis_tree')
         }
 
-class OrchestratorAgent(BaseAgent):
+class OrchestratorAgent(BaseAgent, OrchestratorWebSocketMixin):
     """
     Orchestrates the flow between agents for end-to-end diagnosis and user interaction.
     Uses command pattern for better separation of concerns and maintainability.
@@ -256,12 +258,9 @@ class OrchestratorAgent(BaseAgent):
             
             await self.logger.info(f"Created new diagnosis tree for car_id: {car_id}")
             
-            await self.send_ws_stage(
-                websocket, 
-                "Orchestrator - Created new diagnosis tree", 
-                MessageSource.ORCHESTRATOR, 
-                session_id=session_id
-            )
+            # Send tree initialization using standardized method
+            if websocket:
+                await self.send_tree_initialization(websocket, diagnosis_tree, session_id)
         # Case 2: Tree exists but might be in dict form instead of object form
         elif diagnosis_tree is not None:
             # Ensure it's a proper DiagnosisTreeNode object
@@ -273,27 +272,49 @@ class OrchestratorAgent(BaseAgent):
                         from app.schemas.Chat_Session import ChatSession
                         diagnosis_tree = ChatSession.deserialize_diagnosis_tree(diagnosis_tree)
                         context['diagnosis_tree'] = diagnosis_tree
-                        await self.logger.info(f"Successfully deserialized tree with {len(diagnosis_tree.children)} children")
+                        
+                        # Verify the deserialized object
+                        if hasattr(diagnosis_tree, 'children'):
+                            await self.logger.info(f"Successfully deserialized tree with {len(diagnosis_tree.children)} children")
+                        else:
+                            raise ValueError("Deserialized object missing 'children' attribute")
                 except Exception as e:
                     await self.logger.error(f"Failed to deserialize tree: {str(e)}")
                     # Create a new tree if deserialization failed
                     diagnosis_tree = get_diagnosis_tree(issue_name='root', likelyhood=1.0)
                     context['diagnosis_tree'] = diagnosis_tree
                     await self.logger.info("Created replacement diagnosis tree after deserialization failure")
+                    
+                    # Send tree initialization for replacement tree
+                    if websocket:
+                        await self.send_tree_initialization(websocket, diagnosis_tree, session_id)
             else:
                 # It's a valid DiagnosisTreeNode
-                await self.logger.info(f"Using existing diagnosis tree with {len(diagnosis_tree.children)} children")
-                
-                # Verify children are accessible
                 if hasattr(diagnosis_tree, 'children'):
+                    await self.logger.info(f"Using existing diagnosis tree with {len(diagnosis_tree.children)} children")
+                    
+                    # Verify children are accessible
                     child_count = len(diagnosis_tree.children)
                     if child_count > 0:
                         child_names = [child.issue_name for child in diagnosis_tree.children]
                         await self.logger.info(f"Tree has {child_count} children: {child_names}")
                     else:
                         await self.logger.info("Tree has no children")
+                else:
+                    await self.logger.error(f"Diagnosis tree object missing 'children' attribute: {type(diagnosis_tree)}")
+                    # Replace with new tree
+                    diagnosis_tree = get_diagnosis_tree(issue_name='root', likelyhood=1.0)
+                    context['diagnosis_tree'] = diagnosis_tree
+                    await self.logger.info("Created replacement diagnosis tree due to missing children attribute")
         
-        await self._log_exit("_ensure_diagnosis_tree", children_count=len(diagnosis_tree.children) if diagnosis_tree else 0)
+        # Final safety check
+        if not hasattr(diagnosis_tree, 'children'):
+            await self.logger.error(f"Final diagnosis tree still invalid: {type(diagnosis_tree)}")
+            diagnosis_tree = get_diagnosis_tree(issue_name='root', likelyhood=1.0)
+            context['diagnosis_tree'] = diagnosis_tree
+            await self.logger.info("Created final fallback diagnosis tree")
+        
+        await self._log_exit("_ensure_diagnosis_tree", children_count=len(diagnosis_tree.children) if diagnosis_tree and hasattr(diagnosis_tree, 'children') else 0)
         return diagnosis_tree
     
     async def route_request(self, user_request: str, user_id: str = None, context: dict = None, websocket=None, session_id=None):
@@ -308,7 +329,7 @@ class OrchestratorAgent(BaseAgent):
         else:
             await self.logger.info("No WebSocket connection provided")
             
-        await self.send_ws_stage(websocket, "Orchestrator - Routing request", MessageSource.ORCHESTRATOR, session_id=session_id)
+        await self.send_orchestrator_stage(websocket, "Routing request", session_id=session_id)
         
         # Prepare context for command execution
         command_context = {
@@ -322,11 +343,15 @@ class OrchestratorAgent(BaseAgent):
         # Ensure diagnosis tree exists
         original_tree = command_context.get('diagnosis_tree')
         if original_tree:
-            await self.logger.info(f"Received existing tree with {len(original_tree.children)} children")
-            # Log some info about the existing tree's structure
-            if hasattr(original_tree, 'children') and original_tree.children:
-                child_issues = [c.issue_name for c in original_tree.children]
-                await self.logger.info(f"Existing tree child issues: {child_issues}")
+            # Check if tree is valid before accessing children
+            if hasattr(original_tree, 'children'):
+                await self.logger.info(f"Received existing tree with {len(original_tree.children)} children")
+                # Log some info about the existing tree's structure
+                if original_tree.children:
+                    child_issues = [c.issue_name for c in original_tree.children]
+                    await self.logger.info(f"Existing tree child issues: {child_issues}")
+            else:
+                await self.logger.info(f"Received tree object but it's not a DiagnosisTreeNode (type: {type(original_tree)})")
         else:
             await self.logger.info("No existing tree found in command context")
         
@@ -347,15 +372,19 @@ class OrchestratorAgent(BaseAgent):
                 await self.logger.warning(f"Could not retrieve session context for {session_id}: {e}")
         
         # OPTIMIZATION: Classify message early to determine processing path
-        await self.send_ws_stage(websocket, "Orchestrator - Classifying message type", MessageSource.ORCHESTRATOR, session_id=session_id)
+        await self.send_orchestrator_stage(websocket, "Classifying message type", session_id=session_id)
         classification = await self.classify_message(user_request, session_context)
+        
+        # Send classification result via standardized WebSocket
+        if websocket:
+            await self.send_classification_result(websocket, classification, session_id)
         
         # If it's a simple question and we have high confidence, skip the full diagnostic pipeline
         if (classification.get("response_type") == "simple" and 
             classification.get("confidence", 0.0) > 0.7):
             
             await self.logger.info("[ORCHESTRATOR] Taking simple response path - skipping full diagnostic pipeline")
-            await self.send_ws_stage(websocket, "Orchestrator - Generating simple response", MessageSource.ORCHESTRATOR, session_id=session_id)
+            await self.send_orchestrator_stage(websocket, "Generating simple response", session_id=session_id)
             
             # For simple responses, still extract session context if it's an initial message
             if command_context.get('is_initial_message') and session_id:
@@ -404,7 +433,7 @@ class OrchestratorAgent(BaseAgent):
                 user_response['response_type'] = 'simple'
                 user_response['tokens_saved'] = True  # Indicator that we saved processing
             
-            await self.send_ws_stage(websocket, "Orchestrator - Simple response complete", MessageSource.ORCHESTRATOR, session_id=session_id)
+            await self.send_orchestrator_stage(websocket, "Simple response complete", session_id=session_id)
             await self._log_exit("route_request", success=True, result_type="simple_response")
             return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
         
@@ -413,16 +442,16 @@ class OrchestratorAgent(BaseAgent):
         
         # Stage: Full diagnostic pipeline starting
         if websocket:
-            await self.send_ws_stage(
+            details = {
+                "analysis_type": "comprehensive",
+                "classification_confidence": classification.get("confidence", 0.0),
+                "expected_stages": ["symptom_extraction", "tree_building", "diagnosis", "user_message_generation"]
+            }
+            await self.send_orchestrator_stage(
                 websocket, 
                 "Starting comprehensive diagnostic analysis", 
-                MessageSource.ORCHESTRATOR, 
                 session_id=session_id,
-                details={
-                    "analysis_type": "comprehensive",
-                    "classification_confidence": classification.get("confidence", 0.0),
-                    "expected_stages": ["symptom_extraction", "tree_building", "diagnosis", "user_message_generation"]
-                }
+                details=details
             )
         
         car_id = command_context.get('car_id')
@@ -456,10 +485,9 @@ class OrchestratorAgent(BaseAgent):
                             "existing_symptoms": len(diagnosis_tree.children) if diagnosis_tree else 0,
                             "analysis_trigger": "new_symptoms_detected" if not is_tree_empty else "empty_tree"
                         }
-                        await self.send_ws_stage(
+                        await self.send_orchestrator_stage(
                             websocket, 
                             "Extracting new symptoms from follow-up message", 
-                            MessageSource.ORCHESTRATOR, 
                             session_id=session_id,
                             details=tree_context
                         )
@@ -478,38 +506,12 @@ class OrchestratorAgent(BaseAgent):
                         if websocket:
                             try:
                                 tree = symptom_result['diagnosis_tree']
-                                initial_tree_data = {
-                                    "type": "tree_data",
-                                    "source": "orchestrator",
-                                    "content": "Initial diagnosis tree after symptom extraction",
-                                    "timestamp": datetime.now().isoformat() + "Z",
-                                    "data": {
-                                        "tree_data": tree.to_dict() if tree else None,
-                                        "stage": "initial_tree",
-                                        "symptoms_extracted": len(symptom_result.get('result', [])) if 'result' in symptom_result else 0,
-                                        "tree_children_count": len(tree.children) if tree else 0,
-                                        "ready_for_diagnosis": True
-                                    }
-                                }
-                                await websocket.send_text(json.dumps(initial_tree_data))
-                                await self.logger.info(f"Sent initial tree data: {len(tree.children) if tree else 0} children")
+                                new_symptoms_count = len(symptom_result.get('result', [])) if 'result' in symptom_result else 0
+                                await self.send_symptom_extraction_complete(websocket, tree, new_symptoms_count, session_id)
                             except Exception as e:
-                                await self.logger.error(f"Failed to send initial tree data: {e}")
+                                await self.logger.error(f"Failed to send symptom extraction tree data: {e}")
                         
-                        # Send tree update notification
-                        if websocket:
-                            tree_summary = {
-                                "updated": True,
-                                "total_symptoms": len(symptom_result['diagnosis_tree'].children) if symptom_result['diagnosis_tree'] else 0,
-                                "new_symptoms": len(symptom_result.get('result', [])) if 'result' in symptom_result else 0
-                            }
-                            await self.send_ws_stage(
-                                websocket, 
-                                "Diagnosis tree updated with new symptoms", 
-                                MessageSource.ORCHESTRATOR, 
-                                session_id=session_id,
-                                details={"tree_update": tree_summary}
-                            )
+                        # Tree update notification is now handled by send_symptom_extraction_complete
                 else:
                     await self.logger.info("Skipping symptom extraction - tree has content and no new symptoms detected")
                 
@@ -517,23 +519,10 @@ class OrchestratorAgent(BaseAgent):
                 if websocket:
                     current_tree = command_context.get('diagnosis_tree')
                     
-                    # Send pre-diagnosis tree data
+                    # Send pre-diagnosis tree data using standardized method
                     if current_tree:
                         try:
-                            pre_diagnosis_tree_data = {
-                                "type": "tree_data",
-                                "source": "orchestrator",
-                                "content": "Tree data before diagnosis analysis",
-                                "timestamp": datetime.now().isoformat() + "Z",
-                                "data": {
-                                    "tree_data": current_tree.to_dict(),
-                                    "stage": "pre_diagnosis",
-                                    "symptoms_count": len(current_tree.children),
-                                    "ready_for_analysis": True
-                                }
-                            }
-                            await websocket.send_text(json.dumps(pre_diagnosis_tree_data))
-                            await self.logger.info(f"Sent pre-diagnosis tree data: {len(current_tree.children)} children")
+                            await self.send_diagnosis_preparation(websocket, current_tree, session_id)
                         except Exception as e:
                             await self.logger.error(f"Failed to send pre-diagnosis tree data: {e}")
                     
@@ -542,10 +531,9 @@ class OrchestratorAgent(BaseAgent):
                         "symptoms_count": len(current_tree.children) if current_tree else 0,
                         "analysis_stage": "comprehensive_diagnosis"
                     }
-                    await self.send_ws_stage(
+                    await self.send_orchestrator_stage(
                         websocket, 
                         "Starting comprehensive diagnosis analysis", 
-                        MessageSource.ORCHESTRATOR, 
                         session_id=session_id,
                         details=diagnosis_context
                     )
@@ -558,48 +546,21 @@ class OrchestratorAgent(BaseAgent):
                 
                 # Final completion stage
                 if websocket:
-                    # Include complete tree data in final result
-                    tree_data = None
+                    # Send final diagnosis completion with standardized tree data
+                    tree = None
                     if 'diagnosis_tree' in diagnosis_result and diagnosis_result['diagnosis_tree']:
                         tree = diagnosis_result['diagnosis_tree']
-                        tree_data = {
-                            "total_nodes": len(tree.children) if tree and hasattr(tree, 'children') else 0,
-                            "root_issue": tree.issue_name if tree and hasattr(tree, 'issue_name') else "Unknown",
-                            "children": [
-                                {
-                                    "issue_name": child.issue_name,
-                                    "likelihood": round(child.likelyhood * 100, 1),
-                                    "type": child.data.get("issue_type") if child.data else "Unknown",
-                                    "category": child.data.get("issue_category") if child.data else "Unknown",
-                                    "description": child.data.get("description") if child.data else None
-                                }
-                                for child in (tree.children if tree and hasattr(tree, 'children') else [])
-                            ]
-                        }
                     elif 'diagnosis_tree' in command_context and command_context['diagnosis_tree']:
-                        # Fallback to command context tree
                         tree = command_context['diagnosis_tree']
-                        tree_data = {
-                            "total_nodes": len(tree.children) if tree and hasattr(tree, 'children') else 0,
-                            "root_issue": tree.issue_name if tree and hasattr(tree, 'issue_name') else "Unknown",
-                            "children": [
-                                {
-                                    "issue_name": child.issue_name,
-                                    "likelihood": round(child.likelyhood * 100, 1),
-                                    "type": child.data.get("issue_type") if child.data else "Unknown",
-                                    "category": child.data.get("issue_category") if child.data else "Unknown",
-                                    "description": child.data.get("description") if child.data else None
-                                }
-                                for child in (tree.children if tree and hasattr(tree, 'children') else [])
-                            ]
-                        }
+                    
+                    if tree:
+                        await self.send_diagnosis_complete(websocket, tree, diagnosis_result, session_id)
                     
                     completion_summary = {
                         "diagnosis_success": diagnosis_result.get('success', False),
                         "has_response": 'response' in diagnosis_result,
                         "has_step_guide": 'step_by_step_guide' in diagnosis_result,
                         "tree_preserved": 'diagnosis_tree' in diagnosis_result,
-                        "tree_data": tree_data,  # Include complete tree data
                         "diagnosis_complete": True
                     }
                     await self.send_ws_result(
@@ -614,14 +575,16 @@ class OrchestratorAgent(BaseAgent):
                 return diagnosis_result
             
             else:
-                await self.send_ws_stage(websocket, "Orchestrator - No car_id provided, cannot diagnose", MessageSource.ORCHESTRATOR, session_id=session_id)
+                await self.send_orchestrator_stage(websocket, "No car_id provided, cannot diagnose", session_id=session_id)
                 user_response = await self.user_interaction_agent.process(user_request, 'car_id is required for diagnosis.', session_id=session_id)
                 await self._log_exit("route_request", success=False, reason="no_car_id")
                 return {'response': user_response.get('user_message'), 'success': user_response.get('success', True)}
                 
         except Exception as e:
             await self.logger.error(f"Error in route_request: {str(e)}")
-            await self.send_ws_error(websocket, f"Error in orchestrator: {str(e)}", MessageSource.ORCHESTRATOR, session_id=session_id)
+            # Use standardized error method with tree state context
+            current_tree = command_context.get('diagnosis_tree') if 'command_context' in locals() else None
+            await self.send_error_with_tree_state(websocket, f"Error in orchestrator: {str(e)}", current_tree, session_id)
             await self._set_state(AgentState.ERROR)
             user_response = await self.user_interaction_agent.process(user_request, f'Error: {str(e)}', session_id=session_id)
             await self._log_exit("route_request", success=False, error=str(e))

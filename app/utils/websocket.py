@@ -63,6 +63,32 @@ class ConnectionManager(IWebSocketManager):
         msg = MessageFormatter.format(type=MessageType.DEBUG, source=source, content=content, session_id=session_id, details=details)
         await websocket.send_text(json.dumps(msg))
 
+    async def send_tree_data(self, websocket: WebSocket, content: str, source: MessageSource, tree_data: dict, session_id: str = None, stage: str = None, details: dict = None):
+        """Send standardized tree data via WebSocket"""
+        tree_details = {
+            "tree_data": tree_data,
+            "stage": stage or "tree_update"
+        }
+        if details:
+            tree_details.update(details)
+        
+        msg = MessageFormatter.format(
+            type=MessageType.TREE_DATA, 
+            source=source, 
+            content=content, 
+            session_id=session_id, 
+            details=tree_details
+        )
+        await websocket.send_text(json.dumps(msg))
+
+    async def get_connection_stats(self) -> dict:
+        """Get connection statistics"""
+        async with self._lock:
+            return {
+                "active_connections": len(self.active_connections),
+                "total_users": len(set(id(conn) for conn in self.active_connections))
+            }
+
     async def broadcast_json(self, msg: dict):
         import json
         await self.broadcast(json.dumps(msg))

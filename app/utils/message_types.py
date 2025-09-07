@@ -8,6 +8,7 @@ class MessageType(str, Enum):
     STAGE = "stage"
     RESULT = "result"
     DEBUG = "debug"
+    TREE_DATA = "tree_data"
 
 class MessageSource(str, Enum):
     CHAT_SERVICE = "chat_service"

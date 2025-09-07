@@ -215,3 +215,55 @@ class ConfigurationException(BaseAPIException):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             details=details
         )
+
+# Session Management Exceptions
+class SessionException(BaseAPIException):
+    def __init__(self, message: str = "Session operation failed", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            error_code=ErrorCode.INVALID_OPERATION,
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            details=details
+        )
+
+class SessionExpiredException(SessionException):
+    def __init__(self, message: str = "Session has expired", details: Optional[Dict[str, Any]] = None):
+        super().__init__(message=message, details=details)
+
+class SessionNotFoundException(SessionException):
+    def __init__(self, session_id: str = None, details: Optional[Dict[str, Any]] = None):
+        message = f"Session not found"
+        if session_id:
+            message += f": {session_id}"
+        super().__init__(message=message, details=details)
+
+# Service Exceptions
+class ServiceException(BaseAPIException):
+    def __init__(self, service_name: str, message: str = "Service operation failed", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            error_code=ErrorCode.INVALID_OPERATION,
+            message=f"{service_name}: {message}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            details=details
+        )
+
+# Agent Exceptions
+class AgentException(BaseAPIException):
+    def __init__(self, agent_type: str = None, message: str = "Agent operation failed", details: Optional[Dict[str, Any]] = None):
+        formatted_message = f"{agent_type} agent: {message}" if agent_type else message
+        super().__init__(
+            error_code=ErrorCode.INVALID_OPERATION,
+            message=formatted_message,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            details=details
+        )
+
+class ResourceException(BaseAPIException):
+    def __init__(self, resource_type: str = None, message: str = "Resource operation failed", details: Optional[Dict[str, Any]] = None):
+        formatted_message = f"{resource_type} resource: {message}" if resource_type else message
+        super().__init__(
+            error_code=ErrorCode.RESOURCE_CONFLICT,
+            message=formatted_message,
+            status_code=status.HTTP_409_CONFLICT,
+            details=details
+        )

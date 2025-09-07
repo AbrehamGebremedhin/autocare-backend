@@ -160,14 +160,30 @@ class BaseAgent(abc.ABC):
         Generic method to send a websocket message using the specified method name.
         """
         if websocket is not None:
-            from app.utils.json_utils import serialize_datetimes
-            details = serialize_datetimes(details)
-            ws_method = getattr(self.websocket_manager, method, None)
-            if ws_method:
-                await self.logger.info(f"Sending WebSocket {method} message: '{content[:100]}...' to session {session_id}")
-                await ws_method(websocket, content, source, session_id, details)
-            else:
-                await self.logger.warning(f"WebSocket method '{method}' not found on websocket manager")
+            # Check if WebSocket connection is still active
+            try:
+                # Check the websocket state
+                if hasattr(websocket, 'client_state') and websocket.client_state.name != 'CONNECTED':
+                    await self.logger.warning(f"WebSocket connection not active (state: {websocket.client_state.name}), skipping message: '{content[:50]}...'")
+                    return
+                elif hasattr(websocket, 'state') and hasattr(websocket.state, 'name') and websocket.state.name != 'CONNECTED':
+                    await self.logger.warning(f"WebSocket connection not active (state: {websocket.state.name}), skipping message: '{content[:50]}...'")
+                    return
+                
+                from app.utils.json_utils import serialize_datetimes
+                details = serialize_datetimes(details)
+                ws_method = getattr(self.websocket_manager, method, None)
+                if ws_method:
+                    await self.logger.info(f"Sending WebSocket {method} message: '{content[:100]}...' to session {session_id}")
+                    await ws_method(websocket, content, source, session_id, details)
+                else:
+                    await self.logger.warning(f"WebSocket method '{method}' not found on websocket manager")
+            except Exception as e:
+                # Catch any WebSocket-related errors and log them without crashing
+                if "close message has been sent" in str(e) or "WebSocketDisconnect" in str(e) or "ConnectionClosed" in str(e):
+                    await self.logger.info(f"WebSocket connection closed, skipping message: '{content[:50]}...'")
+                else:
+                    await self.logger.warning(f"WebSocket error sending message: {str(e)}")
         else:
             await self.logger.info(f"WebSocket message '{content[:50]}...' not sent (no websocket connection)")
 
@@ -183,10 +199,24 @@ class BaseAgent(abc.ABC):
 
     async def send_ws_progress(self, websocket: Any, content: str, source: MessageSource, progress: float, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
         if websocket is not None:
-            from app.utils.json_utils import serialize_datetimes
-            details = serialize_datetimes(details)
-            await self.logger.info(f"Sending WebSocket progress message: '{content[:50]}...' ({progress:.1%}) to session {session_id}")
-            await self.websocket_manager.send_progress(websocket, content, source, progress, session_id, details)
+            try:
+                # Check if WebSocket connection is still active
+                if hasattr(websocket, 'client_state') and websocket.client_state.name != 'CONNECTED':
+                    await self.logger.warning(f"WebSocket connection not active, skipping progress message: '{content[:50]}...'")
+                    return
+                elif hasattr(websocket, 'state') and hasattr(websocket.state, 'name') and websocket.state.name != 'CONNECTED':
+                    await self.logger.warning(f"WebSocket connection not active, skipping progress message: '{content[:50]}...'")
+                    return
+                
+                from app.utils.json_utils import serialize_datetimes
+                details = serialize_datetimes(details)
+                await self.logger.info(f"Sending WebSocket progress message: '{content[:50]}...' ({progress:.1%}) to session {session_id}")
+                await self.websocket_manager.send_progress(websocket, content, source, progress, session_id, details)
+            except Exception as e:
+                if "close message has been sent" in str(e) or "WebSocketDisconnect" in str(e) or "ConnectionClosed" in str(e):
+                    await self.logger.info(f"WebSocket connection closed, skipping progress message: '{content[:50]}...'")
+                else:
+                    await self.logger.warning(f"WebSocket error sending progress: {str(e)}")
         else:
             await self.logger.info(f"WebSocket progress message '{content[:50]}...' ({progress:.1%}) not sent (no websocket connection)")
 
@@ -198,6 +228,29 @@ class BaseAgent(abc.ABC):
 
     async def send_ws_debug(self, websocket: Any, content: str, source: MessageSource, session_id: Optional[str] = None, details: Optional[Any] = None) -> None:
         await self.send_ws_message(websocket, 'send_debug', content, source, session_id, details)
+
+    async def send_ws_tree_data(self, websocket: Any, content: str, source: MessageSource, tree_data: Dict[str, Any], session_id: Optional[str] = None, stage: Optional[str] = None, details: Optional[Any] = None) -> None:
+        """Send standardized tree data via WebSocket"""
+        if websocket is not None:
+            # Check WebSocket connection state before sending
+            if hasattr(websocket, 'client_state') and websocket.client_state.name != 'CONNECTED':
+                await self.logger.warning(f"WebSocket tree data '{content[:50]}...' not sent - connection not active (state: {websocket.client_state.name})")
+                return
+                
+            try:
+                from app.utils.json_utils import serialize_datetimes
+                details = serialize_datetimes(details)
+                await self.logger.info(f"Sending WebSocket tree data: '{content[:50]}...' (stage: {stage}) to session {session_id}")
+                await self.websocket_manager.send_tree_data(websocket, content, source, tree_data, session_id, stage, details)
+            except Exception as e:
+                # Handle common WebSocket connection errors gracefully
+                error_msg = str(e).lower()
+                if any(err in error_msg for err in ["close message has been sent", "websocketdisconnect", "connectionclosed"]):
+                    await self.logger.warning(f"WebSocket tree data '{content[:50]}...' not sent - connection closed: {e}")
+                else:
+                    await self.logger.error(f"Error sending WebSocket tree data '{content[:50]}...': {e}")
+        else:
+            await self.logger.info(f"WebSocket tree data '{content[:50]}...' not sent (no websocket connection)")
 
     @abc.abstractmethod
     async def process(self, *args, **kwargs) -> Any:

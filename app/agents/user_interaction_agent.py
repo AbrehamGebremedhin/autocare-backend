@@ -107,13 +107,9 @@ class UserInteractionAgent(BaseAgent):
             - diy_difficulty_assessment: Honest assessment of difficulty level and what's involved
             - required_tools_and_parts: Comprehensive tool and parts list with specifications
             - step_by_step_repair_guide: Detailed repair instructions with professional insights
-            - alternative_approaches: Other ways to tackle the problem if the primary approach doesn't work
             - diagnostic_verification: How to confirm the diagnosis before starting repairs
-            - cost_and_time_analysis: Realistic cost and time expectations vs professional service
-            - safety_protocols: Specific safety measures for this repair (not generic warnings)
             - troubleshooting_guide: What to do when things don't go as expected
             - quality_verification: How to test and verify the repair was successful
-            - learning_insights: Technical knowledge gained from this repair that applies elsewhere
             - upgrade_opportunities: Performance or reliability improvements possible during repair
             - maintenance_prevention: How to prevent this problem from recurring
             - followup_questions: Array of specific questions to gather more diagnostic information and improve repair guidance
@@ -129,12 +125,9 @@ class UserInteractionAgent(BaseAgent):
             "diy_difficulty_assessment": {{"level": "...", "challenges": ["..."], "success_factors": ["..."]}},
             "required_tools_and_parts": {{"tools": [{{...}}], "parts": [{{...}}], "consumables": [{{...}}]}},
             "step_by_step_repair_guide": [{{...}}],
-            "alternative_approaches": [{{...}}],
             "diagnostic_verification": [{{...}}],
-            "safety_protocols": [{{...}}],
             "troubleshooting_guide": [{{...}}],
             "quality_verification": [{{...}}],
-            "learning_insights": [{{...}}],
             "upgrade_opportunities": [{{...}}],
             "maintenance_prevention": [{{...}}],
             "followup_questions": [
@@ -245,12 +238,9 @@ class UserInteractionAgent(BaseAgent):
                 "diy_difficulty_assessment": {},
                 "required_tools_and_parts": {},
                 "step_by_step_repair_guide": [],
-                "alternative_approaches": [],
                 "diagnostic_verification": [],
-                "safety_protocols": [],
                 "troubleshooting_guide": [],
                 "quality_verification": [],
-                "learning_insights": [],
                 "upgrade_opportunities": [],
                 "maintenance_prevention": {},
                 "followup_questions": followup_questions,
@@ -331,7 +321,6 @@ class UserInteractionAgent(BaseAgent):
             merged_repair_procedures = []
             merged_tools_and_parts = {"tools": [], "parts": [], "consumables": []}
             merged_diagnostic_procedures = []
-            merged_safety_protocols = []
             merged_quality_assurance = []
             merged_maintenance_schedule = {}
             
@@ -409,9 +398,6 @@ class UserInteractionAgent(BaseAgent):
                 # Merge diagnostic procedures
                 merged_diagnostic_procedures = diagnosis_result.get("diagnostic_procedures", [])
                 
-                # Merge safety protocols
-                merged_safety_protocols = diagnosis_result.get("safety_protocols", [])
-                
                 # Merge quality assurance
                 merged_quality_assurance = diagnosis_result.get("quality_assurance", [])
                 
@@ -472,12 +458,9 @@ class UserInteractionAgent(BaseAgent):
                     "diy_difficulty_assessment": {"level": "Unknown", "challenges": [], "success_factors": []},
                     "required_tools_and_parts": merged_tools_and_parts,
                     "step_by_step_repair_guide": [],
-                    "alternative_approaches": [],
                     "diagnostic_verification": merged_diagnostic_procedures,
-                    "safety_protocols": merged_safety_protocols,
                     "troubleshooting_guide": [],
                     "quality_verification": merged_quality_assurance,
-                    "learning_insights": [],
                     "upgrade_opportunities": [],
                     "maintenance_prevention": merged_maintenance_schedule,
                     "followup_questions": [
@@ -557,7 +540,6 @@ class UserInteractionAgent(BaseAgent):
                 result_summary = {
                     "has_diagnosis": bool(parsed_response.get("technical_diagnosis")),
                     "repair_procedures_count": len(parsed_response.get("step_by_step_repair_guide", [])),
-                    "safety_protocols_count": len(parsed_response.get("safety_protocols", [])),
                     "followup_questions_count": len(parsed_response.get("followup_questions", [])),
                     "difficulty_level": parsed_response.get("diy_difficulty_assessment", {}).get("level", "Unknown"),
                     "final_tree_data": tree_data  # Include complete tree data in final user message
@@ -638,12 +620,9 @@ class UserInteractionAgent(BaseAgent):
                     "diy_difficulty_assessment": result.get("diy_difficulty_assessment", {}),
                     "required_tools_and_parts": result.get("required_tools_and_parts", {}),
                     "step_by_step_repair_guide": result.get("step_by_step_repair_guide", []),
-                    "alternative_approaches": result.get("alternative_approaches", []),
                     "diagnostic_verification": result.get("diagnostic_verification", []),
-                    "safety_protocols": result.get("safety_protocols", []),
                     "troubleshooting_guide": result.get("troubleshooting_guide", []),
                     "quality_verification": result.get("quality_verification", []),
-                    "learning_insights": result.get("learning_insights", []),
                     "upgrade_opportunities": result.get("upgrade_opportunities", []),
                     "maintenance_prevention": result.get("maintenance_prevention", {}),
                     "followup_questions": result.get("followup_questions", [])

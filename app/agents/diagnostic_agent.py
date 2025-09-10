@@ -71,10 +71,8 @@ class DiagnosisAgent(BaseAgent):
             - Use the tree's hierarchical structure to understand symptom relationships
             - Maintain focus on the session's original issue context
             - Provide detailed technical explanations that build user understanding
-            - Include multiple diagnostic approaches so users can choose what works for them
             - Give specific part numbers, specifications, and technical details when possible
             - Explain the WHY behind each step so users understand the reasoning
-            - Provide troubleshooting alternatives if the first approach doesn't work
             - Include common pitfalls and how to avoid them
             - Emphasize safety but don't overstate risks for standard procedures
 
@@ -105,11 +103,9 @@ class DiagnosisAgent(BaseAgent):
             9. Explain the underlying automotive systems so users understand what they're working on.
             10. Give detailed step-by-step repair procedures with professional-level detail.
             11. Include troubleshooting steps for when things don't go as expected.
-            12. Provide cost-effective alternatives and workarounds where appropriate.
-            13. Explain how to verify the repair was successful and prevent recurrence.
-            14. Include tips and tricks from professional mechanics.
-            15. Provide detailed safety guidance specific to each procedure, not generic warnings.
-            16. Include maintenance schedules and inspection points to prevent similar issues.
+            12. Explain how to verify the repair was successful and prevent recurrence.
+            13. Include tips and tricks from professional mechanics.
+            14. Include maintenance schedules and inspection points to prevent similar issues.
 
             OUTPUT (COMPREHENSIVE SESSION-AWARE DIY-FOCUSED JSON):
             {{
@@ -180,8 +176,6 @@ class DiagnosisAgent(BaseAgent):
                                 "interpretation": "How to interpret the results"
                             }}
                         ],
-                        "repair_approach": "Different repair strategy for this scenario",
-                        "cost_estimate": "Parts and time cost",
                         "difficulty_assessment": "Why this might be easier/harder to fix"
                     }}
                 ],
@@ -194,29 +188,6 @@ class DiagnosisAgent(BaseAgent):
                         "normal_values": "Expected readings/results",
                         "interpretation_guide": "How to interpret different results",
                         "next_steps_based_on_results": "What to do based on what you find"
-                    }}
-                ],
-                "system_education": {{
-                    "affected_system": "Primary automotive system involved",
-                    "how_it_works": "Technical explanation of system operation",
-                    "common_failure_modes": ["How this system typically fails"],
-                    "preventive_maintenance": ["How to prevent future problems"],
-                    "related_components": ["Other parts that might be affected"],
-                    "upgrade_opportunities": ["Performance or reliability improvements possible"]
-                }},
-                "cost_breakdown": {{
-                    "parts_cost": "Detailed parts cost analysis",
-                    "tool_investment": "One-time tool costs if tools need to be purchased",
-                    "shop_cost_comparison": "What this would cost at a shop vs DIY",
-                    "cost_saving_tips": ["How to reduce costs while maintaining quality"]
-                }},
-                "safety_protocols": [
-                    {{
-                        "procedure": "Specific repair procedure",
-                        "safety_equipment": ["Required safety gear"],
-                        "environmental_considerations": ["Workspace requirements"],
-                        "specific_hazards": ["Procedure-specific risks"],
-                        "emergency_procedures": ["What to do if something goes wrong"]
                     }}
                 ],
                 "quality_assurance": [
@@ -556,9 +527,6 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
                 "diy_repair_procedures": [],
                 "alternative_diagnoses": [],
                 "diagnostic_procedures": [],
-                "system_education": {},
-                "cost_breakdown": {},
-                "safety_protocols": [],
                 "quality_assurance": [],
                 "maintenance_schedule": {},
                 "professional_consultation_indicators": [],
@@ -660,9 +628,6 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
                                 "diy_repair_procedures": [],
                                 "alternative_diagnoses": [],
                                 "diagnostic_procedures": [],
-                                "system_education": {},
-                                "cost_breakdown": {},
-                                "safety_protocols": [],
                                 "quality_assurance": [],
                                 "maintenance_schedule": {},
                                 "professional_consultation_indicators": [],
@@ -708,7 +673,6 @@ Focus your diagnosis on the highest likelihood symptoms first, then use supporti
                         "confidence": diagnosis_data.get("confidence", "Unknown"),
                         "repair_procedures_count": len(diagnosis_data.get("diy_repair_procedures", [])),
                         "alternatives_count": len(diagnosis_data.get("alternative_diagnoses", [])),
-                        "safety_concerns": len(diagnosis_data.get("safety_protocols", [])),
                         "requires_professional": len(diagnosis_data.get("professional_consultation_indicators", [])) > 0
                     }
                 

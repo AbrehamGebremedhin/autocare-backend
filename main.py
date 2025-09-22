@@ -153,11 +153,15 @@ app = FastAPI(
 # Configure security-first CORS
 allowed_origins = settings.get_allowed_origins()
 
+# For development, allow all origins if in debug mode
+if settings.is_development() or settings.DEBUG:
+    allowed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=[
         "Accept",
         "Accept-Language",
@@ -168,6 +172,9 @@ app.add_middleware(
         "X-CSRF-Token",
         "X-User-ID",
         "X-Session-ID",
+        "Origin",
+        "Cache-Control",
+        "X-Requested-With",
     ],
     expose_headers=["X-Total-Count", "X-Rate-Limit-Remaining", "X-Session-ID"],
     max_age=settings.CORS_MAX_AGE,
@@ -188,6 +195,23 @@ app.state.limiter = limiter
 
 # Add security middleware (order matters!)
 app.add_middleware(SlowAPIMiddleware)  # Rate limiting
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    """Log all incoming requests for debugging"""
+    start_time = datetime.now()
+    
+    # Log basic request info
+    await logger.info(f"Request: {request.method} {request.url.path} from {request.client.host if request.client else 'unknown'}")
+    await logger.info(f"Headers: {dict(request.headers)}")
+    
+    response = await call_next(request)
+    
+    # Log response
+    duration = (datetime.now() - start_time).total_seconds()
+    await logger.info(f"Response: {response.status_code} in {duration:.3f}s")
+    
+    return response
 
 
 @app.middleware("http")

@@ -3,7 +3,6 @@ from pydantic import BaseModel, EmailStr
 from app.db.base import SupabaseDBHandler, get_db_handler
 from app.schemas.User import UserBase
 from app.core.config import get_settings
-from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
 from app.services.user_service import user_service
 from app.utils.logger import get_logger_instance
@@ -23,6 +22,15 @@ router = APIRouter()
 # Use the custom async logger instance
 logger = get_logger_instance("user_auth")
 
+@router.get('/auth/test')
+async def test_connection():
+    """Simple test endpoint to verify connectivity"""
+    return {
+        "status": "success",
+        "message": "Connection successful",
+        "timestamp": "2025-09-22T12:00:00Z"
+    }
+
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
@@ -31,6 +39,13 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+class LoginResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str
+    expires_in: int
+    user_id: str
 
 @router.post('/auth/register', response_model=UserBase)
 async def register_user(user: UserCreate, request: Request, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
@@ -89,16 +104,16 @@ async def register_user(user: UserCreate, request: Request, db_handler: Supabase
         else:
             raise DatabaseException("Registration failed due to database error")
 
-@router.post('/auth/login')
-async def login_user(form_data: OAuth2PasswordRequestForm = Depends(), request: Request = None, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
+@router.post('/auth/login', response_model=LoginResponse)
+async def login_user(user_login: UserLogin, request: Request = None, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
     correlation_id = getattr(request.state, 'correlation_id', 'unknown') if request else 'unknown'
-    await logger.info(f"Login attempt for email: {form_data.username} [ID: {correlation_id}]")
+    await logger.info(f"Login attempt for email: {user_login.email} [ID: {correlation_id}]")
     
     try:
         async with db_handler.get_connection() as db:
             response = db.auth.sign_in_with_password({
-                "email": form_data.username,
-                "password": form_data.password
+                "email": user_login.email,
+                "password": user_login.password
             })
             
             if hasattr(response, 'session') and response.session:
@@ -114,16 +129,42 @@ async def login_user(form_data: OAuth2PasswordRequestForm = Depends(), request: 
                     endpoint=request.url.path,
                     method=request.method,
                     risk_level="medium",
-                    details={"reason": "invalid_credentials", "email": form_data.username}
+                    details={"reason": "invalid_credentials", "email": user_login.email}
                 )
                 raise AuthenticationException("Invalid email or password")
             
             # Create our own JWT token with additional claims
+            # Safely extract user ID - handle both object and dict formats
+            if hasattr(user, 'id'):
+                user_id = user.id
+            elif isinstance(user, dict) and 'id' in user:
+                user_id = user['id']
+            else:
+                user_id = str(user) if user else None
+            
+            # Ensure we have a valid user_id
+            if not user_id:
+                raise AuthenticationException("Failed to extract user ID from authentication response")
+            
+            # Safely extract role - handle both object and dict formats
+            role = 'user'  # default value
+            if hasattr(user, 'role'):
+                role = user.role
+            elif isinstance(user, dict) and 'role' in user:
+                role = user['role']
+            
+            # Safely extract permissions - handle both object and dict formats
+            permissions = []  # default value
+            if hasattr(user, 'permissions'):
+                permissions = user.permissions or []
+            elif isinstance(user, dict) and 'permissions' in user:
+                permissions = user['permissions'] or []
+            
             token_data = {
-                "sub": user.id if hasattr(user, 'id') else user.get('id'),
-                "email": form_data.username,
-                "role": getattr(user, 'role', user.get('role', 'user')),
-                "permissions": getattr(user, 'permissions', user.get('permissions', []))
+                "sub": user_id,
+                "email": user_login.email,
+                "role": role,
+                "permissions": permissions
             }
             
             access_token = jwt_handler.create_access_token(token_data)
@@ -136,21 +177,22 @@ async def login_user(form_data: OAuth2PasswordRequestForm = Depends(), request: 
                 endpoint=request.url.path,
                 method=request.method,
                 risk_level="low",
-                details={"email": form_data.username}
+                details={"email": user_login.email}
             )
             
-            await logger.info(f"Login successful for email: {form_data.username} [ID: {correlation_id}]")
+            await logger.info(f"Login successful for email: {user_login.email} [ID: {correlation_id}]")
             return {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
                 "token_type": "bearer",
-                "expires_in": jwt_handler.access_token_expire_minutes * 60
+                "expires_in": jwt_handler.access_token_expire_minutes * 60,
+                "user_id": user_id
             }
             
     except AuthenticationException:
         raise
     except Exception as e:
-        await logger.error(f"Login error for email: {form_data.username} - {str(e)} [ID: {correlation_id}]")
+        await logger.error(f"Login error for email: {user_login.email} - {str(e)} [ID: {correlation_id}]")
         
         error_str = str(e).lower()
         if "invalid" in error_str and ("credentials" in error_str or "password" in error_str):
@@ -336,11 +378,17 @@ async def list_all_users(db_handler: SupabaseDBHandler = Depends(get_db_handler)
             
             user_list = []
             for user in users:
+                # Safely extract user attributes - handle both object and dict formats
+                user_id = user.id if hasattr(user, 'id') else (user['id'] if isinstance(user, dict) and 'id' in user else None)
+                user_email = user.email if hasattr(user, 'email') else (user['email'] if isinstance(user, dict) and 'email' in user else None)
+                confirmed_at = user.confirmed_at if hasattr(user, 'confirmed_at') else (user['confirmed_at'] if isinstance(user, dict) and 'confirmed_at' in user else None)
+                created_at = user.created_at if hasattr(user, 'created_at') else (user['created_at'] if isinstance(user, dict) and 'created_at' in user else None)
+                
                 user_info = {
-                    'id': user.id if hasattr(user, 'id') else user.get('id'),
-                    'email': user.email if hasattr(user, 'email') else user.get('email'),
-                    'confirmed_at': user.confirmed_at if hasattr(user, 'confirmed_at') else user.get('confirmed_at'),
-                    'created_at': user.created_at if hasattr(user, 'created_at') else user.get('created_at')
+                    'id': user_id,
+                    'email': user_email,
+                    'confirmed_at': confirmed_at,
+                    'created_at': created_at
                 }
                 user_list.append(user_info)
             
@@ -368,7 +416,7 @@ async def manual_confirm_user(email: str, db_handler: SupabaseDBHandler = Depend
                 users = []
                 
             for user in users:
-                user_email = user.email if hasattr(user, 'email') else user.get('email')
+                user_email = user.email if hasattr(user, 'email') else (user['email'] if isinstance(user, dict) and 'email' in user else None)
                 if user_email == email:
                     user_to_confirm = user
                     break

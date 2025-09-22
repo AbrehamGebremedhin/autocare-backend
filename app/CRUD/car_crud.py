@@ -6,7 +6,7 @@ from app.utils.logger import get_logger_instance, Logger
 from app.services.parser_service import ParserService
 from app.services.embedding_service import EmbeddingService
 from app.utils.redis_cache import get_redis_cache, RedisCache
-from typing import List, Dict
+from typing import List, Dict, Optional, Any
 import os
 import uuid
 import json
@@ -30,13 +30,31 @@ class CarCRUD(BaseCRUD):
         return f"{make.strip().lower().replace(' ', '-')}-{model.strip().lower().replace(' ', '-')}-{year}"
 
     def ensure_list(self, value):
-        """Ensure the value is a list, parsing from JSON if needed."""
+        """Ensure the value is a list of proper CarGuideLink objects, parsing from JSON if needed."""
         if isinstance(value, list):
-            return value
+            # If it's already a list, ensure each item has the right structure
+            result = []
+            for item in value:
+                if isinstance(item, dict) and 'link' in item:
+                    result.append(item)
+                elif isinstance(item, str):
+                    # If it's a string, treat it as a link with no summary
+                    result.append({'link': item, 'summary': None})
+            return result
         if value is None:
             return []
         try:
-            return json.loads(value)
+            # Try to parse as JSON
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                result = []
+                for item in parsed:
+                    if isinstance(item, dict) and 'link' in item:
+                        result.append(item)
+                    elif isinstance(item, str):
+                        result.append({'link': item, 'summary': None})
+                return result
+            return []
         except Exception:
             return []
 
@@ -213,6 +231,18 @@ class CarCRUD(BaseCRUD):
         except Exception as e:
             await self.logger.error(f"Error checking if PDF exists: {str(e)}")
             return False
+
+    async def read(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Override read to properly parse car_guide_links JSON field"""
+        result = await super().read(filters)
+        
+        # Process each car record to parse car_guide_links
+        if result and isinstance(result, list):
+            for car in result:
+                if isinstance(car, dict) and 'car_guide_links' in car:
+                    car['car_guide_links'] = self.ensure_list(car['car_guide_links'])
+        
+        return result
 
     async def create(self, data):
         """Create a car record - now redirects to create_or_get_car for uniqueness"""

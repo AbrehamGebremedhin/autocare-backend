@@ -133,9 +133,9 @@ async def create_chat_session(request: CreateChatSessionRequest):
 @router.get(
     '/chat/sessions/{user_id}',
     summary="Get all chat sessions for a user",
-    description="Retrieve all chat sessions associated with a user.",
+    description="Retrieve all chat sessions associated with a user. Returns only session metadata without messages.",
     responses={
-        200: {"description": "List of chat sessions."},
+        200: {"description": "List of chat sessions with metadata only."},
         404: {"description": "User not found."},
         500: {"description": "Internal server error."}
     }
@@ -143,7 +143,19 @@ async def create_chat_session(request: CreateChatSessionRequest):
 async def get_user_sessions(user_id: str):
     try:
         sessions = await chat_session_crud.read({'user_id': user_id})
-        return sessions
+        # Return only session metadata, excluding messages to reduce logging verbosity
+        session_summaries = []
+        for session in sessions:
+            summary = {
+                'id': session.get('id'),
+                'user_id': session.get('user_id'),
+                'title': session.get('title', 'Untitled Session'),
+                'created_at': session.get('created_at'),
+                'updated_at': session.get('updated_at'),
+                'message_count': len(session.get('messages', []))
+            }
+            session_summaries.append(summary)
+        return session_summaries
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -81,13 +81,15 @@ async def ingest_pdf(
     title: str,
     car_id: str | None = None,
 ) -> int:
-    await asyncio.to_thread(_delete_existing, title, car_id)
     reader = await asyncio.to_thread(PdfReader, path)
-    pages = await asyncio.to_thread(lambda: [p.extract_text() or "" for p in reader.pages])
+    pages = await asyncio.to_thread(lambda: [(p.extract_text() or "").replace("\x00", "") for p in reader.pages])
     rows = [
         {"source_type": source_type, "car_id": car_id, "title": title, "page": page, "content": text}
         for page, text in chunk_pages(pages)
     ]
+    if not rows:
+        return 0
+    await asyncio.to_thread(_delete_existing, title, car_id)
     for i in range(0, len(rows), _INSERT_BATCH):
         await asyncio.to_thread(_insert_batch, rows[i:i + _INSERT_BATCH])
     await logger.info(f"Ingested '{title}': {len(rows)} passages")

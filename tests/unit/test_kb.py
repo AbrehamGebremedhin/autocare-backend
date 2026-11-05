@@ -1,5 +1,7 @@
 import re
 
+import pytest
+
 from app.services.kb import build_tsquery, chunk_pages, ingest_pdf, search
 
 
@@ -85,7 +87,25 @@ async def test_ingest_pdf_row_shape(mocker, tmp_path):
 
 async def test_ingest_pdf_returns_zero_for_textless_pdf(mocker, tmp_path):
     insert = mocker.patch("app.services.kb._insert_batch")
-    mocker.patch("app.services.kb._delete_existing")
+    delete = mocker.patch("app.services.kb._delete_existing")
     _fake_reader(mocker, ["", None, "  \n "])
     assert await ingest_pdf(tmp_path / "s.pdf", source_type="book", title="Scan") == 0
     insert.assert_not_called()
+    delete.assert_not_called()
+
+
+async def test_ingest_pdf_strips_nul_characters(mocker, tmp_path):
+    inserted = []
+    mocker.patch("app.services.kb._delete_existing")
+    mocker.patch("app.services.kb._insert_batch", side_effect=inserted.append)
+    _fake_reader(mocker, ["a\x00b"])
+    await ingest_pdf(tmp_path / "n.pdf", source_type="book", title="Nul")
+    assert inserted[0][0]["content"] == "ab"
+
+
+async def test_ingest_pdf_unreadable_pdf_leaves_existing_rows(mocker, tmp_path):
+    delete = mocker.patch("app.services.kb._delete_existing")
+    mocker.patch("app.services.kb.PdfReader", side_effect=ValueError("corrupt"))
+    with pytest.raises(ValueError):
+        await ingest_pdf(tmp_path / "bad.pdf", source_type="book", title="Bad")
+    delete.assert_not_called()

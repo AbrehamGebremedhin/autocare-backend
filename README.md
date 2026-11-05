@@ -32,7 +32,7 @@ docker compose up
 
 ## API
 
-Interactive reference: `http://localhost:8000/docs`. Every route except `/api/v1/auth/*` and `/health` needs `Authorization: Bearer <token>` from login; the user id always comes from the token.
+Interactive reference: `http://localhost:8000/docs`. Every route except `/api/v1/auth/*` and `/health` needs `Authorization: Bearer <token>` from login, and so does `POST /api/v1/auth/logout`; the user id always comes from the token.
 
 | Area | Routes |
 | --- | --- |

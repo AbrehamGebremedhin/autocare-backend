@@ -53,9 +53,14 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(v1_router, prefix="/api/v1")
 
 
+def _ping_supabase() -> None:
+    SupabaseDBHandler().client.table("Car").select("id").limit(1).execute()
+
+
 async def check_supabase() -> bool:
     try:
-        return bool(await asyncio.wait_for(SupabaseDBHandler().health_check(), 5))
+        await asyncio.wait_for(asyncio.to_thread(_ping_supabase), 5)
+        return True
     except Exception:
         return False
 

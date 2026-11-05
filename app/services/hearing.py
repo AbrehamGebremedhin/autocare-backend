@@ -51,6 +51,7 @@ CAR_SOUND_LABELS: list[str] = [
 ]
 
 MAX_TRANSCRIPT_CHARS = 2000  # the transcript feeds an LLM prompt
+WHISPER_SR = 16000
 CLAP_SR = 48000
 WINDOW_SECONDS = 10
 MIN_TAIL_SECONDS = 2
@@ -80,9 +81,6 @@ def _clap():
             name = get_settings().CLAP_MODEL
             _clap_model = (ClapModel.from_pretrained(name).eval(), ClapProcessor.from_pretrained(name))
         return _clap_model
-
-
-WHISPER_SR = 16000
 
 
 def _transcribe_sync(pcm: np.ndarray) -> str:

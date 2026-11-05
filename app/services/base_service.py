@@ -1,18 +1,14 @@
 from abc import ABC, abstractmethod
-from app.utils.websocket import manager
-from app.core.interfaces import IWebSocketManager
 from typing import Optional, Dict, Any
 import asyncio
 import time
 from functools import wraps
-from app.utils.message_types import MessageType, MessageSource
 
 class BaseService(ABC):
     """
     Abstract base class for all service classes with performance enhancements.
     """
-    def __init__(self, websocket_manager: IWebSocketManager = None):
-        self.websocket_manager = websocket_manager or manager
+    def __init__(self):
         self._cache: Dict[str, Any] = {}
         self._cache_ttl: Dict[str, float] = {}
         self._default_cache_duration = 300  # 5 minutes default
@@ -101,50 +97,6 @@ class BaseService(ABC):
         """Force clear all cached data."""
         self._cache.clear()
         self._cache_ttl.clear()
-
-    async def notify_task(self, event: str, detail: str = ""):
-        """Send a websocket notification about task events (start/finish)."""
-        if self.websocket_manager:
-            await self.websocket_manager.broadcast({
-                "service": self.__class__.__name__,
-                "event": event,
-                "detail": detail
-            })
-
-    async def run_with_notification(self, coro, *args, **kwargs):
-        """Run a coroutine with start/finish notifications."""
-        await self.notify_task("task_started")
-        try:
-            result = await coro(*args, **kwargs)
-            await self.notify_task("task_finished")
-            return result
-        except Exception as exc:
-            await self.notify_task("task_failed", detail=str(exc))
-            raise
-
-    async def send_ws_info(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
-            await self.websocket_manager.send_info(websocket, content, source, session_id, details)
-
-    async def send_ws_error(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
-            await self.websocket_manager.send_error(websocket, content, source, session_id, details)
-
-    async def send_ws_progress(self, websocket, content, source: MessageSource, progress: float, session_id=None, details=None):
-        if self.websocket_manager:
-            await self.websocket_manager.send_progress(websocket, content, source, progress, session_id, details)
-
-    async def send_ws_stage(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
-            await self.websocket_manager.send_stage(websocket, content, source, session_id, details)
-
-    async def send_ws_result(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
-            await self.websocket_manager.send_result(websocket, content, source, session_id, details)
-
-    async def send_ws_debug(self, websocket, content, source: MessageSource, session_id=None, details=None):
-        if self.websocket_manager:
-            await self.websocket_manager.send_debug(websocket, content, source, session_id, details)
 
     @abstractmethod
     async def perform_action(self, *args, **kwargs):

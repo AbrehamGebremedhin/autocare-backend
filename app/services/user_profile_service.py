@@ -9,8 +9,8 @@ import asyncio
 class UserProfileService(BaseService):
     """Service for managing user profiles and car associations"""
     
-    def __init__(self, websocket_manager=None, car_crud: Optional[CarCRUD] = None):
-        super().__init__(websocket_manager=websocket_manager)
+    def __init__(self, car_crud: Optional[CarCRUD] = None):
+        super().__init__()
         self.car_crud = car_crud or CarCRUD()
         self.db_handler = SupabaseDBHandler()
         self.logger = get_logger_instance("user_profile")
@@ -34,8 +34,6 @@ class UserProfileService(BaseService):
         make: str, 
         model: str, 
         year: int,
-        websocket=None,
-        session_id: str = None
     ) -> Dict[str, Any]:
         """
         Add a car to a user's profile. Creates car if it doesn't exist.
@@ -45,22 +43,11 @@ class UserProfileService(BaseService):
             make: Car make
             model: Car model
             year: Car year
-            websocket: Optional websocket for progress updates
-            session_id: Optional session ID for websocket messages
             
         Returns:
             Dict with success status and car info
         """
         try:
-            if websocket:
-                await self.send_ws_progress(
-                    websocket,
-                    f"Adding {make} {model} {year} to your profile",
-                    self.__class__.__name__,
-                    0.1,
-                    session_id=session_id
-                )
-            
             # Create or get existing car
             car_data = {
                 'make': make,
@@ -68,11 +55,7 @@ class UserProfileService(BaseService):
                 'year': year
             }
             
-            cars = await self.car_crud.create_or_get_car(
-                car_data,
-                websocket=websocket,
-                session_id=session_id
-            )
+            cars = await self.car_crud.create_or_get_car(car_data)
             
             if not cars or not isinstance(cars, list) or not cars[0]:
                 return {"success": False, "error": "Failed to create/get car", "car_id": None}
@@ -81,15 +64,6 @@ class UserProfileService(BaseService):
             car_id = car['id']
             
             await self.logger.info(f"Car {car_id} ready for user {user_id}")
-            
-            if websocket:
-                await self.send_ws_progress(
-                    websocket,
-                    f"Car {make} {model} {year} ready",
-                    self.__class__.__name__,
-                    0.5,
-                    session_id=session_id
-                )
             
             # Get or create user profile
             profile = await self._get_or_create_user_profile(user_id)
@@ -109,22 +83,6 @@ class UserProfileService(BaseService):
             else:
                 await self.logger.info(f"Car {car_id} already in user {user_id}'s profile")
             
-            if websocket:
-                await self.send_ws_result(
-                    websocket,
-                    f"Successfully added {make} {model} {year} to your garage",
-                    self.__class__.__name__,
-                    session_id=session_id,
-                    details={
-                        "car_id": car_id,
-                        "make": make,
-                        "model": model,
-                        "year": year,
-                        "is_vectorized": car.get('is_vectorized', False),
-                        "vector_chunk_count": car.get('vector_chunk_count', 0)
-                    }
-                )
-            
             return {
                 "success": True, 
                 "car_id": car_id,
@@ -136,15 +94,6 @@ class UserProfileService(BaseService):
             error_msg = f"Error adding car to user {user_id}: {str(e)}"
             await self.logger.error(error_msg)
             
-            if websocket:
-                await self.send_ws_error(
-                    websocket,
-                    error_msg,
-                    self.__class__.__name__,
-                    session_id=session_id,
-                    details={"user_id": user_id, "error": str(e)}
-                )
-                
             return {"success": False, "error": str(e), "car_id": None}
 
     async def get_user_cars(self, user_id: str) -> List[Dict[str, Any]]:

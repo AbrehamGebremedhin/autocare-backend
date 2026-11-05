@@ -2,9 +2,8 @@ import logging
 import asyncio
 import functools
 from typing import Optional
-from app.core.interfaces import ILogger
 
-class Logger(ILogger):
+class Logger:
     _instances = {}
     _lock = asyncio.Lock()
 

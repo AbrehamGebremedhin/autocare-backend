@@ -1,13 +1,11 @@
 from app.services.base_service import BaseService
 from app.core.config import get_settings
-from app.core.interfaces import IWebSocketManager, ILogger
 from bs4 import BeautifulSoup
 import httpx
 import asyncio
 import aiofiles
 from typing import Optional, List, Dict
 from app.utils.logger import get_logger_instance, Logger
-from app.utils.message_types import MessageSource
 
 class FetchCarDataService(BaseService):
     """
@@ -15,8 +13,7 @@ class FetchCarDataService(BaseService):
     """
     def __init__(
         self,
-        websocket_manager: IWebSocketManager = None,
-        logger: Optional[ILogger] = None,
+        logger: Optional[Logger] = None,
         client_pool: Optional[httpx.AsyncClient] = None,
         base_url: Optional[str] = None,
         max_retries: int = 3,
@@ -25,14 +22,13 @@ class FetchCarDataService(BaseService):
         """
         Initialize the FetchCarDataService.
         Args:
-            websocket_manager: Optional WebSocketManager for notifications.
             logger: Optional logger instance.
             client_pool: Optional HTTP client pool.
             base_url: Optional base URL for car data.
             max_retries: Max retries for HTTP requests.
             retry_delay: Delay between retries.
         """
-        super().__init__(websocket_manager=websocket_manager)
+        super().__init__()
         self.logger = logger or get_logger_instance("FetchCarDataService")
         settings = get_settings()
         self.BASE_URL = "https://www.startmycar.com/"
@@ -64,23 +60,6 @@ class FetchCarDataService(BaseService):
         if self._client_pool:
             await self._client_pool.aclose()
             self._client_pool = None
-
-    async def notify_websocket(self, message):
-        """
-        Sends a websocket notification message.
-        Handles both async and sync contexts.
-        Args:
-            message (str): The message to send via websocket.
-        """
-        if self.websocket_manager is None:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.websocket_manager.broadcast(message))
-        except RuntimeError:
-            await self.websocket_manager.broadcast(message)
-        except Exception as e:
-            await self.logger.error(f"notify_websocket error: {e}")
 
     def build_url(self, make: str, model: str, year: int) -> dict:
         """
@@ -150,7 +129,6 @@ class FetchCarDataService(BaseService):
                 response = await client.get(url)
                 
                 if response.status_code != 200:
-                    await self.notify_websocket(f"Failed to access {url}. Status code: {response.status_code}")
                     raise Exception(f"Failed to access URL. Status code: {response.status_code}")
                     
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -162,14 +140,12 @@ class FetchCarDataService(BaseService):
                     if first_link:
                         link = first_link['href']
                         
-                await self.notify_websocket(f"Successfully scraped link from manual-text div at {url}")
                 return link
             
             else:
                 response = await client.get(url)
                                     
                 if response.status_code != 200:
-                    await self.notify_websocket(f"Failed to access {url}. Status code: {response.status_code}")
                     raise Exception(f"Failed to access URL. Status code: {response.status_code}")
                     
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -197,11 +173,9 @@ class FetchCarDataService(BaseService):
                         await self.logger.error(f"Error fetching summary for {article_url}: {e}")
                         results.append({'link': article_url, 'summary': None})
                 
-                await self.notify_websocket(f"Successfully scraped {len(results)} article links with summaries from {url}")
                 return results
                 
         except Exception as e:
-            await self.notify_websocket(f"Error scraping links from {url}: {str(e)}")
             await self.logger.error(f"scrape_links error: {e}")
             raise
 
@@ -222,52 +196,35 @@ class FetchCarDataService(BaseService):
                 if response.status_code == 200 and 'application/pdf' in response.headers.get('Content-Type', ''):
                     async with aiofiles.open(output_path, 'wb') as f:
                         await f.write(response.content)
-                    await self.notify_websocket(f"PDF downloaded successfully: {output_path}")
                     return
                 else:
-                    await self.notify_websocket(f"Failed to download PDF from {url}")
                     if attempt == self._max_retries - 1:
                         raise Exception(f"Failed to download PDF. Status: {response.status_code}")
                         
             except Exception as e:
                 if attempt == self._max_retries - 1:
-                    await self.notify_websocket(f"Error downloading PDF from {url}: {str(e)}")
                     await self.logger.error(f"download_pdf error: {e}")
                     raise
                 
                 wait_time = self._retry_delay * (2 ** attempt)
                 await asyncio.sleep(wait_time)
 
-    async def perform_action(self, make: str, model: str, year: int, websocket=None, session_id=None):
+    async def perform_action(self, make: str, model: str, year: int):
         """
-        Performs the complete car data fetching action: building URLs, scraping links, and downloading PDFs.
-        Enhanced with parallel processing for improved performance.
+        Performs the complete car data fetching action: building URLs and scraping links.
         Args:
             make (str): The car's make.
             model (str): The car's model.
             year (int): The car's year.
         Returns:
-            list: A list of scraped links or file paths.
-        Raises:
-            Exception: If any step fails.
+            list: A list of scraped guide links.
         """
-        if websocket:
-            await self.send_ws_stage(websocket, "Car data fetch started", MessageSource.CHAT_SERVICE, session_id=session_id, details={"make": make, "model": model, "year": year})
-        try:
-            result = await self.run_with_notification(self._perform_action_impl, make, model, year)
-            if websocket:
-                await self.send_ws_result(websocket, "Car data fetch complete", MessageSource.CHAT_SERVICE, session_id=session_id, details={"num_links": len(result) if result else 0})
-            return result
-        except Exception as e:
-            if websocket:
-                await self.send_ws_error(websocket, f"FetchCarDataService.perform_action error: {e}", MessageSource.CHAT_SERVICE, session_id=session_id, details={"error": str(e)})
-            raise
+        return await self._perform_action_impl(make, model, year)
 
     async def _perform_action_impl(self, make: str, model: str, year: int):
         try:
             links = self.build_url(make, model, year)
             
-            await self.notify_websocket(f"Fetching data for {make} {model} {year}")
 
             async def process_manual():
                 """Only fetch manual link - avoid downloading if not necessary"""

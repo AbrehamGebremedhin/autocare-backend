@@ -1,7 +1,6 @@
 from supabase import create_client, Client
 from app.core.config import get_settings
 from fastapi import Depends
-from app.core.interfaces import IDBHandler
 from app.utils.exceptions import DatabaseException, ConfigurationException
 from app.utils.logger import get_logger_instance
 import asyncio
@@ -9,7 +8,7 @@ from typing import Optional
 import time
 from contextlib import asynccontextmanager
 
-class SupabaseDBHandler(IDBHandler):
+class SupabaseDBHandler:
     _instance = None
     _client = None
     _connection_pool = {}

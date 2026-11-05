@@ -4,14 +4,16 @@ from app.db.base import SupabaseDBHandler, get_db_handler
 from app.schemas.User import UserBase
 from app.core.config import get_settings
 from fastapi.responses import HTMLResponse
+from supabase import AuthError
 from app.services.user_service import user_service
 from app.utils.logger import get_logger_instance
 from app.utils.exceptions import (
-    AuthenticationException, 
+    AuthenticationException,
+    BaseAPIException,
     ValidationException,
     DatabaseException,
     DuplicateRecordException,
-    RecordNotFoundException
+    RateLimitExceededException,
 )
 from fastapi.security import HTTPAuthorizationCredentials
 from app.utils.auth_middleware import jwt_handler, get_current_user, security
@@ -39,6 +41,26 @@ class LoginResponse(BaseModel):
     expires_in: int
     user_id: str
 
+def _auth_provider_error(e: AuthError, registering: bool) -> BaseAPIException:
+    """Map a Supabase auth error to a client error by its code and status; its message is never echoed."""
+    code = getattr(e, "code", None)
+    status_code = getattr(e, "status", None) or 0
+    if code in ("user_already_exists", "email_exists"):
+        return DuplicateRecordException("User")
+    if code == "weak_password":
+        return ValidationException("Password does not meet security requirements")
+    if code in ("email_address_invalid", "validation_failed"):
+        return ValidationException("Invalid email or password format")
+    if code == "email_not_confirmed":
+        return AuthenticationException("Email address not verified. Please check your email.")
+    if code in ("over_request_rate_limit", "over_email_send_rate_limit") or status_code == 429:
+        return RateLimitExceededException("Too many attempts. Please try again later.")
+    if code == "invalid_credentials" or (not registering and status_code in (400, 401)):
+        return AuthenticationException("Invalid email or password")
+    if 400 <= status_code < 500:
+        return ValidationException("Registration was rejected") if registering else AuthenticationException()
+    return DatabaseException("Authentication service temporarily unavailable")
+
 @router.post('/auth/register', response_model=UserBase)
 async def register_user(user: UserCreate, request: Request, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
     correlation_id = getattr(request.state, 'correlation_id', 'unknown')
@@ -47,13 +69,18 @@ async def register_user(user: UserCreate, request: Request, db_handler: Supabase
     
     try:
         async with db_handler.get_connection() as db:
-            response = db.auth.sign_up({
-                "email": user.email,
-                "password": user.password,
-                "options": {
-                    "data": {"phone": user.phone}
-                }
-            })
+            try:
+                response = db.auth.sign_up({
+                    "email": user.email,
+                    "password": user.password,
+                    "options": {
+                        "data": {"phone": user.phone}
+                    }
+                })
+            except AuthError as e:
+                # Caught here: get_connection turns anything else raised in the block into a generic 500.
+                await logger.warning(f"Registration rejected - {type(e).__name__} {getattr(e, 'code', None)} [ID: {correlation_id}]")
+                raise _auth_provider_error(e, registering=True) from None
             # response may be sync, so do not await
             if hasattr(response, 'user') and response.user:
                 user_data = response.user
@@ -80,21 +107,11 @@ async def register_user(user: UserCreate, request: Request, db_handler: Supabase
             await logger.info(f"Registration successful [ID: {correlation_id}]")
             return UserBase(**(user_data.model_dump() if hasattr(user_data, "model_dump") else dict(user_data)))
             
-    except AuthenticationException:
+    except BaseAPIException:
         raise
     except Exception as e:
         await logger.error(f"Registration error - {type(e).__name__} [ID: {correlation_id}]")
-        
-        # Check for specific error types
-        error_str = str(e).lower()
-        if "already exists" in error_str or "duplicate" in error_str:
-            raise DuplicateRecordException("User", details={"email": user.email})
-        elif "invalid" in error_str and "email" in error_str:
-            raise ValidationException("Invalid email format")
-        elif "password" in error_str and ("weak" in error_str or "short" in error_str):
-            raise ValidationException("Password does not meet security requirements")
-        else:
-            raise DatabaseException("Registration failed due to database error")
+        raise DatabaseException("Registration failed due to database error")
 
 @router.post('/auth/login', response_model=LoginResponse)
 async def login_user(user_login: UserLogin, request: Request = None, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
@@ -103,11 +120,16 @@ async def login_user(user_login: UserLogin, request: Request = None, db_handler:
     
     try:
         async with db_handler.get_connection() as db:
-            response = db.auth.sign_in_with_password({
-                "email": user_login.email,
-                "password": user_login.password
-            })
-            
+            try:
+                response = db.auth.sign_in_with_password({
+                    "email": user_login.email,
+                    "password": user_login.password
+                })
+            except AuthError as e:
+                # Caught here: get_connection turns anything else raised in the block into a generic 500.
+                await logger.warning(f"Login rejected - {type(e).__name__} {getattr(e, 'code', None)} [ID: {correlation_id}]")
+                raise _auth_provider_error(e, registering=False) from None
+
             if hasattr(response, 'session') and response.session:
                 session = response.session
                 user = response.user
@@ -181,18 +203,11 @@ async def login_user(user_login: UserLogin, request: Request = None, db_handler:
                 "user_id": user_id
             }
             
-    except AuthenticationException:
+    except BaseAPIException:
         raise
     except Exception as e:
         await logger.error(f"Login error - {type(e).__name__} [ID: {correlation_id}]")
-        
-        error_str = str(e).lower()
-        if "invalid" in error_str and ("credentials" in error_str or "password" in error_str):
-            raise AuthenticationException("Invalid email or password")
-        elif "not confirmed" in error_str or "verification" in error_str:
-            raise AuthenticationException("Email address not verified. Please check your email.")
-        else:
-            raise DatabaseException("Authentication service temporarily unavailable")
+        raise DatabaseException("Authentication service temporarily unavailable")
 
 @router.post('/auth/logout')
 async def logout_user(

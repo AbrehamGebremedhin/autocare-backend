@@ -152,3 +152,82 @@ def test_logout_failure_is_generic_400(client, auth_headers, caplog):
     assert r.json()["detail"] == "Logout failed."
     assert "RuntimeError" in caplog.text
     assert token not in caplog.text + r.text
+
+
+def _real_connection_auth(monkeypatch, **side_effects):
+    """Route requests through the real get_connection with a fake Supabase client (the 62ff578 regression path)."""
+    from unittest.mock import MagicMock
+    from app.db import base
+
+    fake = MagicMock()
+    for name, effect in side_effects.items():
+        getattr(fake.auth, name).side_effect = effect
+    monkeypatch.setattr(base, "create_client", lambda *a, **k: fake)
+    return fake
+
+
+@pytest.mark.parametrize(
+    "error, status",
+    [
+        (("Invalid login credentials", 400, "invalid_credentials"), 401),
+        (("Email not confirmed", 400, "email_not_confirmed"), 401),
+        (("Invalid login credentials", 400, None), 401),  # older GoTrue sends no code
+        (("Request rate limit reached", 429, "over_request_rate_limit"), 429),
+        (("upstream exploded", 500, "unexpected_failure"), 500),
+    ],
+)
+def test_login_maps_supabase_auth_errors(client, monkeypatch, error, status):
+    from supabase import AuthApiError
+
+    _real_connection_auth(monkeypatch, sign_in_with_password=AuthApiError(*error))
+    r = client.post("/api/v1/auth/login", json={"email": "a@example.com", "password": "pw123456"})
+    assert r.status_code == status
+    assert error[0] not in r.text
+
+
+def test_wrong_password_is_401_with_generic_message(client, monkeypatch):
+    from supabase import AuthApiError
+
+    _real_connection_auth(
+        monkeypatch, sign_in_with_password=AuthApiError("Invalid login credentials", 400, "invalid_credentials")
+    )
+    r = client.post("/api/v1/auth/login", json={"email": "a@example.com", "password": "wrong-pass"})
+    assert r.status_code == 401
+    assert r.json()["message"] == "Invalid email or password"
+
+
+@pytest.mark.parametrize(
+    "error, status",
+    [
+        (("User already registered", 422, "user_already_exists"), 409),
+        (("A user with this email address has already been registered", 422, "email_exists"), 409),
+        (("Unable to validate email address: invalid format", 400, "email_address_invalid"), 400),
+        (("Signups not allowed for this instance", 422, "signup_disabled"), 400),
+        (("Email rate limit exceeded", 429, "over_email_send_rate_limit"), 429),
+    ],
+)
+def test_register_maps_supabase_auth_errors(client, monkeypatch, error, status):
+    from supabase import AuthApiError
+
+    _real_connection_auth(monkeypatch, sign_up=AuthApiError(*error))
+    r = client.post("/api/v1/auth/register", json={"email": "a@example.com", "password": "pw123456"})
+    assert r.status_code == status
+    assert error[0] not in r.text
+
+
+def test_register_weak_password_is_400(client, monkeypatch):
+    from supabase import AuthWeakPasswordError
+
+    _real_connection_auth(
+        monkeypatch, sign_up=AuthWeakPasswordError("Password should be at least 6 characters", 422, ["length"])
+    )
+    r = client.post("/api/v1/auth/register", json={"email": "a@example.com", "password": "pw"})
+    assert r.status_code == 400
+    assert r.json()["message"] == "Password does not meet security requirements"
+
+
+def test_non_auth_failure_in_connection_block_stays_generic_500(client, monkeypatch):
+    _real_connection_auth(monkeypatch, sign_in_with_password=RuntimeError("socket to 10.0.0.5 reset"))
+    r = client.post("/api/v1/auth/login", json={"email": "a@example.com", "password": "pw123456"})
+    assert r.status_code == 500
+    assert "10.0.0.5" not in r.text

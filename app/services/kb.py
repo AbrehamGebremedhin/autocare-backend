@@ -90,8 +90,16 @@ async def ingest_pdf(
     if not rows:
         return 0
     await asyncio.to_thread(_delete_existing, title, car_id)
-    for i in range(0, len(rows), _INSERT_BATCH):
-        await asyncio.to_thread(_insert_batch, rows[i:i + _INSERT_BATCH])
+    try:
+        for i in range(0, len(rows), _INSERT_BATCH):
+            await asyncio.to_thread(_insert_batch, rows[i:i + _INSERT_BATCH])
+    except Exception:
+        # Don't leave a half-loaded document behind: drop the batches that did land.
+        try:
+            await asyncio.to_thread(_delete_existing, title, car_id)
+        except Exception as cleanup_exc:
+            await logger.error(f"Cleanup after failed ingest of '{title}' failed: {type(cleanup_exc).__name__}")
+        raise
     await logger.info(f"Ingested '{title}': {len(rows)} passages")
     return len(rows)
 

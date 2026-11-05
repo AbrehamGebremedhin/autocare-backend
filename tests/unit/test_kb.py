@@ -109,3 +109,33 @@ async def test_ingest_pdf_unreadable_pdf_leaves_existing_rows(mocker, tmp_path):
     with pytest.raises(ValueError):
         await ingest_pdf(tmp_path / "bad.pdf", source_type="book", title="Bad")
     delete.assert_not_called()
+
+
+async def test_ingest_pdf_failed_batch_removes_partial_rows(mocker, tmp_path):
+    calls = []
+    mocker.patch("app.services.kb._delete_existing", side_effect=lambda t, c: calls.append(("delete", t, c)))
+
+    def insert(rows):
+        if len([c for c in calls if c[0] == "insert"]) == 1:
+            raise RuntimeError("insert failed")
+        calls.append(("insert", len(rows)))
+
+    mocker.patch("app.services.kb._insert_batch", side_effect=insert)
+    _fake_reader(mocker, [f"page text {i}" for i in range(1100)])
+    with pytest.raises(RuntimeError):
+        await ingest_pdf(tmp_path / "m.pdf", source_type="manual", title="Echo", car_id="toyota-echo-2001")
+    assert calls == [
+        ("delete", "Echo", "toyota-echo-2001"),
+        ("insert", 500),
+        ("delete", "Echo", "toyota-echo-2001"),  # the partial load is removed
+    ]
+
+
+async def test_ingest_pdf_cleanup_failure_still_raises_insert_error(mocker, tmp_path):
+    delete = mocker.patch("app.services.kb._delete_existing", side_effect=[None, OSError("down")])
+    mocker.patch("app.services.kb._insert_batch", side_effect=RuntimeError("insert failed"))
+    _fake_reader(mocker, ["hello"])
+    with pytest.raises(RuntimeError, match="insert failed"):
+        await ingest_pdf(tmp_path / "b.pdf", source_type="book", title="Book")
+    assert delete.call_count == 2
+    assert delete.call_args.args == ("Book", None)

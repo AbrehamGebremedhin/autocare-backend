@@ -113,5 +113,5 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     
     def _is_sensitive_endpoint(self, request: Request) -> bool:
         """Check if endpoint handles sensitive data"""
-        sensitive_paths = ["/auth/", "/api/v1/auth/", "/security/", "/api/v1/sessions"]
+        sensitive_paths = ["/auth/", "/api/v1/auth/", "/security/", "/api/v1/sessions", "/api/v1/cars"]
         return any(sensitive_path in str(request.url.path) for sensitive_path in sensitive_paths)

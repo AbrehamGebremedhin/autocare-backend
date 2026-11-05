@@ -45,9 +45,6 @@ class SupabaseDBHandler:
                     self.settings.SUPABASE_URL, 
                     self.settings.SUPABASE_KEY
                 )
-                
-                # Test the connection
-                await self._test_connection(client)
                 return client
                 
             except Exception as e:
@@ -60,16 +57,6 @@ class SupabaseDBHandler:
                         details={"attempts": self._retry_attempts, "error": str(e)}
                     )
                 await asyncio.sleep(self._retry_delay * (attempt + 1))
-
-    async def _test_connection(self, client: Client):
-        """Test database connection"""
-        try:
-            # Simple health check query
-            response = client.table("ping").select("*").limit(1).execute()
-            # Connection is working if we don't get an exception
-        except Exception as e:
-            # This is expected for the ping table, but connection errors will be raised
-            pass
 
     @asynccontextmanager
     async def get_connection(self):
@@ -117,17 +104,6 @@ class SupabaseDBHandler:
             except Exception as e:
                 raise DatabaseException(f"Failed to create database client: {str(e)}")
         return self._client
-
-    async def health_check(self) -> bool:
-        """Perform a health check on the database connection"""
-        try:
-            async with self.get_connection() as client:
-                # Perform a simple operation to test connectivity
-                response = client.table("users").select("count").limit(1).execute()
-                return True
-        except Exception as e:
-            await self.logger.error(f"Database health check failed: {str(e)}")
-            return False
 
     async def close(self):
         """Close all database connections"""

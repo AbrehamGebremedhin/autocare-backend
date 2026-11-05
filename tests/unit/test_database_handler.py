@@ -82,17 +82,14 @@ class TestSupabaseDBHandler:
         
         handler = SupabaseDBHandler()
         
-        with patch.object(handler, '_test_connection', new_callable=AsyncMock) as mock_test:
-            mock_test.return_value = None
-            
-            client = asyncio.run(handler._create_client())
-            
-            assert client == mock_client
-            mock_create_client.assert_called_once_with(
-                mock_settings.SUPABASE_URL, 
-                mock_settings.SUPABASE_KEY
-            )
-            mock_test.assert_called_once_with(mock_client)
+        client = asyncio.run(handler._create_client())
+        
+        assert client == mock_client
+        mock_create_client.assert_called_once_with(
+            mock_settings.SUPABASE_URL, 
+            mock_settings.SUPABASE_KEY
+        )
+        mock_client.table.assert_not_called()  # no probe query against a nonexistent table
     
     @patch('app.db.base.get_settings')
     @patch('app.db.base.create_client')
@@ -106,13 +103,10 @@ class TestSupabaseDBHandler:
         
         handler = SupabaseDBHandler()
         
-        with patch.object(handler, '_test_connection', new_callable=AsyncMock) as mock_test:
-            mock_test.return_value = None
-            
-            client = asyncio.run(handler._create_client())
-            
-            assert client == mock_client
-            assert mock_create_client.call_count == 2
+        client = asyncio.run(handler._create_client())
+        
+        assert client == mock_client
+        assert mock_create_client.call_count == 2
     
     @patch('app.db.base.get_settings')
     @patch('app.db.base.create_client')
@@ -131,24 +125,6 @@ class TestSupabaseDBHandler:
         assert mock_create_client.call_count == handler._retry_attempts
     
     @patch('app.db.base.get_settings')
-    def test_test_connection(self, mock_get_settings, mock_settings):
-        """Test connection testing"""
-        mock_get_settings.return_value = mock_settings
-        handler = SupabaseDBHandler()
-        
-        mock_client = MagicMock()
-        mock_table = MagicMock()
-        mock_client.table.return_value = mock_table
-        mock_table.select.return_value = mock_table
-        mock_table.limit.return_value = mock_table
-        mock_table.execute.return_value = MagicMock()
-        
-        # Should not raise exception
-        asyncio.run(handler._test_connection(mock_client))
-        
-        mock_client.table.assert_called_once_with("ping")
-    
-    @patch('app.db.base.get_settings')
     @patch('app.db.base.create_client')
     def test_get_connection_context_manager(self, mock_create_client, mock_get_settings, mock_settings):
         """Test connection context manager"""
@@ -158,20 +134,19 @@ class TestSupabaseDBHandler:
         
         handler = SupabaseDBHandler()
         
-        with patch.object(handler, '_test_connection', new_callable=AsyncMock):
-            async def test_context_manager():
-                # Pool should be empty initially
-                assert len(handler._connection_pool) == 0
-                
-                async with handler.get_connection() as client:
-                    assert client == mock_client
-                    # Inside the context, connection should be in pool
-                    assert len(handler._connection_pool) == 1
-                
-                # After context, connection should be removed
-                assert len(handler._connection_pool) == 0
+        async def test_context_manager():
+            # Pool should be empty initially
+            assert len(handler._connection_pool) == 0
             
-            asyncio.run(test_context_manager())
+            async with handler.get_connection() as client:
+                assert client == mock_client
+                # Inside the context, connection should be in pool
+                assert len(handler._connection_pool) == 1
+            
+            # After context, connection should be removed
+            assert len(handler._connection_pool) == 0
+        
+        asyncio.run(test_context_manager())
     
     @patch('app.db.base.get_settings')
     def test_get_connection_error_handling(self, mock_get_settings, mock_settings):
@@ -207,35 +182,6 @@ class TestSupabaseDBHandler:
         # Second access should return same client
         assert handler.client == mock_client
         assert mock_create_client.call_count == 1
-    
-    @patch('app.db.base.get_settings')
-    @patch('app.db.base.create_client')
-    def test_health_check_success(self, mock_create_client, mock_get_settings, mock_settings):
-        """Test successful health check"""
-        mock_get_settings.return_value = mock_settings
-        mock_client = MagicMock()
-        mock_create_client.return_value = mock_client
-        
-        handler = SupabaseDBHandler()
-        
-        with patch.object(handler, 'get_connection') as mock_get_conn:
-            mock_get_conn.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_get_conn.return_value.__aexit__ = AsyncMock(return_value=None)
-            
-            result = asyncio.run(handler.health_check())
-            assert result == True
-    
-    @patch('app.db.base.get_settings')
-    def test_health_check_failure(self, mock_get_settings, mock_settings):
-        """Test health check failure"""
-        mock_get_settings.return_value = mock_settings
-        handler = SupabaseDBHandler()
-        
-        with patch.object(handler, 'get_connection') as mock_get_conn:
-            mock_get_conn.side_effect = Exception("Connection failed")
-            
-            result = asyncio.run(handler.health_check())
-            assert result == False
     
     @patch('app.db.base.get_settings')
     def test_close_connections(self, mock_get_settings, mock_settings):
@@ -302,24 +248,23 @@ class TestDatabaseIntegration:
         
         handler = SupabaseDBHandler()
         
-        with patch.object(handler, '_test_connection', new_callable=AsyncMock):
-            async def test_multiple():
-                # Create multiple connections concurrently
-                tasks = []
-                for i in range(3):
-                    async def use_connection():
-                        async with handler.get_connection() as client:
-                            return client
-                    
-                    tasks.append(use_connection())
+        async def test_multiple():
+            # Create multiple connections concurrently
+            tasks = []
+            for i in range(3):
+                async def use_connection():
+                    async with handler.get_connection() as client:
+                        return client
                 
-                results = await asyncio.gather(*tasks)
-                
-                # All connections should be returned
-                assert len(results) == 3
-                assert all(result in mock_clients for result in results)
+                tasks.append(use_connection())
             
-            asyncio.run(test_multiple())
+            results = await asyncio.gather(*tasks)
+            
+            # All connections should be returned
+            assert len(results) == 3
+            assert all(result in mock_clients for result in results)
+        
+        asyncio.run(test_multiple())
     
     @patch('app.db.base.get_settings')
     def test_connection_cleanup_on_error(self, mock_get_settings, mock_settings):

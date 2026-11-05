@@ -5,20 +5,18 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import aclosing
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core.config import get_settings
 from app.services import diagnosis
 from app.services.diagnosis import run_turn, sse
-from app.services.media import MediaError, Upload, validate_uploads
+from app.services.media import Upload, validate_uploads
 from app.services.user_profile_service import UserProfileService
 from app.utils.auth_middleware import get_current_user
 from app.utils.exceptions import (
-    BaseAPIException,
     BusinessLogicException,
-    ErrorCode,
     RecordNotFoundException,
     ResourceConflictException,
 )
@@ -155,12 +153,7 @@ async def send_message(
         uploads: list[Upload] = []
         if files:
             tmpdir = tempfile.mkdtemp(prefix="autocare-turn-")
-            try:
-                uploads = await validate_uploads(files, Path(tmpdir))
-            except MediaError:
-                raise BaseAPIException(
-                    ErrorCode.INVALID_FORMAT, diagnosis.MEDIA_ERROR, status.HTTP_422_UNPROCESSABLE_ENTITY
-                ) from None
+            uploads = await validate_uploads(files, Path(tmpdir))
         body, release = _events(session, car, text, uploads, tmpdir)
         return StreamingResponse(
             body,

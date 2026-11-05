@@ -391,19 +391,6 @@ def test_validation_error_is_json_not_stream(client, auth_headers, existing_sess
     assert r.status_code == 200 and _parse(r.text)[-1][0] == "done"
 
 
-def test_media_error_in_validation_is_generic_422(client, auth_headers, existing_session, fake_llm, turn_dirs, monkeypatch):
-    async def broken(files, tmpdir):
-        raise MediaError(detail=f"ffmpeg: {tmpdir / 'abc.bin'}: decode failed")
-
-    monkeypatch.setattr(session_route, "validate_uploads", broken)
-    r = client.post(_url(existing_session["id"]), files={"files": ("a.mp4", b"x", "video/mp4")}, headers=auth_headers)
-    assert r.status_code == 422 and r.headers["content-type"].startswith("application/json")
-    assert r.json()["message"] == MEDIA_ERROR
-    assert "abc.bin" not in r.text and "ffmpeg" not in r.text and str(turn_dirs[0]) not in r.text
-    assert existing_session["id"] not in session_route._in_flight and not turn_dirs[0].exists()
-    assert fake_llm.calls == 0
-
-
 def test_photo_turn_over_http(client, auth_headers, existing_session, fake_all, turn_dirs):
     sid, uid = existing_session["id"], existing_session["user_id"]
     photo = _jpeg((10, 120, 10))

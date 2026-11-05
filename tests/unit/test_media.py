@@ -1,3 +1,5 @@
+import asyncio
+import io
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -42,6 +44,12 @@ def media_dir(tmp_path_factory):
     _ff(*tv, "-pix_fmt", "yuv420p", str(d / "silent2.mp4"))
     _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=61", "-ar", "8000", str(d / "long.wav"))
     _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ar", "8000", str(d / "tone.wav"))
+    _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=90", "-ar", "8000", str(d / "ninety.wav"))
+    buf = io.BytesIO()
+    Image.new("RGB", (80, 60), (200, 0, 0)).save(
+        buf, "MPO", save_all=True, append_images=[Image.new("RGB", (80, 60), (0, 0, 200))]
+    )
+    (d / "multi.mpo").write_bytes(buf.getvalue())
     _ff(
         "-f", "lavfi", "-i", "testsrc=duration=61:size=64x48:rate=1",
         "-pix_fmt", "yuv420p", str(d / "longvid.mp4"),
@@ -176,7 +184,7 @@ async def test_decompression_bomb_rejected(tmp_media, monkeypatch):
     monkeypatch.setattr(media, "MAX_IMAGE_PIXELS", 100)
     with pytest.raises(HTTPException) as e:
         await validate_uploads([tmp_media.upload("small.jpg")], tmp_media.work)
-    assert e.value.status_code in (413, 422)
+    assert e.value.status_code == 413
 
 
 async def test_too_many_images_422(tmp_media):
@@ -218,3 +226,54 @@ async def test_traversal_filename_stays_in_tmpdir(tmp_media):
     root = tmp_media.work.resolve()
     assert all(root in u.path.resolve().parents for u in out)
     assert not (tmp_media.work.parent.parent / "evil.mp4").exists()
+
+
+async def test_audio_pcm_decode_is_capped(tmp_media):
+    # 90 s of audio: the decode itself must stop at MAX_MEDIA_SECONDS.
+    pcm = await audio_pcm(tmp_media.dir / "ninety.wav")
+    assert 0 < len(pcm) <= get_settings().MAX_MEDIA_SECONDS * 48000
+
+
+async def test_mpo_jpeg_accepted_and_reencoded(tmp_media):
+    [u] = await validate_uploads([tmp_media.upload("multi.mpo")], tmp_media.work)
+    assert u.kind == "image" and u.path.read_bytes()[:2] == b"\xff\xd8"
+    with Image.open(u.path) as im:
+        assert im.format == "JPEG"
+
+
+async def test_media_error_message_has_no_paths(tmp_media):
+    target = tmp_media.dir / "fake.mp4"
+    with pytest.raises(MediaError) as e:
+        await probe(target)
+    assert str(e.value) == "Could not process media."
+    assert str(tmp_media.dir) not in str(e.value) and "fake.mp4" not in str(e.value)
+    assert e.value.detail  # raw tool output kept for logs
+
+
+async def test_image_cap_applies_only_to_images(tmp_media, monkeypatch):
+    # Image cap of 0 MB: any image is 413, an audio file of any size is not.
+    monkeypatch.setattr(get_settings(), "MAX_IMAGE_MB", 0)
+    with pytest.raises(HTTPException) as e:
+        await validate_uploads([tmp_media.upload("small.jpg")], tmp_media.work)
+    assert e.value.status_code == 413
+    [u] = await validate_uploads([tmp_media.upload("tone.wav")], tmp_media.work)
+    assert u.kind == "audio"
+
+
+async def test_timeout_kills_and_reaps_process(monkeypatch):
+    monkeypatch.setattr(media, "SUBPROCESS_TIMEOUT", 0.5)
+    procs = []
+    real = asyncio.create_subprocess_exec
+
+    async def spy(*a, **k):
+        p = await real(*a, **k)
+        procs.append(p)
+        return p
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    with pytest.raises(MediaError):
+        # endless source with no -t: would run forever without the timeout
+        await media._run(
+            "ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine", "-f", "null", "-"
+        )
+    assert procs and procs[0].returncode is not None

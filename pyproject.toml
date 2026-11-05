@@ -20,8 +20,8 @@ dependencies = [
     "tenacity==9.1.2",
     "chardet==5.2.0",
     "pypdf==5.4.0",
-    "numpy>=2.5.4",
-    "pillow>=13.0.0",
+    "numpy==2.5.4",
+    "pillow==13.0.0",
 ]
 
 [dependency-groups]

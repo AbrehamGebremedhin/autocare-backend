@@ -2,7 +2,6 @@ import asyncio
 import json
 import math
 import uuid
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -29,12 +28,20 @@ MAX_IMAGE_PIXELS = 50_000_000  # decompression-bomb cap (width * height)
 MAX_IMAGE_SIDE = 1024
 SUBPROCESS_TIMEOUT = 30.0
 CHUNK = 1024 * 1024
-_ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
+_ALLOWED_IMAGE_FORMATS = {"JPEG", "MPO", "PNG", "WEBP"}  # MPO: multi-picture JPEG (phones)
 _MB = 1024 * 1024
 
 
 class MediaError(Exception):
-    """ffmpeg/ffprobe failed (non-zero exit, timeout, unreadable output)."""
+    """ffmpeg/ffprobe failed (non-zero exit, timeout, unreadable output).
+
+    str(e) is generic and safe to show clients; raw tool output (which can
+    contain server paths) is kept in `.detail` for logging only.
+    """
+
+    def __init__(self, message: str = "Could not process media.", detail: str = ""):
+        super().__init__(message)
+        self.detail = detail
 
 
 async def _run(*argv: str) -> bytes:
@@ -48,17 +55,20 @@ async def _run(*argv: str) -> bytes:
     try:
         out, err = await asyncio.wait_for(proc.communicate(), SUBPROCESS_TIMEOUT)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise MediaError(f"{argv[0]} timed out") from None
+        raise MediaError(detail=f"{argv[0]} timed out") from None
+    finally:
+        # Always reap: timeout, cancellation or any other error.
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
     if proc.returncode != 0:
-        raise MediaError(err.decode("utf-8", "replace").strip() or f"{argv[0]} failed")
+        raise MediaError(detail=err.decode("utf-8", "replace").strip() or f"{argv[0]} failed")
     return out
 
 
 async def probe(path: Path) -> dict:
     out = await _run(
-        "ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", "-i", str(path)
+        "ffprobe", "-v", "error", "-protocol_whitelist", "file", "-show_streams", "-show_format", "-of", "json", "-i", str(path)
     )
     try:
         info = json.loads(out)
@@ -86,11 +96,17 @@ async def probe(path: Path) -> dict:
 
 
 async def audio_pcm(path: Path, sr: int = 48000) -> np.ndarray:
+    # The container's Duration is attacker-controlled, so cap the decode itself:
+    # -t as an output option means ffmpeg never emits more than the limit.
+    limit = get_settings().MAX_MEDIA_SECONDS
     out = await _run(
-        "ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
-        "-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-",
+        "ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file", "-i", str(path),
+        "-vn", "-ac", "1", "-ar", str(sr), "-t", str(limit), "-f", "f32le", "-",
     )  # fmt: skip
-    return np.frombuffer(out, dtype="<f4").astype(np.float32, copy=True)
+    max_bytes = limit * sr * 4
+    if len(out) > max_bytes + 4 * sr:  # small slack for resampler padding
+        raise MediaError(detail="decoded audio exceeds limit")
+    return np.frombuffer(out[: max_bytes - max_bytes % 4], dtype="<f4").astype(np.float32, copy=True)
 
 
 async def extract_frames(path: Path, duration: float, n: int) -> list[bytes]:
@@ -100,10 +116,11 @@ async def extract_frames(path: Path, duration: float, n: int) -> list[bytes]:
     n_eff = min(n, n_eff)
 
     async def one(i: int) -> bytes | None:
-        t = duration * (i + 0.5) / n_eff
+        # Clamp: a lying container must not make us seek far past the limit.
+        t = min(duration * (i + 0.5) / n_eff, get_settings().MAX_MEDIA_SECONDS - 0.001)
         try:
             return await _run(
-                "ffmpeg", "-nostdin", "-v", "error", "-ss", f"{t:.3f}", "-i", str(path),
+                "ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file", "-ss", f"{t:.3f}", "-i", str(path),
                 "-frames:v", "1", "-vf", f"scale='min({MAX_IMAGE_SIDE},iw)':-2",
                 "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "4", "-",
             )  # fmt: skip
@@ -117,19 +134,17 @@ async def extract_frames(path: Path, duration: float, n: int) -> list[bytes]:
 def _image_to_jpeg(src: Path, dst: Path) -> str:
     """Return "ok", "not_image", "bad_format" or "too_big"; on "ok" dst holds a JPEG."""
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(src) as im:
-                if im.format not in _ALLOWED_IMAGE_FORMATS:
-                    return "bad_format"
-                if im.width * im.height > MAX_IMAGE_PIXELS:
-                    return "too_big"
-                im.verify()
-            with Image.open(src) as im:  # verify() invalidates the handle
-                im = ImageOps.exif_transpose(im).convert("RGB")
-                im.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
-                im.save(dst, "JPEG", quality=85)
-    except (Image.DecompressionBombError, Image.DecompressionBombWarning):
+        with Image.open(src) as im:
+            if im.format not in _ALLOWED_IMAGE_FORMATS:
+                return "bad_format"
+            if im.width * im.height > MAX_IMAGE_PIXELS:
+                return "too_big"
+            im.verify()
+        with Image.open(src) as im:  # verify() invalidates the handle
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+            im.save(dst, "JPEG", quality=85)
+    except Image.DecompressionBombError:
         return "too_big"
     except (UnidentifiedImageError, OSError, SyntaxError, ValueError):
         return "not_image" if not dst.exists() else "bad_format"

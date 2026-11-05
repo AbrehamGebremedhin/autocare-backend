@@ -54,6 +54,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             headers["Content-Security-Policy"] = self._get_csp_policy(nonce, is_docs_endpoint, is_confirm_page)
             headers["X-Frame-Options"] = "DENY"
         
+        # A route's own Cache-Control (e.g. the SSE stream's no-cache) wins
+        if "cache-control" in response.headers:
+            del headers["Cache-Control"]
+
         # Add headers to response
         for header, value in headers.items():
             if value:  # Only add non-empty headers
@@ -109,5 +113,5 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     
     def _is_sensitive_endpoint(self, request: Request) -> bool:
         """Check if endpoint handles sensitive data"""
-        sensitive_paths = ["/auth/", "/api/v1/auth/", "/security/"]
+        sensitive_paths = ["/auth/", "/api/v1/auth/", "/security/", "/api/v1/sessions"]
         return any(sensitive_path in str(request.url.path) for sensitive_path in sensitive_paths)

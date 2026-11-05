@@ -201,14 +201,12 @@ class TestSupabaseDBHandler:
         
         handler = SupabaseDBHandler()
         
-        with patch.object(handler, '_test_connection', new_callable=AsyncMock):
-            client = asyncio.run(handler.client)
-            assert client == mock_client
-            
-            # Second call should return same client
-            client2 = asyncio.run(handler.client)
-            assert client2 == mock_client
-            assert mock_create_client.call_count == 1
+        client = handler.client
+        assert client == mock_client
+
+        # Second access should return same client
+        assert handler.client == mock_client
+        assert mock_create_client.call_count == 1
     
     @patch('app.db.base.get_settings')
     @patch('app.db.base.create_client')

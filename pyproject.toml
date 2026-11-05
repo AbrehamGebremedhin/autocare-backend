@@ -75,6 +75,7 @@ markers = [
 
 # Async support
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 # Test timeout (in seconds)
 timeout = 30

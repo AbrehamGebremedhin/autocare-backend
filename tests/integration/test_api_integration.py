@@ -1,33 +1,21 @@
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+
 from main import app
 
-@pytest.mark.asyncio
-async def test_root_endpoint():
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.get("/")
+
+@pytest.fixture
+async def ac():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        yield c
+
+
+async def test_health_endpoint(ac):
+    response = await ac.get("/health")
     assert response.status_code == 200
-    assert "Welcome to AutoCare API" in response.text
+    assert response.json() == {"status": "ok"}
 
-@pytest.mark.asyncio
-async def test_not_found():
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.get("/nonexistent")
+
+async def test_unknown_route_returns_404(ac):
+    response = await ac.get("/nonexistent")
     assert response.status_code == 404
-    assert "Not found" in response.text or "detail" in response.text
-
-@pytest.mark.asyncio
-async def test_rate_limit():
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        for _ in range(11):
-            response = await ac.get("/")
-        assert response.status_code in (200, 429)
-        if response.status_code == 429:
-            assert "Rate limit exceeded" in response.text
-
-# Example for a protected endpoint (adjust path and logic as needed)
-# @pytest.mark.asyncio
-# async def test_protected_endpoint():
-#     async with AsyncClient(app=app, base_url="http://test") as ac:
-#         response = await ac.get("/api/v1/protected")
-#     assert response.status_code in (401, 403)

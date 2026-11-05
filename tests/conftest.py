@@ -48,10 +48,12 @@ def sample_car_data():
         "make": "Toyota",
         "model": "Camry",
         "year": 2020,
-        "text": "Toyota Camry 2020 sedan vehicle",
         "owner_manual_url": "https://example.com/manual.pdf",
         "service_manual_url": "https://example.com/service.pdf",
-        "car_guide_links": ["https://example.com/guide1", "https://example.com/guide2"]
+        "car_guide_links": [
+            {"link": "https://example.com/guide1", "summary": "Guide one"},
+            {"link": "https://example.com/guide2"},
+        ]
     }
 
 
@@ -69,16 +71,15 @@ def mock_db_handler():
 
 @pytest.fixture
 def mock_settings():
-    """Mock settings for testing."""
+    """Mock settings using the real Settings field names."""
     settings = MagicMock()
-    settings.ENVIRONMENT = "test"
+    settings.ENV = "test"
     settings.DEBUG = False
-    settings.SECRET_KEY = "test_secret"
+    settings.JWT_SECRET_KEY = "test-secret-key-0123456789-abcdefghijklmnop"
     settings.SUPABASE_URL = "https://test.supabase.co"
-    settings.SUPABASE_ANON_KEY = "test_key"
-    settings.REDIS_HOST = "localhost"
-    settings.REDIS_PORT = "6379"
-    settings.ALLOWED_ORIGINS = ["http://localhost:3000"]
+    settings.SUPABASE_KEY = "test_key"
+    settings.BASE_URL = "http://localhost"
+    settings.ALLOWED_ORIGINS = "http://localhost:3000"
     return settings
 
 

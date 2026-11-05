@@ -148,7 +148,7 @@ class UserProfileService(BaseService):
     async def _get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user profile from database. Database errors propagate to the caller."""
         async with self.db_handler.get_connection() as db:
-            result = db.table('user_profiles').select('*').eq('user_id', user_id).execute()
+            result = await asyncio.to_thread(db.table('user_profiles').select('*').eq('user_id', user_id).execute)
 
             if result.data and len(result.data) > 0:
                 return result.data[0]
@@ -167,7 +167,7 @@ class UserProfileService(BaseService):
             }
             
             async with self.db_handler.get_connection() as db:
-                result = db.table('user_profiles').insert(profile_data).execute()
+                result = await asyncio.to_thread(db.table('user_profiles').insert(profile_data).execute)
 
                 if result.data and len(result.data) > 0:
                     profile = result.data[0]
@@ -180,6 +180,6 @@ class UserProfileService(BaseService):
     async def _update_user_profile(self, user_id: str, updates: Dict[str, Any]) -> bool:
         """Update user profile. Database errors propagate to the caller."""
         async with self.db_handler.get_connection() as db:
-            result = db.table('user_profiles').update(updates).eq('user_id', user_id).execute()
+            result = await asyncio.to_thread(db.table('user_profiles').update(updates).eq('user_id', user_id).execute)
 
             return result.data is not None

@@ -344,58 +344,102 @@ class TestAuthorizationDecorators:
 
 
 class TestSupabaseValidation:
-    """Test Supabase user validation"""
-    
-    @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_validate_user_with_supabase_success(self, mock_db_handler):
-        """Test successful Supabase validation"""
-        from app.utils.auth_middleware import validate_user_with_supabase
-        
-        # Mock successful Supabase response
-        mock_user_response = MagicMock()
-        mock_user_response.user = MagicMock()
-        mock_user_response.user.id = "user-123"
-        
+    """The user check is an admin lookup by the token's sub; the app JWT never goes to Supabase."""
+
+    USER = "11111111-1111-4111-8111-111111111111"
+
+    @staticmethod
+    def _client(mock_db_handler, **admin):
         mock_db = MagicMock()
-        mock_db.auth.get_user.return_value = mock_user_response
-        
-        # Create mock handler instance with async get_client method
-        mock_handler_instance = MagicMock()
-        mock_handler_instance.get_client = AsyncMock(return_value=mock_db)
-        mock_db_handler.return_value = mock_handler_instance
-        
-        result = await validate_user_with_supabase("user-123", "valid-token")
-        assert result == True
-    
+        for name, value in admin.items():
+            setattr(mock_db.auth.admin.get_user_by_id, name, value)
+        mock_db_handler.return_value.get_client = AsyncMock(return_value=mock_db)
+        return mock_db
+
     @pytest.mark.asyncio
     @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_validate_user_with_supabase_invalid_token(self, mock_db_handler):
-        """Test Supabase validation with invalid token"""
+    async def test_existing_user_passes(self, mock_db_handler):
         from app.utils.auth_middleware import validate_user_with_supabase
-        
-        # Mock failed Supabase response
-        mock_user_response = MagicMock()
-        mock_user_response.user = None
-        
-        mock_db = MagicMock()
-        mock_db.auth.get_user.return_value = mock_user_response
-        mock_db_handler.return_value.client = AsyncMock(return_value=mock_db)
-        
-        with pytest.raises(AuthenticationError):
-            await validate_user_with_supabase("user-123", "invalid-token")
-    
+
+        db = self._client(mock_db_handler, return_value=MagicMock(user=MagicMock(id=self.USER)))
+        assert await validate_user_with_supabase(self.USER) is True
+        db.auth.admin.get_user_by_id.assert_called_once_with(self.USER)
+        db.auth.get_user.assert_not_called()
+
     @pytest.mark.asyncio
     @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_validate_user_with_supabase_exception(self, mock_db_handler):
-        """Test Supabase validation with exception"""
+    async def test_lookup_runs_off_the_event_loop(self, mock_db_handler):
+        import threading
         from app.utils.auth_middleware import validate_user_with_supabase
-        
-        # Mock Supabase exception
-        mock_db_handler.return_value.client.side_effect = Exception("Database error")
-        
+
+        seen = []
+        self._client(mock_db_handler, side_effect=lambda uid: seen.append(threading.current_thread()) or MagicMock())
+        await validate_user_with_supabase(self.USER)
+        assert seen and seen[0] is not threading.main_thread()
+
+    @pytest.mark.asyncio
+    @patch('app.utils.auth_middleware.SupabaseDBHandler')
+    async def test_no_user_returned_is_401(self, mock_db_handler):
+        from app.utils.auth_middleware import validate_user_with_supabase
+
+        self._client(mock_db_handler, return_value=MagicMock(user=None))
         with pytest.raises(AuthenticationError):
-            await validate_user_with_supabase("user-123", "token")
+            await validate_user_with_supabase(self.USER)
+
+    @pytest.mark.asyncio
+    @patch('app.utils.auth_middleware.SupabaseDBHandler')
+    async def test_deleted_user_is_401(self, mock_db_handler):
+        from supabase import AuthApiError
+        from app.utils.auth_middleware import validate_user_with_supabase
+
+        self._client(mock_db_handler, side_effect=AuthApiError("User not found", 404, "user_not_found"))
+        with pytest.raises(AuthenticationError) as exc_info:
+            await validate_user_with_supabase(self.USER)
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    @patch('app.utils.auth_middleware.SupabaseDBHandler')
+    async def test_client_failure_is_401(self, mock_db_handler):
+        from app.utils.auth_middleware import validate_user_with_supabase
+
+        mock_db_handler.return_value.get_client = AsyncMock(side_effect=Exception("Database error"))
+        with pytest.raises(AuthenticationError):
+            await validate_user_with_supabase(self.USER)
+
+
+class TestTokenCheckIndependentOfSupabaseSecret:
+    """An app token signed with JWT_SECRET_KEY (not the Supabase project secret) reaches protected routes."""
+
+    def test_protected_route_with_app_token_and_real_validator(self, client, monkeypatch):
+        from app.db import base
+        from app.utils.auth_middleware import jwt_handler
+        from app.api.v1 import car_route
+
+        user = "11111111-1111-4111-8111-111111111111"
+        fake = MagicMock()
+        fake.auth.get_user.side_effect = AssertionError("app JWT must not be sent to Supabase")
+        fake.auth.admin.get_user_by_id.return_value = MagicMock(user=MagicMock(id=user))
+        monkeypatch.setattr(base.SupabaseDBHandler(), "_client", fake)
+        monkeypatch.setattr(car_route.user_profile_service, "get_user_cars", AsyncMock(return_value=[]))
+
+        token = jwt_handler.create_access_token({"sub": user})
+        r = client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        fake.auth.admin.get_user_by_id.assert_called_once_with(user)
+
+    def test_deleted_user_gets_401_on_protected_route(self, client, monkeypatch):
+        from supabase import AuthApiError
+        from app.db import base
+        from app.utils.auth_middleware import jwt_handler
+
+        fake = MagicMock()
+        fake.auth.admin.get_user_by_id.side_effect = AuthApiError("User not found", 404, "user_not_found")
+        monkeypatch.setattr(base.SupabaseDBHandler(), "_client", fake)
+
+        token = jwt_handler.create_access_token({"sub": "11111111-1111-4111-8111-111111111111"})
+        r = client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 401
+        assert "User not found" not in r.text
 
 
 class TestErrorLogsHideDetails:
@@ -408,11 +452,11 @@ class TestErrorLogsHideDetails:
         from app.utils.auth_middleware import validate_user_with_supabase
 
         mock_db = MagicMock()
-        mock_db.auth.get_user.side_effect = RuntimeError("leaked eyJ-token-body")
+        mock_db.auth.admin.get_user_by_id.side_effect = RuntimeError("leaked eyJ-token-body")
         mock_db_handler.return_value.get_client = AsyncMock(return_value=mock_db)
 
         with caplog.at_level(logging.DEBUG), pytest.raises(AuthenticationError):
-            await validate_user_with_supabase("user-123", "eyJ-token-body")
+            await validate_user_with_supabase("user-123")
         assert "RuntimeError" in caplog.text
         assert "eyJ-token-body" not in caplog.text
 

@@ -8,7 +8,9 @@ Put these in `.env` (names only; see `app/core/config.py` for defaults).
 
 Required: `JWT_SECRET_KEY` (min 32 chars), `SUPABASE_URL`, `SUPABASE_KEY`, `BASE_URL`, `DEEPSEEK_API_KEY`.
 
-`SUPABASE_KEY` must be the project's **service-role** key, not the anon key. The schema enables RLS with no policies (so the public anon key reads nothing), and logout uses the auth admin API. Keep it server-side only.
+`SUPABASE_KEY` must be the project's **service-role** key, not the anon key. The schema enables RLS with no policies (so the public anon key reads nothing), and the per-request user check and logout use the auth admin API. Keep it server-side only.
+
+`JWT_SECRET_KEY` signs the app's own access and refresh tokens (HS256). It can be any random secret of 32+ chars and does not need to match the Supabase project's JWT secret: on each request the app checks the signature itself, then looks the user up by id (`auth.admin.get_user_by_id`), so a deleted user gets `401`. Bans are not checked (the Supabase client drops `banned_until`).
 
 Optional: `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_BUCKET`.
 

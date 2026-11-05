@@ -96,8 +96,8 @@ async def get_current_user(
         if not user_id:
             raise AuthenticationError("Invalid token payload")
         
-        # Additional validation with Supabase
-        await validate_user_with_supabase(user_id, credentials.credentials)
+        # The user must still exist in Supabase Auth
+        await validate_user_with_supabase(user_id)
         
         # Store user info in request state for easy access
         request.state.current_user = {
@@ -124,19 +124,22 @@ async def get_current_user(
         await logger.error(f"Authentication error: {type(e).__name__}")
         raise AuthenticationError("Authentication failed")
 
-async def validate_user_with_supabase(user_id: str, token: str) -> bool:
+async def validate_user_with_supabase(user_id: str) -> bool:
     """
-    Validate user token with Supabase
+    Check that the token's user still exists in Supabase Auth (deleted or unknown users get 401).
+
+    The app's own JWT is never sent to Supabase, so this works whatever JWT_SECRET_KEY is. It is an
+    admin lookup by id, which needs the service-role key, and it runs in a thread because the
+    Supabase client is synchronous.
     """
     try:
         db_handler = SupabaseDBHandler()
         db = await db_handler.get_client()
-        
-        # Verify token with Supabase
-        user_response = db.auth.get_user(token)
+
+        user_response = await asyncio.to_thread(db.auth.admin.get_user_by_id, user_id)
         if not user_response or not user_response.user:
-            raise AuthenticationError("Invalid token with auth provider")
-        
+            raise AuthenticationError("Unknown user")
+
         return True
     except Exception as e:
         await logger.error(f"Supabase validation error: {type(e).__name__}")

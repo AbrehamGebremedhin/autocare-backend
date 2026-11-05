@@ -1,61 +1,36 @@
-# Enhanced Dockerfile optimized for concurrent users
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-# Set working directory
-WORKDIR /app
-
-# Install system dependencies for better performance
-RUN apt-get update && apt-get install -y \
-    curl \
-    gcc \
-    g++ \
-    git \
-    libffi-dev \
-    libssl-dev \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better Docker layer caching
-COPY pyproject.toml uv.lock ./
+COPY --from=ghcr.io/astral-sh/uv:0.8.18 /uv /uvx /bin/
 
-# Install Python dependencies with optimizations
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir uvloop httptools
+ENV PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    HF_HOME=/home/autocare/.cache/huggingface
 
-# Create non-root user for security
-RUN groupadd -r autocare && useradd -r -g autocare autocare
+RUN useradd --create-home --uid 10001 autocare \
+    && mkdir /app \
+    && chown autocare:autocare /app
 
-# Copy application code
-COPY . .
-
-# Create necessary directories
-RUN mkdir -p /app/logs && \
-    chown -R autocare:autocare /app
-
-# Set environment variables for production
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONPATH=/app
-ENV WORKERS=1
-ENV MAX_CONCURRENT_REQUESTS=1000
-ENV KEEP_ALIVE=2
-
-# Switch to non-root user
+WORKDIR /app
 USER autocare
 
-# Expose port
+COPY --chown=autocare:autocare pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY --chown=autocare:autocare . .
+RUN uv sync --frozen --no-dev
+
+# Bake the models into HF_HOME. Settings validation needs placeholder values at build time only.
+RUN JWT_SECRET_KEY=build-time-placeholder-not-a-secret-000 \
+    SUPABASE_URL=http://placeholder SUPABASE_KEY=placeholder \
+    BASE_URL=http://placeholder DEEPSEEK_API_KEY=placeholder \
+    uv run --no-sync python -m app.services.hearing
+
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Use the enhanced concurrent main file
-CMD ["python", "-m", "uvicorn", "main:app", \
-    "--host", "0.0.0.0", \
-    "--port", "8000", \
-    "--workers", "1", \
-    "--loop", "uvloop", \
-    "--http", "httptools", \
-    "--access-log", \
-    "--log-level", "info"]
+CMD ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

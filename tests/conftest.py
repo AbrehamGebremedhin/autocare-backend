@@ -19,7 +19,9 @@ from fastapi.testclient import TestClient
 def client():
     import main
 
-    with TestClient(main.app) as c:
+    with patch("main.llm.ping", AsyncMock(return_value=True)), patch(
+        "main.check_supabase", AsyncMock(return_value=True)
+    ), TestClient(main.app) as c:
         yield c
 
 

@@ -1,4 +1,5 @@
 """AutoCare backend entrypoint."""
+import asyncio
 import logging
 
 from fastapi import FastAPI, Request
@@ -10,6 +11,8 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.api.v1.routes import router as v1_router
 from app.core.config import get_settings
+from app.db.base import SupabaseDBHandler
+from app.services import llm
 from app.utils.exceptions import BaseAPIException
 from app.utils.limiter import limiter
 from app.utils.security_middleware import SecurityHeadersMiddleware
@@ -50,6 +53,14 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(v1_router, prefix="/api/v1")
 
 
+async def check_supabase() -> bool:
+    try:
+        return bool(await asyncio.wait_for(SupabaseDBHandler().health_check(), 5))
+    except Exception:
+        return False
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    supabase, deepseek = await asyncio.gather(check_supabase(), llm.ping())
+    return {"status": "ok", "supabase": supabase, "deepseek": deepseek}

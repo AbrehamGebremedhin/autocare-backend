@@ -6,7 +6,7 @@ FastAPI backend for an AI car-diagnosis assistant. A user registers, adds a car,
 
 Put these in `.env` (names only; see `app/core/config.py` for defaults).
 
-Required: `JWT_SECRET_KEY` (min 32 chars), `SUPABASE_URL`, `SUPABASE_KEY`, `BASE_URL`, `DEEPSEEK_API_KEY`.
+Required: `JWT_SECRET_KEY` (min 32 chars), `SUPABASE_URL`, `SUPABASE_KEY`, `DEEPSEEK_API_KEY`.
 
 `SUPABASE_KEY` must be the project's **service-role** key, not the anon key. The schema enables RLS with no policies (so the public anon key reads nothing), and the per-request user check and logout use the auth admin API. Keep it server-side only.
 

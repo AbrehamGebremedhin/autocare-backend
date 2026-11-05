@@ -4,7 +4,6 @@ import os
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-0123456789-abcdefghijklmnop")
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "test-supabase-key")
-os.environ.setdefault("BASE_URL", "http://localhost")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
 os.environ.setdefault("ENV", "development")
 
@@ -85,7 +84,6 @@ def mock_settings():
     settings.JWT_SECRET_KEY = "test-secret-key-0123456789-abcdefghijklmnop"
     settings.SUPABASE_URL = "https://test.supabase.co"
     settings.SUPABASE_KEY = "test_key"
-    settings.BASE_URL = "http://localhost"
     settings.ALLOWED_ORIGINS = "http://localhost:3000"
     return settings
 

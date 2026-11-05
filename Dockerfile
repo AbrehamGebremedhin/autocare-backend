@@ -28,7 +28,7 @@ RUN uv sync --frozen --no-dev
 # Bake the models into HF_HOME. Settings validation needs placeholder values at build time only.
 RUN JWT_SECRET_KEY=build-time-placeholder-not-a-secret-000 \
     SUPABASE_URL=http://placeholder SUPABASE_KEY=placeholder \
-    BASE_URL=http://placeholder DEEPSEEK_API_KEY=placeholder \
+    DEEPSEEK_API_KEY=placeholder \
     uv run --no-sync python -m app.services.hearing
 
 EXPOSE 8000

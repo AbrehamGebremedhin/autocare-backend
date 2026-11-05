@@ -99,7 +99,8 @@ def _render_state(state: DiagnosisState) -> str:
 
 
 def _render_observations(obs: Observations | None) -> str:
-    if obs is None or (not obs.transcript and not obs.sounds):
+    """`obs` is None when nothing with audio was sent; otherwise audio was analysed, even if nothing was found."""
+    if obs is None:
         return "none"
     lines = []
     if obs.transcript:
@@ -107,6 +108,8 @@ def _render_observations(obs: Observations | None) -> str:
     if obs.sounds:
         tags = ", ".join(f"{s.label} ({s.score:.2f})" for s in obs.sounds)
         lines.append(f"Sound tags (automatic, weak evidence): {tags}")
+    else:
+        lines.append("Sound tags (automatic): no distinctive sound detected")
     return "\n".join(lines)
 
 

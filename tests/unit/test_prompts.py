@@ -65,6 +65,14 @@ def test_sound_tags_rendered_with_scores(car, empty_state):
     assert "belt squeal (0.62)" in text and "it squeals on cold start" in text
 
 
+def test_audio_without_sound_tags_says_no_distinctive_sound(car, empty_state):
+    for obs in (Observations(), Observations(transcript="it clicks when I turn")):
+        text = _user_text(_build(car, empty_state, observations=obs))
+        assert "no distinctive sound detected" in text
+        assert "## Observations from media\nnone\n" not in text
+    assert "no distinctive sound detected" not in _user_text(_build(car, empty_state))  # no audio sent at all
+
+
 def test_message_models_round_trip():
     msg = Message(
         id="m1",

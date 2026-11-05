@@ -16,9 +16,16 @@ Optional: `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODE
 
 ## Supabase setup
 
-1. Review `app/db/sql/001_v2_schema.sql`. It is **destructive**: it drops `Chatsession` and `Groundknowledge` and removes two `Car` columns. It enables RLS on `kb_passages` and `Chatsession` with no policies, so only the service-role key can reach them. It does not change RLS on the existing `Car` and `user_profiles` tables: check those in the dashboard and enable RLS on them too.
-2. Run it by hand in the Supabase SQL editor. The backend never applies schema changes.
-3. In Storage, create a **private** bucket named `media` (or whatever `MEDIA_BUCKET` is set to). This is a manual step.
+For a brand new Supabase project:
+
+1. Review, then run by hand in the Supabase SQL editor, **in this order**:
+   1. `app/db/sql/000_base_schema.sql`: creates `Car` and `user_profiles`.
+   2. `app/db/sql/001_v2_schema.sql`: adds `kb_passages`, the `search_kb` function, `Chatsession` and the knowledge-base columns on `Car`. It stops with an error if 000 has not been run.
+
+   Both files enable RLS with no policies, so only the service-role key can reach the tables. The backend never applies schema changes. On an older project that already has data, 001 is **destructive**: it drops `Chatsession` and `Groundknowledge` and removes two `Car` columns (on a fresh project there is nothing to drop).
+2. In Storage, create a **private** bucket named `media` (or whatever `MEDIA_BUCKET` is set to). This is a manual step.
+3. Put the project's **service-role** key in `SUPABASE_KEY` (see Configuration). Use the legacy JWT `service_role` key (it starts with `eyJ`): the pinned `supabase` client rejects keys that are not JWTs, such as the newer `sb_secret_...` keys, with "Invalid API key".
+4. Email confirmation: new projects make users confirm their email before they can sign in (the "Confirm email" setting of the Email provider under Authentication). While it is on, `POST /api/v1/auth/login` returns `401` "Email address not verified" until the user opens the link in the confirmation email. Turn it off for local testing if you don't want to deal with emails. Either way the user's `user_profiles` row is created when it is first needed.
 
 ## Run
 

@@ -3,20 +3,31 @@
 --          knowledge base) and the search_kb RPC, recreates Chatsession, and
 --          moves the knowledge-base status onto "Car".
 --
+-- Order: needs "Car", so on a fresh project run 000_base_schema.sql first.
+--        Every "Car" statement here is a no-op on top of 000.
+--
 -- DESTRUCTIVE: drops Chatsession and Groundknowledge (old data is test data per
 --              the design doc), removes two Car columns (is_vectorized,
---              vector_chunk_count).
+--              vector_chunk_count). On a fresh project these drops find
+--              nothing to remove.
 --
 -- RLS: this file enables row level security on kb_passages and "Chatsession"
 --      and adds no policies, so the anon and authenticated roles get no rows
 --      through PostgREST. The backend must use the service-role key (it
---      bypasses RLS) in SUPABASE_KEY. "Car" and user_profiles already exist
---      and this file leaves their RLS settings alone: check them in the
---      dashboard and enable RLS on them the same way.
+--      bypasses RLS) in SUPABASE_KEY. 000 does the same for "Car" and
+--      user_profiles; this file leaves their RLS settings alone.
 --
 -- Run in the Supabase SQL editor after review.
 
 begin;
+
+do $$
+begin
+    if to_regclass('public."Car"') is null then
+        raise exception 'table "Car" is missing: run 000_base_schema.sql first';
+    end if;
+end
+$$;
 
 -- Knowledge base passages -----------------------------------------------------
 create table if not exists kb_passages (

@@ -1,6 +1,8 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+TITLE_MAX_CHARS = 60  # the state prompt asks for at most 60; enforced here because the model may not comply
 
 
 class SuspectedCause(BaseModel):
@@ -14,6 +16,11 @@ class DiagnosisState(BaseModel):
     suspected_causes: list[SuspectedCause] = Field(default_factory=list)
     safety_flags: list[str] = Field(default_factory=list)
     title: str = ""
+
+    @field_validator("title")
+    @classmethod
+    def _cap_title(cls, title: str) -> str:
+        return title.strip()[:TITLE_MAX_CHARS].rstrip()
 
 
 class SoundTag(BaseModel):

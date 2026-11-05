@@ -85,6 +85,18 @@ async def test_title_updated_from_state(fake_llm, fake_store, session, car):
     assert row["state"] == fake_llm.state.model_dump()
 
 
+async def test_long_title_is_capped_before_it_is_saved(fake_llm, fake_store, session, car):
+    fake_llm.state = DiagnosisState(title="  " + "Fan relay clicking " * 10)
+    out = await _run(session, car, "fan clicks")
+    title = fake_store.rows[session["id"]]["title"]
+    assert title == ("Fan relay clicking " * 10)[:60].rstrip() and len(title) <= 60
+    assert out[-2][1]["title"] == title
+
+
+def test_state_from_llm_json_caps_title():
+    assert len(DiagnosisState.model_validate({"title": "x" * 500}).title) == 60
+
+
 async def test_unchanged_state_still_completes_and_keeps_title(fake_llm, fake_store, car):
     previous = DiagnosisState(safety_flags=["stop if overheating"], title="")
     session = fake_store.add("u", car["id"], title="Overheating", state=previous.model_dump())

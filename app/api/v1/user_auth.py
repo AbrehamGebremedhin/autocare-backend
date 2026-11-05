@@ -237,18 +237,18 @@ async def confirm_email_post(request: Request, token: str = None, type: str = 's
     """Confirm email via POST request"""
     return await _confirm_email_logic(request, token, type, email, db_handler)
 
-async def _confirm_email_logic(request: Request, token: str = None, type: str = 'signup', email: str = None, db_handler: SupabaseDBHandler = None):
-    await logger.info(f"Email confirmation attempt - Initial params: token_present={bool(token)}, type={type}")
+async def _confirm_email_logic(request: Request, token: str = None, token_type: str = 'signup', email: str = None, db_handler: SupabaseDBHandler = None):
+    await logger.info(f"Email confirmation attempt - Initial params: token_present={bool(token)}, type={token_type}")
     
     if not token:
         try:
             data = await request.json()
             token = data.get('token')
-            type = data.get('type', 'signup')
+            token_type = data.get('type', 'signup')
             email = data.get('email') or email
-            await logger.info(f"Got params from request body: token_present={bool(token)}, type={type}")
+            await logger.info(f"Got params from request body: token_present={bool(token)}, type={token_type}")
         except Exception as e:
-            await logger.warning(f"Could not parse JSON from request: {str(e)}")
+            await logger.warning(f"Could not parse JSON from request: {type(e).__name__}")
             pass
     
     if not token:
@@ -260,39 +260,39 @@ async def _confirm_email_logic(request: Request, token: str = None, type: str = 
             # Prepare verification data - email is optional for some confirmation types
             verification_data = {
                 "token": token,
-                "type": type
+                "type": token_type
             }
             
             # Only add email if provided (some Supabase confirmation types work without it)
             if email:
                 verification_data["email"] = email
                 
-            await logger.info(f"Attempting verification with data: {verification_data}")
+            await logger.info(f"Attempting verification, type={token_type}, token_present=True")
             
             try:
                 # For email confirmation, we might need to use exchange_code_for_session instead of verify_otp
                 # Let's try verify_otp first, then fall back to other methods if needed
                 response = db.auth.verify_otp(verification_data)
-                await logger.info(f"Supabase verify_otp successful, response type: {type(response)}")
+                await logger.info("Supabase verify_otp successful")
             except Exception as verify_error:
-                await logger.error(f"verify_otp failed: {str(verify_error)}")
+                await logger.error(f"verify_otp failed: {type(verify_error).__name__}")
                 
                 # Try alternative approach for email confirmation
                 try:
                     await logger.info("Trying exchange_code_for_session as alternative...")
                     response = db.auth.exchange_code_for_session({"auth_code": token})
-                    await logger.info(f"exchange_code_for_session successful, response type: {type(response)}")
+                    await logger.info("exchange_code_for_session successful")
                 except Exception as exchange_error:
-                    await logger.error(f"exchange_code_for_session also failed: {str(exchange_error)}")
+                    await logger.error(f"exchange_code_for_session also failed: {type(exchange_error).__name__}")
                     # Re-raise the original error
                     raise verify_error
             
             if hasattr(response, 'user') and response.user:
                 user_data = response.user
-                await logger.info(f"Got user from response.user: {user_data.id if hasattr(user_data, 'id') else 'no id'}")
+                await logger.info("Got user from response.user")
             elif isinstance(response, dict) and response.get('user'):
                 user_data = response['user']
-                await logger.info(f"Got user from response dict: {user_data.get('id', 'no id')}")
+                await logger.info("Got user from response dict")
             else:
                 await logger.error("Email confirmation failed - no user returned")
                 raise HTTPException(status_code=400, detail="Email confirmation failed - invalid token.")
@@ -303,17 +303,15 @@ async def _confirm_email_logic(request: Request, token: str = None, type: str = 
             if user_id:
                 try:
                     await user_service.ensure_user_profile(user_id)
-                    await logger.info(f"User profile ensured for user: {user_id}")
+                    await logger.info("User profile ensured")
                 except Exception as profile_error:
-                    await logger.warning(f"Could not ensure user profile for {user_id}: {str(profile_error)}")
+                    await logger.warning(f"Could not ensure user profile: {type(profile_error).__name__}")
             
-            await logger.info(f"Email confirmed successfully for user: {user_id}")
+            await logger.info("Email confirmed successfully")
             return {"message": "Email confirmed successfully."}
             
         except Exception as e:
-            await logger.error(f"Email confirmation error: {str(e)}")
-            await logger.error(f"Error type: {type(e)}")
-            await logger.error(f"Error args: {getattr(e, 'args', 'No args')}")
+            await logger.error(f"Email confirmation error: {type(e).__name__}")
             
             # Provide more helpful error messages
             error_msg = str(e).lower()

@@ -27,3 +27,31 @@ def test_jwt_uses_settings_secret(monkeypatch):
     bad = jwt.encode({"sub": "u", "type": "access"}, "your-super-secret-jwt-key-change-in-production", "HS256")
     with pytest.raises(AuthenticationError):
         jwt_handler.verify_token(bad)
+
+
+def test_confirm_works_and_logs_no_secrets(client, caplog):
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.db.base import get_db_handler
+    from app.api.v1 import user_auth
+
+    token, email = "SECRET-TOKEN-abc123", "victim@example.com"
+    db = MagicMock()
+    db.auth.verify_otp.return_value = SimpleNamespace(user=SimpleNamespace(id="user-uuid-1"))
+    handler = MagicMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=db)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    handler.get_connection.return_value = cm
+    client.app.dependency_overrides[get_db_handler] = lambda: handler
+    try:
+        with caplog.at_level(logging.DEBUG), patch.object(
+            user_auth.user_service, "ensure_user_profile", AsyncMock()
+        ):
+            r = client.post("/api/v1/auth/confirm", json={"token": token, "email": email})
+    finally:
+        client.app.dependency_overrides.pop(get_db_handler, None)
+    assert r.status_code == 200
+    out = caplog.text + r.text
+    assert token not in out and email not in out and "user-uuid-1" not in out

@@ -10,8 +10,8 @@ from app.CRUD.chat_session_crud import ChatSessionCRUD
 from app.db.bucket_operations import SupabaseBucketManager
 from app.schemas.session import DiagnosisState, MediaRef, Message, Observations
 from app.services import hearing, kb, llm, media
-from app.services.media import Upload
-from app.services.prompts import build_messages
+from app.services.media import MediaError, Upload
+from app.services.prompts import build_messages, prompt_content
 from app.utils.logger import get_logger_instance
 
 logger = get_logger_instance("diagnosis")
@@ -59,28 +59,41 @@ async def _store_originals(session: dict, message_id: str, uploads: list[Upload]
     return [r for r in refs if r is not None]
 
 
-async def _hear(u: Upload) -> Observations:
-    async def sounds():
-        pcm = await media.audio_pcm(u.path, sr=hearing.CLAP_SR)
-        return await hearing.tag_sounds(pcm, sr=hearing.CLAP_SR)
+# TaskGroups below, not gather: when one job fails its siblings are cancelled (killing their
+# ffmpeg processes) and awaited, so none of a turn's work outlives the turn.
 
+
+async def _sounds(u: Upload) -> list:
+    pcm = await media.audio_pcm(u.path, sr=hearing.CLAP_SR)
+    return await hearing.tag_sounds(pcm, sr=hearing.CLAP_SR)
+
+
+async def _hear(u: Upload) -> Observations:
     # transcribe() decodes its own 16 kHz copy, so both decodes run side by side.
-    tags, transcript = await asyncio.gather(sounds(), hearing.transcribe(u.path))
-    return Observations(transcript=transcript, sounds=tags)
+    async with asyncio.TaskGroup() as tg:
+        tags = tg.create_task(_sounds(u))
+        transcript = tg.create_task(hearing.transcribe(u.path))
+    return Observations(transcript=transcript.result(), sounds=tags.result())
+
+
+async def _look_and_listen(u: Upload, max_frames: int) -> tuple[list[bytes], Observations | None]:
+    if u.kind == "image":
+        return [await asyncio.to_thread(u.path.read_bytes)], None
+    async with asyncio.TaskGroup() as tg:
+        frames = tg.create_task(media.extract_frames(u.path, u.duration or 0.0, max_frames)) if u.kind == "video" else None
+        heard = tg.create_task(_hear(u)) if u.kind == "audio" or u.has_audio else None
+    images = frames.result() if frames else []
+    if not images and heard is None:  # silent video whose frames all failed to decode
+        raise MediaError(detail="no decodable frames and no audio")
+    return images, heard.result() if heard else None
 
 
 async def _observe(uploads: list[Upload]) -> tuple[list[bytes], Observations | None]:
     """JPEGs for the model (photos or video frames) and what was heard (None if nothing had audio)."""
     max_frames = get_settings().MAX_FRAMES
-
-    async def one(u: Upload):
-        if u.kind == "image":
-            return [await asyncio.to_thread(u.path.read_bytes)], None
-        frames = media.extract_frames(u.path, u.duration or 0.0, max_frames) if u.kind == "video" else asyncio.sleep(0, [])
-        heard = _hear(u) if u.kind == "audio" or u.has_audio else asyncio.sleep(0, None)
-        return await asyncio.gather(frames, heard)
-
-    results = await asyncio.gather(*(one(u) for u in uploads))
+    async with asyncio.TaskGroup() as tg:
+        jobs = [tg.create_task(_look_and_listen(u, max_frames)) for u in uploads]
+    results = [j.result() for j in jobs]
     images = [img for imgs, _ in results for img in imgs]
     heard = [o for _, o in results if o is not None]
     if not heard:
@@ -116,7 +129,10 @@ async def run_turn(
             patch["observations"] = observations.model_dump()
         await sessions.update_message(session["id"], user["id"], patch)
         if failed:
-            await logger.error(f"media processing failed: {type(seen).__name__}")
+            while isinstance(seen, BaseExceptionGroup):  # TaskGroups nest; log the first real cause
+                seen = seen.exceptions[0]
+            detail = f": {seen.detail[:300]}" if isinstance(seen, MediaError) and seen.detail else ""
+            await logger.error(f"media processing failed: {type(seen).__name__}{detail}")
             yield "error", {"message": MEDIA_ERROR}
             return
 
@@ -149,9 +165,10 @@ async def run_turn(
         if not reply.strip():
             raise _EmptyReply
         n = settings.HISTORY_MESSAGES
-        recent = [{"role": m["role"], "content": m["content"]} for m in (history[-n:] if n > 0 else [])]
+        recent = [{"role": m["role"], "content": prompt_content(m["content"])} for m in (history[-n:] if n > 0 else [])]
         state = await llm.extract_state(
-            [*recent, {"role": "user", "content": text or ""}, {"role": "assistant", "content": reply}], previous
+            [*recent, {"role": "user", "content": prompt_content(text)}, {"role": "assistant", "content": reply}],
+            previous,
         )
     except Exception as exc:
         await logger.error(f"diagnosis LLM call failed: {type(exc).__name__}")

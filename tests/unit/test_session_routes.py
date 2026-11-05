@@ -11,14 +11,17 @@ from app.CRUD.chat_session_crud import ChatSessionCRUD
 from app.utils.limiter import limiter
 
 BUSY = "A reply is still being generated for this session."
+DELETING = "This session is being deleted."
 
 
 @pytest.fixture(autouse=True)
 def _clean():
     limiter.reset()
     session_route._in_flight.clear()
+    session_route._deleting.clear()
     yield
     session_route._in_flight.clear()
+    session_route._deleting.clear()
 
 
 def _url(session_id):
@@ -113,6 +116,32 @@ def test_delete_while_a_turn_is_in_flight_is_409(client, auth_headers, existing_
     r = client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
     assert r.status_code == 409 and r.json()["message"] == BUSY
     assert existing_session["id"] in fake_store.rows and fake_bucket.prefix_deletes == []
+
+
+async def test_send_while_delete_is_running_is_409(auth_headers, existing_session, fake_store, fake_bucket, fake_llm):
+    import main
+
+    sid = existing_session["id"]
+    gate, entered = asyncio.Event(), asyncio.Event()
+    real_delete = fake_store.delete
+
+    async def slow_delete(filters):
+        entered.set()
+        await gate.wait()
+        return await real_delete(filters)
+
+    fake_store.delete = slow_delete
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as ac:
+        deleting = asyncio.create_task(ac.delete(f"/api/v1/sessions/{sid}", headers=auth_headers))
+        await asyncio.wait_for(entered.wait(), 5)
+        r = await ac.post(_url(sid), data={"text": "fan clicks"}, headers=auth_headers)
+        assert r.status_code == 409 and r.json()["message"] == DELETING
+        again = await ac.delete(f"/api/v1/sessions/{sid}", headers=auth_headers)
+        assert again.status_code == 409 and again.json()["message"] == DELETING
+        gate.set()
+        assert (await asyncio.wait_for(deleting, 5)).status_code == 200
+    assert fake_llm.calls == 0 and sid not in fake_store.rows
+    assert sid not in session_route._in_flight and sid not in session_route._deleting
 
 
 # --- send ---------------------------------------------------------------------

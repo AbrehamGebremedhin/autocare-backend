@@ -31,9 +31,11 @@ logger = get_logger_instance("session_route")
 
 MAX_TEXT_CHARS = 5000
 BUSY = "A reply is still being generated for this session."
+DELETING = "This session is being deleted."
 
 # ponytail: in-process, per-instance. Move to a DB advisory lock if we ever run >1 instance.
-_in_flight: set[str] = set()
+_in_flight: set[str] = set()  # sessions with a turn running
+_deleting: set[str] = set()  # sessions a DELETE is removing; no turn may start (and upload media)
 
 
 class SessionCreate(BaseModel):
@@ -106,7 +108,9 @@ async def delete_session(session_id: str, current_user: dict = Depends(get_curre
     sid = session["id"]
     if sid in _in_flight:
         raise ResourceConflictException(BUSY)
-    _in_flight.add(sid)  # no turn may start (and upload media) while the session is going away
+    if sid in _deleting:
+        raise ResourceConflictException(DELETING)
+    _deleting.add(sid)
     try:
         await diagnosis.sessions.delete({"id": sid, "user_id": current_user["id"]})
         try:
@@ -114,7 +118,7 @@ async def delete_session(session_id: str, current_user: dict = Depends(get_curre
         except Exception as exc:  # best effort: the session itself is already gone
             await logger.warning(f"session media cleanup failed: {type(exc).__name__}")
     finally:
-        _in_flight.discard(sid)
+        _deleting.discard(sid)
     return {"deleted": sid}
 
 
@@ -136,6 +140,8 @@ async def send_message(
         raise RecordNotFoundException("Car")
 
     sid = session["id"]
+    if sid in _deleting:
+        raise ResourceConflictException(DELETING)
     if sid in _in_flight:
         raise ResourceConflictException(BUSY)
     _in_flight.add(sid)
@@ -153,7 +159,7 @@ async def send_message(
                 uploads = await validate_uploads(files, Path(tmpdir))
             except MediaError:
                 raise BaseAPIException(
-                    ErrorCode.INVALID_FORMAT, "Could not process media.", status.HTTP_422_UNPROCESSABLE_ENTITY
+                    ErrorCode.INVALID_FORMAT, diagnosis.MEDIA_ERROR, status.HTTP_422_UNPROCESSABLE_ENTITY
                 ) from None
         body, release = _events(session, car, text, uploads, tmpdir)
         return StreamingResponse(

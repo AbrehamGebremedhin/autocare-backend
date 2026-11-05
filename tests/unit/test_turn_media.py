@@ -1,5 +1,6 @@
 """Media turns: photos, audio and video through run_turn and the send route. All offline fakes."""
 
+import asyncio
 import base64
 import gc
 import io
@@ -17,7 +18,7 @@ from PIL import Image
 from app.api.v1 import session_route
 from app.db.bucket_operations import SupabaseBucketManager
 from app.schemas.session import SoundTag
-from app.services import hearing, media
+from app.services import diagnosis, hearing, media
 from app.services.diagnosis import run_turn
 from app.services.media import MediaError, Upload
 from app.utils.limiter import limiter
@@ -62,8 +63,10 @@ def _image_blocks(prompt: list[dict]) -> list[bytes]:
 def _clean():
     limiter.reset()
     session_route._in_flight.clear()
+    session_route._deleting.clear()
     yield
     session_route._in_flight.clear()
+    session_route._deleting.clear()
 
 
 @pytest.fixture
@@ -205,8 +208,92 @@ async def test_media_failure_is_error_event_and_keeps_user_message(fake_all, ses
     msgs = fake_all.store.messages(session["id"])
     assert [(m["role"], m["content"]) for m in msgs] == [("user", "listen to this")]
     assert msgs[0]["observations"] is None
+    # The original still reached Storage (it uploads alongside processing), so the ref is kept.
+    assert msgs[0]["media"] == [{"kind": "video", "path": f"{session['user_id']}/{session['id']}/{msgs[0]['id']}/0.mp4"}]
     assert fake_all.llm.calls == 0
     assert fake_all.store.rows[session["id"]]["state"] == {}
+
+
+async def test_failed_job_cancels_its_siblings_before_the_turn_ends(fake_all, session, car, video_upload):
+    fake_all.hearing.tag_sounds.side_effect = RuntimeError("CLAP failed to load")
+    seen = {"started": 0, "cancelled": 0}
+
+    async def slow(*args):
+        seen["started"] += 1
+        try:
+            await asyncio.Event().wait()  # never set: only cancellation ends it
+        except asyncio.CancelledError:
+            seen["cancelled"] += 1
+            raise
+
+    fake_all.hearing.transcribe.side_effect = slow
+    fake_all.media.extract_frames.side_effect = slow
+    out = await asyncio.wait_for(_run(session, car, None, [video_upload]), 2)
+    assert out == [PROCESSING, ("error", {"message": MEDIA_ERROR})]
+    assert seen == {"started": 2, "cancelled": 2}  # transcribe and frames, both cancelled before run_turn returned
+
+
+async def test_media_failure_logs_the_leaf_type_and_ffmpeg_detail(fake_all, session, car, video_upload, monkeypatch):
+    log = SimpleNamespace(error=AsyncMock(), warning=AsyncMock())
+    monkeypatch.setattr(diagnosis, "logger", log)
+    fake_all.media.extract_frames.side_effect = MediaError(detail="ffmpeg: moov atom not found")
+    await _run(session, car, None, [video_upload])
+    [message] = [c.args[0] for c in log.error.await_args_list]
+    assert message == "media processing failed: MediaError: ffmpeg: moov atom not found"
+
+
+async def test_video_with_no_frames_and_no_audio_is_a_media_error(fake_all, session, car, silent_video_upload):
+    fake_all.media.extract_frames.return_value = []  # every frame failed to decode
+    out = await _run(session, car, None, [silent_video_upload])
+    assert out == [PROCESSING, ("error", {"message": MEDIA_ERROR})]
+    assert fake_all.llm.calls == 0
+
+
+async def test_video_with_no_frames_but_audio_still_runs(fake_all, session, car, video_upload):
+    fake_all.media.extract_frames.return_value = []
+    out = await _run(session, car, None, [video_upload])
+    assert out[-1][0] == "done" and _image_blocks(fake_all.llm.prompt) == []
+
+
+async def test_storage_frames_and_hearing_run_concurrently(fake_all, session, car, video_upload, monkeypatch):
+    # A ring: each job waits for an event only the next one sets, so any serial order deadlocks.
+    stored, framed, heard = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    real_upload = fake_all.bucket.upload_file
+
+    async def upload(*args):
+        stored.set()
+        await heard.wait()
+        return await real_upload(*args)
+
+    async def frames(*args):
+        framed.set()
+        await stored.wait()
+        return FRAMES
+
+    async def transcribe(*args):
+        heard.set()
+        await framed.wait()
+        return TRANSCRIPT
+
+    monkeypatch.setattr(fake_all.bucket, "upload_file", upload)
+    fake_all.media.extract_frames.side_effect = frames
+    fake_all.hearing.transcribe.side_effect = transcribe
+    out = await asyncio.wait_for(_run(session, car, None, [video_upload]), 2)
+    assert out[-1][0] == "done" and len(_image_blocks(fake_all.llm.prompt)) == 8
+
+
+async def test_media_only_turn_uses_a_placeholder_for_empty_content(fake_all, fake_store, car, audio_upload):
+    history = [
+        {"id": "a", "role": "user", "content": "", "media": [], "observations": None, "created_at": "x"},
+        {"id": "b", "role": "assistant", "content": "sounds like a belt", "media": [], "observations": None, "created_at": "y"},
+    ]
+    session = fake_store.add("u", car["id"], messages=history)
+    await _run(session, car, None, [audio_upload])
+    assert fake_all.llm.prompt[1] == {"role": "user", "content": "[attached media]"}
+    assert all(m["content"] for m in fake_all.llm.conversation)
+    assert fake_all.llm.conversation[0]["content"] == "[attached media]"
+    assert fake_all.llm.conversation[2] == {"role": "user", "content": "[attached media]"}
+    assert fake_store.messages(session["id"])[2]["content"] == ""  # stored as sent; only the prompt is padded
 
 
 async def test_storage_failure_does_not_kill_the_turn(fake_all, session, car, video_upload):
@@ -312,7 +399,7 @@ def test_media_error_in_validation_is_generic_422(client, auth_headers, existing
     monkeypatch.setattr(session_route, "validate_uploads", broken)
     r = client.post(_url(existing_session["id"]), files={"files": ("a.mp4", b"x", "video/mp4")}, headers=auth_headers)
     assert r.status_code == 422 and r.headers["content-type"].startswith("application/json")
-    assert r.json()["message"] == "Could not process media."
+    assert r.json()["message"] == MEDIA_ERROR
     assert "abc.bin" not in r.text and "ffmpeg" not in r.text and str(turn_dirs[0]) not in r.text
     assert existing_session["id"] not in session_route._in_flight and not turn_dirs[0].exists()
     assert fake_llm.calls == 0
@@ -357,6 +444,34 @@ async def test_tmpdir_removed_when_client_disconnects(existing_session, car, fak
     assert (await anext(stream)).startswith("event: stage")
     await stream.aclose()
     assert sid not in session_route._in_flight and not Path(tmpdir).exists()
+
+
+async def test_disconnect_during_processing_cancels_jobs_and_releases(existing_session, car, fake_all, make_upload):
+    sid = existing_session["id"]
+    tmpdir = tempfile.mkdtemp(prefix="autocare-test-")
+    upload = make_upload("video", b"clip", duration=3.0, has_audio=False, folder=Path(tmpdir))
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def frames(*args):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    fake_all.media.extract_frames.side_effect = frames
+    session_route._in_flight.add(sid)
+    stream, _ = session_route._events(existing_session, car, None, [upload], tmpdir)
+    assert (await anext(stream)).startswith("event: stage")
+    pending = asyncio.ensure_future(anext(stream))  # now inside the media gather
+    await asyncio.wait_for(started.wait(), 2)
+    pending.cancel()  # what Starlette does to the response task when the client goes away
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert cancelled.is_set()
+    assert sid not in session_route._in_flight and not Path(tmpdir).exists()
+    assert [m["role"] for m in fake_all.store.messages(sid)] == ["user"]
 
 
 def test_tmpdir_removed_if_stream_never_starts(existing_session, car, make_upload):

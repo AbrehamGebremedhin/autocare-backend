@@ -140,3 +140,9 @@ def test_utf8_preserved_in_user_block(car, empty_state):
     msg = "Temperatur steigt auf 110 °C — Lüfter läuft nicht"
     text = _user_text(_build(car, empty_state, text=msg))
     assert msg in text
+
+
+def test_empty_history_content_gets_a_placeholder(car, empty_state):
+    history = [{"role": "user", "content": ""}, {"role": "assistant", "content": "a belt"}]
+    msgs = _build(car, empty_state, history=history)
+    assert msgs[1:3] == [{"role": "user", "content": "[attached media]"}, {"role": "assistant", "content": "a belt"}]

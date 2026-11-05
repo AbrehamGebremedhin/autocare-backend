@@ -110,10 +110,18 @@ def _render_passages(passages: Sequence[Passage]) -> str:
     return "\n\n".join(f"[{p['title']}, p. {p['page']}]\n{p['content'][:_PASSAGE_CHARS]}" for p in passages)
 
 
+MEDIA_PLACEHOLDER = "[attached media]"
+
+
+def prompt_content(content: str | None) -> str:
+    """A media-only user message is saved with content ""; never send the API an empty message."""
+    return content or MEDIA_PLACEHOLDER
+
+
 def _turn(m: Message | Mapping) -> dict:
     if isinstance(m, Message):
-        return {"role": m.role, "content": m.content}
-    return {"role": m["role"], "content": m["content"]}
+        return {"role": m.role, "content": prompt_content(m.content)}
+    return {"role": m["role"], "content": prompt_content(m["content"])}
 
 
 def build_messages(

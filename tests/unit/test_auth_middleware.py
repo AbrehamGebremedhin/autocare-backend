@@ -396,3 +396,35 @@ class TestSupabaseValidation:
         
         with pytest.raises(AuthenticationError):
             await validate_user_with_supabase("user-123", "token")
+
+
+class TestErrorLogsHideDetails:
+    """Error logs carry only the exception class, never its message."""
+
+    @pytest.mark.asyncio
+    @patch('app.utils.auth_middleware.SupabaseDBHandler')
+    async def test_supabase_validation_logs_class_only(self, mock_db_handler, caplog):
+        import logging
+        from app.utils.auth_middleware import validate_user_with_supabase
+
+        mock_db = MagicMock()
+        mock_db.auth.get_user.side_effect = RuntimeError("leaked eyJ-token-body")
+        mock_db_handler.return_value.get_client = AsyncMock(return_value=mock_db)
+
+        with caplog.at_level(logging.DEBUG), pytest.raises(AuthenticationError):
+            await validate_user_with_supabase("user-123", "eyJ-token-body")
+        assert "RuntimeError" in caplog.text
+        assert "eyJ-token-body" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_get_current_user_unexpected_error_logs_class_only(self, mock_request, caplog):
+        import logging
+        from app.utils.auth_middleware import get_current_user
+
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="tok")
+        with patch('app.utils.auth_middleware.jwt_handler') as h:
+            h.verify_token.side_effect = ValueError("secret internals")
+            with caplog.at_level(logging.DEBUG), pytest.raises(AuthenticationError):
+                await get_current_user(mock_request, creds)
+        assert "ValueError" in caplog.text
+        assert "secret internals" not in caplog.text

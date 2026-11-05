@@ -121,7 +121,7 @@ async def get_current_user(
         )
         raise
     except Exception as e:
-        await logger.error(f"Authentication error: {str(e)}")
+        await logger.error(f"Authentication error: {type(e).__name__}")
         raise AuthenticationError("Authentication failed")
 
 async def validate_user_with_supabase(user_id: str, token: str) -> bool:
@@ -139,7 +139,7 @@ async def validate_user_with_supabase(user_id: str, token: str) -> bool:
         
         return True
     except Exception as e:
-        await logger.error(f"Supabase validation error: {str(e)}")
+        await logger.error(f"Supabase validation error: {type(e).__name__}")
         raise AuthenticationError("Token validation failed")
 
 async def get_current_active_user(

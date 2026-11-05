@@ -13,7 +13,8 @@ from app.utils.exceptions import (
     DuplicateRecordException,
     RecordNotFoundException
 )
-from app.utils.auth_middleware import jwt_handler
+from fastapi.security import HTTPAuthorizationCredentials
+from app.utils.auth_middleware import jwt_handler, get_current_user, security
 from app.utils.audit_logging import audit_logger, AuditEventType
 
 
@@ -82,7 +83,7 @@ async def register_user(user: UserCreate, request: Request, db_handler: Supabase
     except AuthenticationException:
         raise
     except Exception as e:
-        await logger.error(f"Registration error - {str(e)} [ID: {correlation_id}]")
+        await logger.error(f"Registration error - {type(e).__name__} [ID: {correlation_id}]")
         
         # Check for specific error types
         error_str = str(e).lower()
@@ -183,7 +184,7 @@ async def login_user(user_login: UserLogin, request: Request = None, db_handler:
     except AuthenticationException:
         raise
     except Exception as e:
-        await logger.error(f"Login error - {str(e)} [ID: {correlation_id}]")
+        await logger.error(f"Login error - {type(e).__name__} [ID: {correlation_id}]")
         
         error_str = str(e).lower()
         if "invalid" in error_str and ("credentials" in error_str or "password" in error_str):
@@ -194,16 +195,21 @@ async def login_user(user_login: UserLogin, request: Request = None, db_handler:
             raise DatabaseException("Authentication service temporarily unavailable")
 
 @router.post('/auth/logout')
-async def logout_user(token: str, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
-    logger.info("Logout attempt")
+async def logout_user(
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db_handler: SupabaseDBHandler = Depends(get_db_handler),
+):
+    # The token comes from the Authorization header only, never from the URL.
+    await logger.info("Logout attempt")
     async with db_handler.get_connection() as db:
         try:
-            response = db.auth.sign_out(token)
-            logger.info("Logout successful.")
-            return {"message": "Logged out successfully."}
+            db.auth.admin.sign_out(credentials.credentials)
         except Exception as e:
-            logger.exception("Logout error.")
-            raise HTTPException(status_code=400, detail=str(e))
+            await logger.error(f"Logout error: {type(e).__name__}")
+            raise HTTPException(status_code=400, detail="Logout failed.")
+    await logger.info("Logout successful")
+    return {"message": "Logged out successfully."}
 
 @router.get('/auth/confirm', operation_id="confirm_email_get")
 async def confirm_email_get(request: Request, token: str = None, type: str = 'signup', email: str = None, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
@@ -322,7 +328,7 @@ async def _confirm_email_logic(request: Request, token: str = None, token_type: 
             elif "'str' object is not callable" in error_msg:
                 raise HTTPException(status_code=400, detail="Internal error in email confirmation. Please try again or contact support.")
             else:
-                raise HTTPException(status_code=400, detail=f"Confirmation failed: {str(e)}")
+                raise HTTPException(status_code=400, detail="Email confirmation failed. Please request a new confirmation email.")
 
 @router.get('/auth/confirm-page', response_class=HTMLResponse)
 async def confirm_page(request: Request):

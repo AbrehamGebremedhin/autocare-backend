@@ -97,8 +97,7 @@ def make_upload(tmp_path):
     def make(kind, data: bytes, *, duration=None, has_audio=False, folder: Path | None = None) -> Upload:
         path = (folder or tmp_path) / f"{uuid4().hex}.{'jpg' if kind == 'image' else 'bin'}"
         path.write_bytes(data)
-        mime = "image/jpeg" if kind == "image" else "application/octet-stream"
-        return Upload(kind, path, mime, duration, has_audio)
+        return Upload(kind, path, duration, has_audio)
 
     return make
 

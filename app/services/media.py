@@ -17,7 +17,6 @@ from app.core.config import get_settings
 class Upload:
     kind: Literal["image", "audio", "video"]
     path: Path
-    mime: str
     duration: float | None
     has_audio: bool
 
@@ -26,6 +25,7 @@ class Upload:
 
 MAX_IMAGE_PIXELS = 50_000_000  # decompression-bomb cap (width * height)
 MAX_IMAGE_SIDE = 1024
+MAX_VIDEO_SIDE = 4096  # px; bounds the memory of each concurrent frame decode
 SUBPROCESS_TIMEOUT = 30.0
 CHUNK = 1024 * 1024
 _ALLOWED_IMAGE_FORMATS = {"JPEG", "MPO", "PNG", "WEBP"}  # MPO: multi-picture JPEG (phones)
@@ -92,7 +92,8 @@ async def probe(path: Path) -> dict:
     duration = _num((info.get("format") or {}).get("duration"))
     if not duration:
         duration = max((_num(s.get("duration")) for s in video + audio), default=0.0)
-    return {"duration": duration, "has_audio": bool(audio), "has_video": bool(video)}
+    max_side = max((_num(s.get(k)) for s in video for k in ("width", "height")), default=0.0)
+    return {"duration": duration, "has_audio": bool(audio), "has_video": bool(video), "max_side": max_side}
 
 
 async def audio_pcm(path: Path, sr: int = 48000) -> np.ndarray:
@@ -194,7 +195,7 @@ async def validate_uploads(files: list[UploadFile], tmpdir: Path) -> list[Upload
             raise HTTPException(415, "Only JPEG, PNG and WebP images are supported.")
         if status == "ok":
             raw.unlink(missing_ok=True)
-            uploads.append(Upload("image", jpg, "image/jpeg", None, False))
+            uploads.append(Upload("image", jpg, None, False))
             continue
         jpg.unlink(missing_ok=True)
         try:
@@ -209,7 +210,9 @@ async def validate_uploads(files: list[UploadFile], tmpdir: Path) -> list[Upload
             raise HTTPException(415, "Unsupported file type.")
         if info["duration"] > s.MAX_MEDIA_SECONDS:
             raise HTTPException(413, f"Clips must be {s.MAX_MEDIA_SECONDS} seconds or shorter.")
-        uploads.append(Upload(kind, raw, "application/octet-stream", info["duration"], info["has_audio"]))
+        if kind == "video" and info["max_side"] > MAX_VIDEO_SIDE:
+            raise HTTPException(413, f"Video resolution must be at most {MAX_VIDEO_SIDE} pixels per side.")
+        uploads.append(Upload(kind, raw, info["duration"], info["has_audio"]))
 
     images = [u for u in uploads if u.kind == "image"]
     if images and len(images) != len(uploads):

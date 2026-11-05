@@ -42,6 +42,8 @@ def media_dir(tmp_path_factory):
     _ff(*tv, *sine, "-shortest", "-pix_fmt", "yuv420p", str(d / "clip.mp4"))
     _ff(*tv, "-pix_fmt", "yuv420p", str(d / "silent.mp4"))
     _ff(*tv, "-pix_fmt", "yuv420p", str(d / "silent2.mp4"))
+    for side in (4096, 4098):  # MAX_VIDEO_SIDE and just over it
+        _ff("-f", "lavfi", "-i", f"testsrc=duration=1:size={side}x16:rate=1", "-pix_fmt", "yuv420p", str(d / f"wide{side}.mp4"))
     _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=61", "-ar", "8000", str(d / "long.wav"))
     _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ar", "8000", str(d / "tone.wav"))
     _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=90", "-ar", "8000", str(d / "ninety.wav"))
@@ -142,6 +144,15 @@ async def test_cover_art_is_not_video(tmp_media):
 async def test_probe_reports_streams(tmp_media):
     info = await probe(tmp_media.dir / "silent.mp4")
     assert info["has_video"] and not info["has_audio"] and 2.5 < info["duration"] < 3.5
+    assert info["max_side"] == 320
+
+
+async def test_video_resolution_capped(tmp_media):
+    [u] = await validate_uploads([tmp_media.upload("wide4096.mp4")], tmp_media.work)
+    assert u.kind == "video"
+    with pytest.raises(HTTPException) as e:
+        await validate_uploads([tmp_media.upload("wide4098.mp4")], tmp_media.work)
+    assert e.value.status_code == 413 and "4096" in e.value.detail
 
 
 async def test_probe_and_pcm_raise_media_error_on_corrupt(tmp_media):
@@ -157,7 +168,7 @@ async def test_png_and_webp_reencoded_to_small_jpeg(tmp_media):
     )
     assert len(out) == 2
     for u in out:
-        assert u.kind == "image" and u.mime == "image/jpeg"
+        assert u.kind == "image" and u.path.suffix == ".jpg"
         assert u.duration is None and u.has_audio is False
         assert u.path.read_bytes()[:2] == b"\xff\xd8"
         with Image.open(u.path) as im:

@@ -424,7 +424,7 @@ async def confirm_page(request: Request):
                 <span class="loader"></span>
                 Please wait...
             </div>
-            <div id="redirect" class="redirect-msg" style="display:none;"></div>
+            <div id="redirect" class="redirect-msg" hidden></div>
         </div>
         <script nonce="{nonce}">
         try {{
@@ -473,7 +473,7 @@ async def confirm_page(request: Request):
                     const data = await response.json();
                     if (response.ok) {{
                         showResult(data.message || 'Email confirmed successfully!', 'success');
-                        document.getElementById('redirect').style.display = 'block';
+                        document.getElementById('redirect').hidden = false;
                         document.getElementById('redirect').innerText = 'Redirecting to the app...';
                         setTimeout(() => {{
                             window.location.href = '/';

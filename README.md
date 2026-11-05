@@ -8,11 +8,13 @@ Put these in `.env` (names only; see `app/core/config.py` for defaults).
 
 Required: `JWT_SECRET_KEY` (min 32 chars), `SUPABASE_URL`, `SUPABASE_KEY`, `BASE_URL`, `DEEPSEEK_API_KEY`.
 
+`SUPABASE_KEY` must be the project's **service-role** key, not the anon key. The schema enables RLS with no policies (so the public anon key reads nothing), and logout uses the auth admin API. Keep it server-side only.
+
 Optional: `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_BUCKET`.
 
 ## Supabase setup
 
-1. Review `app/db/sql/001_v2_schema.sql`. It is **destructive**: it drops `Chatsession` and `Groundknowledge` and removes two `Car` columns. RLS is not configured by the file, so use the service-role key or add policies.
+1. Review `app/db/sql/001_v2_schema.sql`. It is **destructive**: it drops `Chatsession` and `Groundknowledge` and removes two `Car` columns. It enables RLS on `kb_passages` and `Chatsession` with no policies, so only the service-role key can reach them. It does not change RLS on the existing `Car` and `user_profiles` tables: check those in the dashboard and enable RLS on them too.
 2. Run it by hand in the Supabase SQL editor. The backend never applies schema changes.
 3. In Storage, create a **private** bucket named `media` (or whatever `MEDIA_BUCKET` is set to). This is a manual step.
 
@@ -32,7 +34,7 @@ docker compose up
 
 ## API
 
-Interactive reference: `http://localhost:8000/docs`. Every route except `/api/v1/auth/*` and `/health` needs `Authorization: Bearer <token>` from login, and so does `POST /api/v1/auth/logout`; the user id always comes from the token.
+Interactive reference: `http://localhost:8000/docs`. `/docs`, `/redoc` and `/openapi.json` are public (no token), so the API schema is visible to anyone who can reach the server. Every route except `/api/v1/auth/*`, `/health` and those docs pages needs `Authorization: Bearer <token>` from login, and so does `POST /api/v1/auth/logout`; the user id always comes from the token.
 
 | Area | Routes |
 | --- | --- |

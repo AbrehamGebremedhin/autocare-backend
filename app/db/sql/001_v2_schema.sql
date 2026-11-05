@@ -7,8 +7,12 @@
 --              the design doc), removes two Car columns (is_vectorized,
 --              vector_chunk_count).
 --
--- Review before running: RLS is not configured by this file; the backend must
--- use the service-role key or you must add policies.
+-- RLS: this file enables row level security on kb_passages and "Chatsession"
+--      and adds no policies, so the anon and authenticated roles get no rows
+--      through PostgREST. The backend must use the service-role key (it
+--      bypasses RLS) in SUPABASE_KEY. "Car" and user_profiles already exist
+--      and this file leaves their RLS settings alone: check them in the
+--      dashboard and enable RLS on them the same way.
 --
 -- Run in the Supabase SQL editor after review.
 
@@ -27,6 +31,7 @@ create table if not exists kb_passages (
 
 create index if not exists kb_passages_tsv_idx on kb_passages using gin (tsv);
 create index if not exists kb_passages_car_id_idx on kb_passages (car_id);
+alter table kb_passages enable row level security;
 
 -- Full-text search RPC: supabase.rpc('search_kb', {'tsq':..., 'p_car_id':..., 'k':...})
 create or replace function search_kb(tsq text, p_car_id text, k int default 8)
@@ -69,6 +74,7 @@ create table "Chatsession" (
 );
 
 create index if not exists chatsession_user_id_idx on "Chatsession" (user_id);
+alter table "Chatsession" enable row level security;
 
 -- Car: knowledge-base status replaces the vector columns ------------------------
 alter table "Car" add column if not exists kb_status text not null default 'pending';

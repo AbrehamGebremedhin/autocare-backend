@@ -8,6 +8,7 @@ import numpy as np
 
 from app.core.config import get_settings
 from app.schemas.session import SoundTag
+from app.services.media import audio_pcm
 
 CAR_SOUND_LABELS: list[str] = [
     # catch-alls (kept in the softmax so fault labels compete against them)
@@ -81,13 +82,17 @@ def _clap():
         return _clap_model
 
 
-def _transcribe_sync(path: Path) -> str:
+WHISPER_SR = 16000
+
+
+def _transcribe_sync(pcm: np.ndarray) -> str:
+    # Pass the already-capped array: given a path, faster-whisper would decode the whole file.
     # beam_size=1 (greedy): several times faster on CPU, plenty for short diagnostic clips.
-    segments, _ = _whisper().transcribe(str(path), vad_filter=True, beam_size=1)
+    segments, _ = _whisper().transcribe(pcm, vad_filter=True, beam_size=1)
     limit = get_settings().MAX_MEDIA_SECONDS
     parts: list[str] = []
     size = 0
-    for seg in segments:  # lazy generator: stop early so a lying container can't run forever
+    for seg in segments:  # lazy generator; second guard besides the capped decode
         if seg.start > limit or size >= MAX_TRANSCRIPT_CHARS:
             break
         text = seg.text.strip()
@@ -98,7 +103,12 @@ def _transcribe_sync(path: Path) -> str:
 
 
 async def transcribe(path: Path) -> str:
-    return await asyncio.to_thread(_transcribe_sync, path)
+    """Transcribe speech in a media file ("" if none).
+
+    Raises media.MediaError if the file has no decodable audio; callers check has_audio first.
+    """
+    pcm = await audio_pcm(path, sr=WHISPER_SR)  # ffmpeg decode capped at MAX_MEDIA_SECONDS
+    return await asyncio.to_thread(_transcribe_sync, pcm)
 
 
 def _resample(pcm: np.ndarray, sr: int) -> np.ndarray:
@@ -130,11 +140,12 @@ def _tag_sync(pcm: np.ndarray, sr: int, top_k: int) -> list[SoundTag]:
     model, processor = _clap()
     # Plain labels as the text prompts: CLAP matches short natural phrases well and this
     # keeps the returned label identical to CAR_SOUND_LABELS.
-    inputs = processor(
-        text=CAR_SOUND_LABELS, audios=wins, sampling_rate=CLAP_SR, return_tensors="pt", padding=True
-    )
+    # Tokenise and featurise separately: processor(..., padding=True) would override the
+    # feature extractor's default "repeatpad" and zero-pad clips shorter than 10 s.
+    text = processor.tokenizer(CAR_SOUND_LABELS, padding=True, return_tensors="pt")
+    audio = processor.feature_extractor(wins, sampling_rate=CLAP_SR, return_tensors="pt")
     with torch.inference_mode():
-        probs = model(**inputs).logits_per_audio.softmax(dim=-1)  # (windows, labels)
+        probs = model(**text, **audio).logits_per_audio.softmax(dim=-1)  # (windows, labels)
     best = probs.max(dim=0).values.tolist()
     floor = get_settings().SOUND_MIN_SCORE
     tags = [

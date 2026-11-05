@@ -26,10 +26,17 @@ def _probs_to_logits(probs_by_label: dict[str, float], rest: float) -> torch.Ten
 
 class _FakeProcessor:
     def __init__(self):
-        self.calls = []
+        self.text_calls = []
+        self.audio_calls = []
+        self.tokenizer = self._tokenize
+        self.feature_extractor = self._featurize
 
-    def __call__(self, *, text, audios, sampling_rate, return_tensors, padding):
-        self.calls.append(types.SimpleNamespace(text=text, audios=audios, sr=sampling_rate))
+    def _tokenize(self, text, **kw):
+        self.text_calls.append((text, kw))
+        return {"input_ids": text}
+
+    def _featurize(self, audios, **kw):
+        self.audio_calls.append((audios, kw))
         return {"n": len(audios)}
 
 
@@ -38,8 +45,7 @@ class _FakeModel:
         self.per_window = per_window  # callable(window_index) -> logits row
         self.seen = 0
 
-    def __call__(self, **inputs):  # the real call is model(**inputs)
-        n = inputs["n"]
+    def __call__(self, *, input_ids, n):  # the real call is model(**text, **audio)
         rows = torch.stack([self.per_window(self.seen + i) for i in range(n)])
         self.seen += n
         return types.SimpleNamespace(logits_per_audio=rows)
@@ -69,9 +75,11 @@ async def test_tag_sounds_max_over_windows_and_threshold(fake_clap):
     assert tags[0].label == "belt squeal" and tags[0].score == pytest.approx(0.7)
     assert all(t.label not in ("human speech", "background noise") for t in tags)
     assert all(t.score >= get_settings().SOUND_MIN_SCORE for t in tags)
-    assert len(fake_clap.calls[0].audios) == 3
-    assert fake_clap.calls[0].sr == SR
-    assert fake_clap.calls[0].text == LABELS  # plain labels are the text prompts
+    [(audios, akw)] = fake_clap.audio_calls
+    assert len(audios) == 3 and akw["sampling_rate"] == SR
+    assert "padding" not in akw  # keep the default repeatpad
+    [(text, _)] = fake_clap.text_calls
+    assert text == LABELS  # plain labels are the text prompts
 
 
 async def test_tag_sounds_empty_when_nothing_clears_threshold(fake_clap_flat):
@@ -80,7 +88,8 @@ async def test_tag_sounds_empty_when_nothing_clears_threshold(fake_clap_flat):
 
 async def test_tag_sounds_resamples_to_48k(fake_clap):
     await tag_sounds(np.zeros(16000 * 5, dtype=np.float32), sr=16000)
-    [w] = fake_clap.calls[0].audios
+    [(audios, _)] = fake_clap.audio_calls
+    [w] = audios
     assert len(w) == SR * 5
 
 
@@ -109,23 +118,44 @@ class _Seg:
 class _FakeWhisper:
     def __init__(self, segs):
         self.segs = segs
+        self.audio = None
         self.kwargs = None
 
-    def transcribe(self, path, **kw):
-        self.kwargs = kw
+    def transcribe(self, audio, **kw):
+        self.audio, self.kwargs = audio, kw
         return iter(self.segs), None
 
 
-async def test_transcribe_joins_segments(mocker, tmp_path):
+PCM = np.zeros(16000, dtype=np.float32)
+
+
+@pytest.fixture(autouse=True)
+def _pcm(mocker, request):
+    if request.node.get_closest_marker("slow"):
+        return None  # real ffmpeg decode for the real-model test
+    return mocker.patch("app.services.hearing.audio_pcm", return_value=PCM)
+
+
+async def test_transcribe_joins_segments(mocker, tmp_path, _pcm):
     fake = _FakeWhisper([_Seg(" my car "), _Seg("makes a noise  ")])
     mocker.patch("app.services.hearing._whisper", return_value=fake)
     assert await transcribe(tmp_path / "a.mp4") == "my car makes a noise"
     assert fake.kwargs["vad_filter"] is True and fake.kwargs["beam_size"] == 1
+    assert fake.audio is PCM and not isinstance(fake.audio, str)  # never a path
+    _pcm.assert_awaited_once_with(tmp_path / "a.mp4", sr=16000)
 
 
 async def test_transcribe_empty_when_no_speech(mocker, tmp_path):
     mocker.patch("app.services.hearing._whisper", return_value=_FakeWhisper([]))
     assert await transcribe(tmp_path / "a.mp4") == ""
+
+
+async def test_transcribe_propagates_media_error(mocker, tmp_path, _pcm):
+    from app.services.media import MediaError
+
+    _pcm.side_effect = MediaError(detail="x")
+    with pytest.raises(MediaError):
+        await transcribe(tmp_path / "a.mp4")
 
 
 async def test_transcribe_stops_after_max_media_seconds(mocker, tmp_path):
@@ -139,7 +169,7 @@ async def test_transcribe_stops_after_max_media_seconds(mocker, tmp_path):
             t += 5.0
 
     fake = _FakeWhisper([])
-    fake.transcribe = lambda path, **kw: (endless(), None)
+    fake.transcribe = lambda audio, **kw: (endless(), None)
     mocker.patch("app.services.hearing._whisper", return_value=fake)
     out = await transcribe(tmp_path / "a.mp4")
     assert out

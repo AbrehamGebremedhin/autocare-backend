@@ -83,10 +83,36 @@ def test_delete_own_session(client, auth_headers, existing_session, fake_store):
     assert existing_session["id"] not in fake_store.rows
 
 
-def test_delete_other_users_session_is_404(client, auth_headers_other_user, existing_session, fake_store):
+def test_delete_other_users_session_is_404(client, auth_headers_other_user, existing_session, fake_store, fake_bucket):
     r = client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers_other_user)
     assert r.status_code == 404
-    assert existing_session["id"] in fake_store.rows
+    assert existing_session["id"] in fake_store.rows and fake_bucket.prefix_deletes == []
+
+
+def test_delete_removes_the_sessions_media(client, auth_headers, existing_session, fake_bucket, user_id):
+    sid = existing_session["id"]
+    fake_bucket.objects = {
+        ("media", f"{user_id}/{sid}/m1/0.jpg"): b"a",
+        ("media", f"{user_id}/{sid}/m2/0.mp4"): b"b",
+        ("media", f"{user_id}/other-session/m1/0.jpg"): b"c",
+    }
+    r = client.delete(f"/api/v1/sessions/{sid}", headers=auth_headers)
+    assert r.status_code == 200
+    assert fake_bucket.prefix_deletes == [("media", f"{user_id}/{sid}/")]
+    assert list(fake_bucket.objects) == [("media", f"{user_id}/other-session/m1/0.jpg")]
+
+
+def test_delete_succeeds_when_storage_fails(client, auth_headers, existing_session, fake_store, fake_bucket):
+    fake_bucket.error = RuntimeError("Bucket not found")
+    r = client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
+    assert r.status_code == 200 and existing_session["id"] not in fake_store.rows
+
+
+def test_delete_while_a_turn_is_in_flight_is_409(client, auth_headers, existing_session, fake_store, fake_bucket):
+    session_route._in_flight.add(existing_session["id"])
+    r = client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
+    assert r.status_code == 409 and r.json()["message"] == BUSY
+    assert existing_session["id"] in fake_store.rows and fake_bucket.prefix_deletes == []
 
 
 # --- send ---------------------------------------------------------------------
@@ -95,7 +121,7 @@ def test_send_streams_sse(client, auth_headers, existing_session, fake_llm, fake
     r = client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/event-stream")
-    assert r.headers["cache-control"] == "no-cache" and r.headers["x-accel-buffering"] == "no"
+    assert r.headers["cache-control"] == "no-cache, no-store" and r.headers["x-accel-buffering"] == "no"
     events = _parse(r.text)
     assert events[0] == ("stage", {"name": "searching"}) and [e for e, _ in events[-2:]] == ["state", "done"]
     assert [m["role"] for m in fake_store.messages(existing_session["id"])] == ["user", "assistant"]
@@ -123,13 +149,26 @@ def test_send_text_over_5000_chars_is_422(client, auth_headers, existing_session
     assert fake_store.messages(existing_session["id"]) == []
 
 
-def test_send_with_file_is_415_until_media_lands(client, auth_headers, existing_session, fake_llm):
-    r = client.post(
-        _url(existing_session["id"]), data={"text": "look"},
-        files={"files": ("a.jpg", b"\xff\xd8\xff", "image/jpeg")}, headers=auth_headers,
-    )
-    assert r.status_code == 415 and r.json()["message"] == "Media upload is not enabled yet."
-    assert fake_llm.calls == 0
+def test_turn_uses_the_session_as_read_after_taking_the_lock(client, auth_headers, existing_session, fake_llm, fake_store):
+    sid = existing_session["id"]
+    fake_store.rows[sid]["messages"] = [
+        {"id": "a", "role": "user", "content": "fan clicks", "media": [], "observations": None, "created_at": "x"},
+        {"id": "b", "role": "assistant", "content": "check relay", "media": [], "observations": None, "created_at": "y"},
+    ]
+    real = fake_store.get_for_user
+    reads = []
+
+    async def stale_first(session_id, user_id):
+        row = await real(session_id, user_id)
+        reads.append(session_id)
+        if len(reads) == 1:
+            row["messages"] = []  # snapshot taken before a previous turn finished writing
+        return row
+
+    fake_store.get_for_user = stale_first
+    r = client.post(_url(sid), data={"text": "relay is fine"}, headers=auth_headers)
+    assert _parse(r.text)[-1][0] == "done" and len(reads) == 2
+    assert [m["role"] for m in fake_llm.prompt] == ["system", "user", "assistant", "user"]
 
 
 def test_send_is_rate_limited(client, auth_headers, fake_store):
@@ -236,3 +275,22 @@ async def test_save_state_writes_state_title_and_updated_at(monkeypatch):
     filters, data = crud.update.call_args.args
     assert filters == {"id": "sid"}
     assert data["state"] == {"title": "Fan"} and data["title"] == "Fan" and data["updated_at"]
+
+
+async def test_update_message_patches_one_message_and_bumps_updated_at(monkeypatch):
+    crud = ChatSessionCRUD()
+    monkeypatch.setattr(crud, "read", AsyncMock(return_value=[{"messages": [{"id": "a", "media": []}, {"id": "b"}]}]))
+    monkeypatch.setattr(crud, "update", AsyncMock())
+    await crud.update_message("sid", "a", {"media": [{"kind": "image", "path": "p"}]})
+    filters, data = crud.update.call_args.args
+    assert filters == {"id": "sid"}
+    assert data["messages"] == [{"id": "a", "media": [{"kind": "image", "path": "p"}]}, {"id": "b"}]
+    assert data["updated_at"]
+
+
+async def test_update_message_on_missing_session_is_a_no_op(monkeypatch):
+    crud = ChatSessionCRUD()
+    monkeypatch.setattr(crud, "read", AsyncMock(return_value=[]))
+    monkeypatch.setattr(crud, "update", AsyncMock())
+    await crud.update_message("sid", "a", {"media": []})
+    crud.update.assert_not_called()

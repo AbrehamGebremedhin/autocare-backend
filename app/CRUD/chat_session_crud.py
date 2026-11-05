@@ -49,5 +49,13 @@ class ChatSessionCRUD(BaseCRUD):
             {'messages': [*(rows[0].get('messages') or []), *messages], 'updated_at': _now()},
         )
 
+    async def update_message(self, session_id: str, message_id: str, patch: dict) -> None:
+        # Same read-modify-write (and single-writer lock) as append_messages.
+        rows = await self.read({'id': session_id})
+        if not rows:
+            return
+        messages = [{**m, **patch} if m.get('id') == message_id else m for m in rows[0].get('messages') or []]
+        await self.update({'id': session_id}, {'messages': messages, 'updated_at': _now()})
+
     async def save_state(self, session_id: str, state: dict, title: str) -> None:
         await self.update({'id': session_id}, {'state': state, 'title': title, 'updated_at': _now()})

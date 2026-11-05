@@ -12,6 +12,7 @@ import asyncio
 import json
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -142,23 +143,62 @@ class FakeSessionStore:
         return _json_copy(row) if row and row["user_id"] == user_id else None
 
     async def list_for_user(self, user_id: str) -> list[dict]:
+        rows = sorted(
+            (r for r in self.rows.values() if r["user_id"] == user_id), key=lambda r: r["updated_at"], reverse=True
+        )
         return [
             {"id": r["id"], "car_id": r["car_id"], "title": r["title"], "updated_at": r["updated_at"],
              "message_count": len(r["messages"])}
-            for r in self.rows.values() if r["user_id"] == user_id
+            for r in rows
         ]
 
+    # Like the real CRUD: writes to a missing row are no-ops, and every write bumps updated_at.
+    def _write(self, session_id: str, **fields) -> None:
+        if session_id in self.rows:
+            self.rows[session_id].update(fields, updated_at=datetime.now(timezone.utc).isoformat())
+
     async def append_messages(self, session_id: str, messages: list[dict]) -> None:
-        self.rows[session_id]["messages"] += _json_copy(messages)
+        if session_id in self.rows:
+            self._write(session_id, messages=[*self.rows[session_id]["messages"], *_json_copy(messages)])
+
+    async def update_message(self, session_id: str, message_id: str, patch: dict) -> None:
+        if session_id in self.rows:
+            msgs = [{**m, **_json_copy(patch)} if m["id"] == message_id else m for m in self.rows[session_id]["messages"]]
+            self._write(session_id, messages=msgs)
 
     async def save_state(self, session_id: str, state: dict, title: str) -> None:
-        self.rows[session_id].update(state=_json_copy(state), title=title)
+        self._write(session_id, state=_json_copy(state), title=title)
 
     async def delete(self, filters: dict) -> list[dict]:
         gone = [r for r in self.rows.values() if all(r.get(k) == v for k, v in filters.items())]
         for r in gone:
             del self.rows[r["id"]]
         return gone
+
+
+class FakeBucket:
+    """Stand-in for SupabaseBucketManager: objects keyed by (bucket, path); `error` makes every call fail."""
+
+    def __init__(self):
+        self.objects: dict[tuple[str, str], bytes] = {}
+        self.uploads: list[tuple[str, str, str | None]] = []
+        self.prefix_deletes: list[tuple[str, str]] = []
+        self.error: Exception | None = None
+
+    async def upload_file(self, bucket_name: str, file_path: str, dest_path: str, content_type: str | None = None):
+        if self.error is not None:
+            raise self.error
+        self.uploads.append((bucket_name, dest_path, content_type))
+        self.objects[(bucket_name, dest_path)] = await asyncio.to_thread(Path(file_path).read_bytes)
+
+    async def delete_prefix(self, bucket_name: str, prefix: str) -> int:
+        self.prefix_deletes.append((bucket_name, prefix))
+        if self.error is not None:
+            raise self.error
+        gone = [k for k in self.objects if k[0] == bucket_name and k[1].startswith(prefix.rstrip("/") + "/")]
+        for k in gone:
+            del self.objects[k]
+        return len(gone)
 
 
 class FakeKB:
@@ -232,6 +272,15 @@ def fake_store(monkeypatch):
 
 
 @pytest.fixture
+def fake_bucket(monkeypatch):
+    from app.services import diagnosis
+
+    bucket = FakeBucket()
+    monkeypatch.setattr(diagnosis, "bucket", bucket)
+    return bucket
+
+
+@pytest.fixture
 def fake_kb(monkeypatch):
     from app.services import kb
 
@@ -258,7 +307,7 @@ def slow_llm(fake_llm):
 
 
 @pytest.fixture
-def session(fake_store, car):
+def session(fake_store, fake_bucket, car):
     return fake_store.add(USER_ID, car["id"])
 
 

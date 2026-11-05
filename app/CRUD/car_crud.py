@@ -1,6 +1,4 @@
 from app.db.crud import BaseCRUD
-from app.services.fetch_car_data_service import FetchCarDataService
-from app.db.bucket_operations import SupabaseBucketManager
 from app.utils.logger import get_logger_instance, Logger
 from typing import List, Dict, Optional, Any
 import json
@@ -8,9 +6,6 @@ import json
 class CarCRUD(BaseCRUD):
     def __init__(self):
         super().__init__('Car')
-        self.fetch_car_data_service = FetchCarDataService()
-        # Always use SupabaseBucketManager, never override from parent
-        self.bucket_manager = SupabaseBucketManager()
         self.logger = get_logger_instance("car_crud")
 
     def unique_logic(self, make, model, year):
@@ -76,8 +71,6 @@ class CarCRUD(BaseCRUD):
         data['owner_manual_url'] = data.get('owner_manual_url') or ""
         data['service_manual_url'] = data.get('service_manual_url') or ""
         data['car_guide_links'] = self.ensure_list(data.get('car_guide_links'))
-        data['is_vectorized'] = False
-        data['vector_chunk_count'] = 0
         
         # Create the car record
         return await super().create(data)

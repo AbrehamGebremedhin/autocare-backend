@@ -3,7 +3,6 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, Dict, Any
 import jwt
 from datetime import datetime, timedelta
-import os
 from app.core.config import get_settings
 from app.utils.logger import get_logger_instance
 from app.utils.audit_logging import audit_logger, AuditEventType
@@ -36,8 +35,7 @@ class JWTHandler:
     
     def __init__(self):
         self.settings = get_settings()
-        # In production, use a proper secret key management system
-        self.secret_key = os.getenv("JWT_SECRET_KEY", "your-super-secret-jwt-key-change-in-production")
+        self.secret_key = self.settings.JWT_SECRET_KEY
         self.algorithm = "HS256"
         self.access_token_expire_minutes = 30
         self.refresh_token_expire_days = 7

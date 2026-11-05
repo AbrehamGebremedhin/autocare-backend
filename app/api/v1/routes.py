@@ -4,4 +4,4 @@ from app.api.v1.car_route import router as user_car_router
 
 router = APIRouter()
 router.include_router(auth_router, tags=["Authentication"])
-router.include_router(user_car_router, tags=["Car"], prefix="/car")
+router.include_router(user_car_router)

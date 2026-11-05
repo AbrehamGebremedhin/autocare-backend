@@ -22,15 +22,6 @@ router = APIRouter()
 # Use the custom async logger instance
 logger = get_logger_instance("user_auth")
 
-@router.get('/auth/test')
-async def test_connection():
-    """Simple test endpoint to verify connectivity"""
-    return {
-        "status": "success",
-        "message": "Connection successful",
-        "timestamp": "2025-09-22T12:00:00Z"
-    }
-
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
@@ -204,7 +195,7 @@ async def login_user(user_login: UserLogin, request: Request = None, db_handler:
 
 @router.post('/auth/logout')
 async def logout_user(token: str, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
-    logger.info(f"Logout attempt with token: {token[:8]}... (truncated)")
+    logger.info("Logout attempt")
     async with db_handler.get_connection() as db:
         try:
             response = db.auth.sign_out(token)
@@ -334,129 +325,6 @@ async def _confirm_email_logic(request: Request, token: str = None, type: str = 
                 raise HTTPException(status_code=400, detail="Internal error in email confirmation. Please try again or contact support.")
             else:
                 raise HTTPException(status_code=400, detail=f"Confirmation failed: {str(e)}")
-
-@router.post('/auth/manual-confirm-by-id')
-async def manual_confirm_user_by_id(user_id: str, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
-    """Manually confirm a user's email by user ID (for testing purposes)"""
-    try:
-        async with db_handler.get_connection() as db:
-            
-            # Manually confirm the user by ID
-            confirm_response = db.auth.admin.update_user_by_id(
-                user_id,
-                {"email_confirm": True}
-            )
-            
-            await logger.info(f"Manually confirmed user by ID: {user_id}")
-            
-            # Ensure user profile exists
-            try:
-                await user_service.ensure_user_profile(user_id)
-                await logger.info(f"User profile ensured for manually confirmed user: {user_id}")
-            except Exception as profile_error:
-                await logger.warning(f"Could not ensure user profile for {user_id}: {str(profile_error)}")
-            
-            return {"message": f"User {user_id} manually confirmed successfully", "user_id": user_id}
-        
-    except Exception as e:
-        await logger.error(f"Manual confirmation error for {user_id}: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Manual confirmation failed: {str(e)}")
-
-@router.get('/auth/list-users')
-async def list_all_users(db_handler: SupabaseDBHandler = Depends(get_db_handler)):
-    """List all users for debugging"""
-    try:
-        async with db_handler.get_connection() as db:
-            response = db.auth.admin.list_users()
-            
-            if hasattr(response, 'users'):
-                users = response.users
-            elif isinstance(response, dict) and 'users' in response:
-                users = response['users']
-            else:
-                users = []
-            
-            user_list = []
-            for user in users:
-                # Safely extract user attributes - handle both object and dict formats
-                user_id = user.id if hasattr(user, 'id') else (user['id'] if isinstance(user, dict) and 'id' in user else None)
-                user_email = user.email if hasattr(user, 'email') else (user['email'] if isinstance(user, dict) and 'email' in user else None)
-                confirmed_at = user.confirmed_at if hasattr(user, 'confirmed_at') else (user['confirmed_at'] if isinstance(user, dict) and 'confirmed_at' in user else None)
-                created_at = user.created_at if hasattr(user, 'created_at') else (user['created_at'] if isinstance(user, dict) and 'created_at' in user else None)
-                
-                user_info = {
-                    'id': user_id,
-                    'email': user_email,
-                    'confirmed_at': confirmed_at,
-                    'created_at': created_at
-                }
-                user_list.append(user_info)
-            
-            return {"users": user_list, "count": len(user_list)}
-            
-    except Exception as e:
-        await logger.error(f"List users error: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Failed to list users: {str(e)}")
-
-@router.post('/auth/manual-confirm')
-async def manual_confirm_user(email: str, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
-    """Manually confirm a user's email (for testing purposes)"""
-    try:
-        async with db_handler.get_connection() as db:
-            
-            # Get the user by email first
-            response = db.auth.admin.list_users()
-            user_to_confirm = None
-            
-            if hasattr(response, 'users'):
-                users = response.users
-            elif isinstance(response, dict) and 'users' in response:
-                users = response['users']
-            else:
-                users = []
-                
-            for user in users:
-                user_email = user.email if hasattr(user, 'email') else (user['email'] if isinstance(user, dict) and 'email' in user else None)
-                if user_email == email:
-                    user_to_confirm = user
-                    break
-                    
-            if not user_to_confirm:
-                raise HTTPException(status_code=404, detail=f"User with email {email} not found")
-                
-            user_id = user_to_confirm.id if hasattr(user_to_confirm, 'id') else user_to_confirm.get('id')
-            
-            # Manually confirm the user
-            confirm_response = db.auth.admin.update_user_by_id(
-                user_id,
-                {"email_confirm": True}
-            )
-            
-            await logger.info(f"Manually confirmed user: {email} ({user_id})")
-            
-            # Ensure user profile exists
-            try:
-                await user_service.ensure_user_profile(user_id)
-                await logger.info(f"User profile ensured for manually confirmed user: {user_id}")
-            except Exception as profile_error:
-                await logger.warning(f"Could not ensure user profile for {user_id}: {str(profile_error)}")
-            
-            return {"message": f"User {email} manually confirmed successfully", "user_id": user_id}
-        
-    except Exception as e:
-        await logger.error(f"Manual confirmation error for {email}: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Manual confirmation failed: {str(e)}")
-
-@router.get('/auth/debug-confirm')
-async def debug_confirm(request: Request):
-    """Debug endpoint to check what parameters are being received"""
-    url_params = dict(request.query_params)
-    return {
-        "url": str(request.url),
-        "query_params": url_params,
-        "headers": dict(request.headers),
-        "message": "This is a debug endpoint to see what parameters are being passed"
-    }
 
 @router.get('/auth/confirm-page', response_class=HTMLResponse)
 async def confirm_page(request: Request):

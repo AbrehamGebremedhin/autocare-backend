@@ -17,6 +17,7 @@ class ErrorCode(str, Enum):
     MISSING_REQUIRED_FIELD = "VAL_002"
     INVALID_FORMAT = "VAL_003"
     SECURITY_VIOLATION = "VAL_004"
+    PAYLOAD_TOO_LARGE = "VAL_005"
     
     # Database Errors
     DATABASE_CONNECTION_FAILED = "DB_001"
@@ -126,6 +127,15 @@ class SecurityViolationException(BaseAPIException):
             error_code=ErrorCode.SECURITY_VIOLATION,
             message=message,
             status_code=status.HTTP_400_BAD_REQUEST,
+            details=details
+        )
+
+class PayloadTooLargeException(BaseAPIException):
+    def __init__(self, message: str = "Request body too large", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            error_code=ErrorCode.PAYLOAD_TOO_LARGE,
+            message=message,
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             details=details
         )
 

@@ -13,6 +13,7 @@ from app.api.v1.routes import router as v1_router
 from app.core.config import get_settings
 from app.db.base import SupabaseDBHandler
 from app.services import llm
+from app.utils.body_limit import BodySizeLimitMiddleware
 from app.utils.exceptions import BaseAPIException
 from app.utils.limiter import limiter
 from app.utils.security_middleware import SecurityHeadersMiddleware
@@ -24,6 +25,15 @@ app = FastAPI(title="AutoCare API", debug=settings.DEBUG)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Bodies are capped before FastAPI reads them (multipart files would otherwise be spooled to disk before auth).
+# Only the chat route takes uploads: the largest legal payload plus 1 MB for the form fields. JSON routes get 1 MB.
+_MB = 1024 * 1024
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=_MB,
+    upload_max_bytes=(max(settings.MAX_IMAGES * settings.MAX_IMAGE_MB, settings.MAX_MEDIA_MB) + 1) * _MB,
+    upload_path=r"/api/v1/sessions/[^/]+/messages",
+)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(

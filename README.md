@@ -78,6 +78,8 @@ data: {"message_id": "..."}
 
 A message needs text (up to 5000 chars) or at least one file. Files are either up to 4 images of at most 10 MB each, or a single audio/video file of at most 60 s and 100 MB. Limits come from `MAX_IMAGES`, `MAX_IMAGE_MB`, `MAX_MEDIA_SECONDS` and `MAX_MEDIA_MB`.
 
+Request bodies are capped before they are read, and before auth runs: the chat route accepts up to `max(MAX_IMAGES * MAX_IMAGE_MB, MAX_MEDIA_MB) + 1` MB, and every other route accepts 1 MB. A larger `Content-Length`, or a chunked body that grows past the cap, gets `413` with error code `VAL_005`.
+
 ## Tests and checks
 
 ```

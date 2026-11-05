@@ -112,11 +112,34 @@ async def test_extract_state_sends_last_messages_and_previous(fake_completion):
     assert "Überhitzung" in body and "m24" in body and "m0 " not in body
 
 
-async def test_ping_true(fake_client):
-    fake_client.models.list = AsyncMock(return_value=[])
+@pytest.fixture
+def fresh_ping(monkeypatch, fake_client):
+    from app.services import llm
+
+    monkeypatch.setattr(llm, "_ping_cache", None)
+    return fake_client
+
+
+async def test_ping_true(fresh_ping):
+    fresh_ping.models.list = AsyncMock(return_value=[])
     assert await ping() is True
 
 
-async def test_ping_false_on_exception(fake_client):
-    fake_client.models.list = AsyncMock(side_effect=RuntimeError("down"))
+async def test_ping_false_on_exception(fresh_ping):
+    fresh_ping.models.list = AsyncMock(side_effect=RuntimeError("down"))
     assert await ping() is False
+
+
+async def test_ping_result_is_cached_for_ttl(fresh_ping, mocker):
+    from app.services import llm
+
+    clock = mocker.patch("app.services.llm.time.monotonic", return_value=1000.0)
+    fresh_ping.models.list = AsyncMock(side_effect=RuntimeError("down"))
+    assert await ping() is False
+    fresh_ping.models.list = AsyncMock(return_value=[])
+    clock.return_value = 1000.0 + llm._PING_TTL - 1
+    assert await ping() is False  # still the cached result, no new call
+    fresh_ping.models.list.assert_not_called()
+    clock.return_value = 1000.0 + llm._PING_TTL + 1
+    assert await ping() is True  # expired: pinged again
+    fresh_ping.models.list.assert_called_once()

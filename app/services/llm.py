@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import time
 from functools import cache
 from typing import AsyncIterator
 
@@ -15,6 +16,8 @@ logger = get_logger_instance("llm")
 
 _STATE_HISTORY = 10
 _FENCE = re.compile(r"```(?:json)?", re.IGNORECASE)
+_PING_TTL = 60.0  # seconds; /health must not call DeepSeek on every poll
+_ping_cache: tuple[float, bool] | None = None  # (monotonic time, result)
 
 
 @cache
@@ -76,8 +79,15 @@ async def extract_state(conversation: list[dict], previous: DiagnosisState) -> D
 
 
 async def ping() -> bool:
+    """Is DeepSeek reachable? The result (either way) is reused for _PING_TTL seconds."""
+    global _ping_cache
+    now = time.monotonic()
+    if _ping_cache is not None and now - _ping_cache[0] < _PING_TTL:
+        return _ping_cache[1]
     try:
         await asyncio.wait_for(get_client().models.list(), 5)
-        return True
+        ok = True
     except Exception:
-        return False
+        ok = False
+    _ping_cache = (now, ok)
+    return ok

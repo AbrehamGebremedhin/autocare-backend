@@ -1,3 +1,59 @@
+[project]
+name = "autocare-backend"
+version = "0.1.0"
+description = "AutoCare FastAPI backend"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.115.12",
+    "uvicorn[standard]==0.34.2",
+    "pydantic==2.11.4",
+    "pydantic-settings==2.9.1",
+    "python-multipart==0.0.20",
+    "supabase==2.15.1",
+    "slowapi==0.1.9",
+    "PyJWT==2.10.1",
+    "email-validator==2.2.0",
+    "openai==1.82.0",
+    "httpx==0.28.1",
+    "beautifulsoup4==4.13.4",
+    "aiofiles==24.1.0",
+    "tenacity==9.1.2",
+    "chardet==5.2.0",
+    "pypdf==5.4.0",
+    # Temporary: still imported by current code; Task 2 removes them.
+    "langchain==0.3.25",
+    "langchain-community==0.3.24",
+    "langchain-core==0.3.63",
+    "langchain-google-genai==2.1.4",
+    "langchain-text-splitters==0.3.8",
+    "langchain-deepseek==0.1.0",
+    "langchain-ollama==0.3.3",
+    "pymilvus==2.5.10",
+    "redis==6.1.0",
+    "celery==5.4.0",
+    "Crawl4AI==0.6.3",
+    "numpy==2.2.5",
+    "websockets==14.2",
+    "requests==2.32.3",
+    "python-dotenv==1.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.5",
+    "pytest-asyncio==0.26.0",
+    "pytest-mock==3.14.0",
+    "pytest-cov==6.0.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
 [tool.pytest.ini_options]
 # PyTest configuration for AutoCare backend
 

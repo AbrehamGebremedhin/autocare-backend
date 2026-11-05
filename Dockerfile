@@ -15,8 +15,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better Docker layer caching
-COPY requirements.txt .
-COPY pyproject.toml .
+COPY pyproject.toml uv.lock ./
 
 # Install Python dependencies with optimizations
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \

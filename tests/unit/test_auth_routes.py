@@ -115,43 +115,28 @@ def test_logout_requires_bearer_header_not_query(client):
     assert r.status_code == 401
 
 
-def test_logout_uses_header_token_and_never_logs_it(client, auth_headers, caplog):
+def test_logout_validates_token_and_never_calls_supabase(client, auth_headers, caplog, monkeypatch):
     import logging
     from unittest.mock import MagicMock
-    from app.db.base import get_db_handler
+    from app.db import base
+    from app.utils import auth_middleware
 
     token = auth_headers["Authorization"].split(" ", 1)[1]
-    db = MagicMock()
-    _db_override(client, db)
-    try:
-        with caplog.at_level(logging.DEBUG):
-            r = client.post("/api/v1/auth/logout", headers=auth_headers)
-    finally:
-        client.app.dependency_overrides.pop(get_db_handler, None)
+    fake = MagicMock()
+    monkeypatch.setattr(base, "create_client", lambda *a, **k: fake)
+    with caplog.at_level(logging.DEBUG):
+        r = client.post("/api/v1/auth/logout", headers=auth_headers)
     assert r.status_code == 200
-    db.auth.admin.sign_out.assert_called_once_with(token)
+    assert r.json() == {"message": "Logged out successfully."}
+    auth_middleware.validate_user_with_supabase.assert_awaited_once()
+    fake.auth.admin.sign_out.assert_not_called()
     assert token not in caplog.text
     assert "Logout successful" in caplog.text
 
 
-def test_logout_failure_is_generic_400(client, auth_headers, caplog):
-    import logging
-    from unittest.mock import MagicMock
-    from app.db.base import get_db_handler
-
-    token = auth_headers["Authorization"].split(" ", 1)[1]
-    db = MagicMock()
-    db.auth.admin.sign_out.side_effect = RuntimeError(f"bad jwt {token}")
-    _db_override(client, db)
-    try:
-        with caplog.at_level(logging.DEBUG):
-            r = client.post("/api/v1/auth/logout", headers=auth_headers)
-    finally:
-        client.app.dependency_overrides.pop(get_db_handler, None)
-    assert r.status_code == 400
-    assert r.json()["detail"] == "Logout failed."
-    assert "RuntimeError" in caplog.text
-    assert token not in caplog.text + r.text
+def test_logout_with_invalid_token_is_401(client):
+    r = client.post("/api/v1/auth/logout", headers={"Authorization": "Bearer not-a-jwt"})
+    assert r.status_code == 401
 
 
 def _real_connection_auth(monkeypatch, **side_effects):

@@ -15,8 +15,7 @@ from app.utils.exceptions import (
     DuplicateRecordException,
     RateLimitExceededException,
 )
-from fastapi.security import HTTPAuthorizationCredentials
-from app.utils.auth_middleware import jwt_handler, get_current_user, security
+from app.utils.auth_middleware import jwt_handler, get_current_user
 from app.utils.audit_logging import audit_logger, AuditEventType
 
 
@@ -210,19 +209,9 @@ async def login_user(user_login: UserLogin, request: Request = None, db_handler:
         raise DatabaseException("Authentication service temporarily unavailable")
 
 @router.post('/auth/logout')
-async def logout_user(
-    current_user: dict = Depends(get_current_user),
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db_handler: SupabaseDBHandler = Depends(get_db_handler),
-):
-    # The token comes from the Authorization header only, never from the URL.
-    await logger.info("Logout attempt")
-    async with db_handler.get_connection() as db:
-        try:
-            db.auth.admin.sign_out(credentials.credentials)
-        except Exception as e:
-            await logger.error(f"Logout error: {type(e).__name__}")
-            raise HTTPException(status_code=400, detail="Logout failed.")
+async def logout_user(current_user: dict = Depends(get_current_user)):
+    # The bearer token (header only, never the URL) is validated like any protected route. App tokens are
+    # stateless and not Supabase tokens, so there is nothing to revoke: the client discards them.
     await logger.info("Logout successful")
     return {"message": "Logged out successfully."}
 

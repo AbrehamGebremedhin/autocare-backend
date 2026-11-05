@@ -1,7 +1,15 @@
-from app.db.crud import BaseCRUD
-from app.utils.logger import get_logger_instance, Logger
-from typing import List, Dict, Optional, Any
+import asyncio
 import json
+import shutil
+import tempfile
+from pathlib import Path
+from typing import List, Dict, Optional, Any
+from urllib.parse import urljoin
+
+from app.db.crud import BaseCRUD
+from app.services import kb
+from app.services.fetch_car_data_service import FetchCarDataService
+from app.utils.logger import get_logger_instance, Logger
 
 class CarCRUD(BaseCRUD):
     def __init__(self):
@@ -162,3 +170,43 @@ class CarCRUD(BaseCRUD):
                 if car_id:
                     results[car_id] = car
         return results
+
+
+_logger = get_logger_instance("car_ingest")
+
+
+async def _set_kb_status(car_id: str, status: str, count: int = 0) -> None:
+    try:
+        await CarCRUD().update({"id": car_id}, {"kb_status": status, "kb_passage_count": count})
+    except Exception as e:
+        await _logger.error(f"Could not set kb_status={status} for {car_id}: {type(e).__name__}")
+
+
+async def ingest_car_manual(car: dict) -> None:
+    """Background task: fetch the car's owner manual and load it into kb_passages. Never raises."""
+    car_id = car["id"]
+    fetcher = FetchCarDataService()
+    tmp_dir = None
+    try:
+        url = fetcher.build_url(car["make"], car["model"], car["year"])["Owner_Manual"]
+        link = await fetcher.scrape_links(url, "owner_manual")
+        if not link:
+            await _set_kb_status(car_id, "no_manual")
+            return
+        tmp_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="manual_")
+        pdf_path = Path(tmp_dir) / "manual.pdf"
+        await fetcher.download_pdf(urljoin(fetcher.BASE_URL, link), str(pdf_path))
+        count = await kb.ingest_pdf(
+            pdf_path,
+            source_type="manual",
+            title=f"{car['make']} {car['model']} {car['year']} owner's manual",
+            car_id=car_id,
+        )
+        await _set_kb_status(car_id, "ready" if count > 0 else "no_manual", count)
+    except Exception as e:
+        await _logger.error(f"Manual ingest failed for {car_id}: {type(e).__name__}")
+        await _set_kb_status(car_id, "failed")
+    finally:
+        await fetcher.cleanup()
+        if tmp_dir:
+            await asyncio.to_thread(shutil.rmtree, tmp_dir, True)

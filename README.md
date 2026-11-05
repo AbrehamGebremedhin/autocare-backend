@@ -47,6 +47,8 @@ Interactive reference: `http://localhost:8000/docs`. `/docs`, `/redoc` and `/ope
 
 Adding a car starts a background ingest of its manual; the car's `kb_status` tracks progress.
 
+**Logout does not revoke the app's tokens.** They are stateless JWTs with no server-side session, so after logout the access token stays valid until it expires (30 minutes) and the refresh token for 7 days. Clients must discard both on logout. The Supabase sign-out call inside logout only clears Supabase-side sessions. Supabase checks the app token against the project's JWT secret, so unless `JWT_SECRET_KEY` equals that secret the call fails and logout returns `400`.
+
 ### SSE events
 
 | Event | Data |

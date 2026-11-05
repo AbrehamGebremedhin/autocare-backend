@@ -1,6 +1,6 @@
 from supabase import create_client, Client
 from app.core.config import get_settings
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from app.utils.exceptions import DatabaseException, ConfigurationException
 from app.utils.logger import get_logger_instance
 import asyncio
@@ -49,13 +49,13 @@ class SupabaseDBHandler:
                 
             except Exception as e:
                 await self.logger.warning(
-                    f"Database connection attempt {attempt + 1} failed: {str(e)}"
+                    f"Database connection attempt {attempt + 1} failed: {type(e).__name__}"
                 )
                 if attempt == self._retry_attempts - 1:
                     raise DatabaseException(
                         "Failed to establish database connection after multiple attempts",
-                        details={"attempts": self._retry_attempts, "error": str(e)}
-                    )
+                        details={"attempts": self._retry_attempts}
+                    ) from e
                 await asyncio.sleep(self._retry_delay * (attempt + 1))
 
     @asynccontextmanager
@@ -75,9 +75,11 @@ class SupabaseDBHandler:
             await self.logger.debug(f"Created database connection: {connection_id}")
             yield client
             
+        except HTTPException:
+            raise  # a deliberate API error raised inside the block keeps its status and detail
         except Exception as e:
-            await self.logger.error(f"Database connection error: {str(e)}")
-            raise DatabaseException(f"Database connection failed: {str(e)}")
+            await self.logger.error(f"Database connection error: {type(e).__name__}")
+            raise DatabaseException("Database connection failed") from e
         finally:
             # Clean up connection
             if connection_id in self._connection_pool:
@@ -102,7 +104,7 @@ class SupabaseDBHandler:
                 )
                 self._client = client
             except Exception as e:
-                raise DatabaseException(f"Failed to create database client: {str(e)}")
+                raise DatabaseException("Failed to create database client") from e
         return self._client
 
     async def close(self):

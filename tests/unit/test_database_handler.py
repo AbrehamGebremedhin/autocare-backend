@@ -286,3 +286,58 @@ class TestDatabaseIntegration:
                 assert len(handler._connection_pool) == initial_pool_size
             
             asyncio.run(test_cleanup())
+
+
+class TestConnectionErrorsAreGeneric:
+    """get_connection hides error text and leaves deliberate API errors alone."""
+
+    @patch('app.db.base.get_settings')
+    def test_db_error_detail_has_no_exception_text(self, mock_get_settings, mock_settings):
+        mock_get_settings.return_value = mock_settings
+        handler = SupabaseDBHandler()
+
+        with patch.object(handler, '_create_client', new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = MagicMock()
+
+            async def run():
+                with pytest.raises(DatabaseException) as exc_info:
+                    async with handler.get_connection():
+                        raise RuntimeError("password=hunter2 host=10.0.0.5")
+                return exc_info.value
+
+            exc = asyncio.run(run())
+        assert "hunter2" not in str(exc.detail)
+        assert exc.detail["message"] == "Database connection failed"
+
+    @patch('app.db.base.get_settings')
+    def test_http_exception_inside_block_passes_through(self, mock_get_settings, mock_settings):
+        from fastapi import HTTPException
+
+        mock_get_settings.return_value = mock_settings
+        handler = SupabaseDBHandler()
+
+        with patch.object(handler, '_create_client', new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = MagicMock()
+
+            async def run():
+                with pytest.raises(HTTPException) as exc_info:
+                    async with handler.get_connection():
+                        raise HTTPException(status_code=400, detail="Logout failed.")
+                return exc_info.value
+
+            exc = asyncio.run(run())
+        assert not isinstance(exc, DatabaseException)
+        assert exc.status_code == 400 and exc.detail == "Logout failed."
+        assert len(handler._connection_pool) == 0
+
+    @patch('app.db.base.get_settings')
+    @patch('app.db.base.create_client')
+    def test_retry_exhaustion_detail_has_no_exception_text(self, mock_create_client, mock_get_settings, mock_settings):
+        mock_get_settings.return_value = mock_settings
+        mock_create_client.side_effect = Exception("secret-key-abc rejected")
+        handler = SupabaseDBHandler()
+
+        with patch('app.db.base.asyncio.sleep', new_callable=AsyncMock):
+            with pytest.raises(DatabaseException) as exc_info:
+                asyncio.run(handler._create_client())
+        assert "secret-key-abc" not in str(exc_info.value.detail)

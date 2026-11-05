@@ -1,6 +1,7 @@
 from app.services.base_service import BaseService
 from app.CRUD.car_crud import CarCRUD
 from app.db.base import SupabaseDBHandler
+from app.utils.exceptions import DatabaseException
 from app.utils.logger import get_logger_instance
 from typing import List, Dict, Any, Optional
 import asyncio
@@ -90,11 +91,11 @@ class UserProfileService(BaseService):
                 "message": f"Added {make} {model} {year} to your garage"
             }
             
+        except ValueError:
+            return {"success": False, "error": "Make, model, and year are required.", "car_id": None}
         except Exception as e:
-            error_msg = f"Error adding car to user {user_id}: {str(e)}"
-            await self.logger.error(error_msg)
-            
-            return {"success": False, "error": str(e), "car_id": None}
+            await self.logger.error(f"Error adding car to user {user_id}: {type(e).__name__}")
+            raise DatabaseException("Could not add car") from e
 
     async def get_user_cars(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all cars associated with a user"""
@@ -118,7 +119,7 @@ class UserProfileService(BaseService):
             return cars
             
         except Exception as e:
-            await self.logger.error(f"Error getting cars for user {user_id}: {str(e)}")
+            await self.logger.error(f"Error getting cars for user {user_id}: {type(e).__name__}")
             return []
 
     async def remove_car_from_user(self, user_id: str, car_id: str) -> Dict[str, Any]:
@@ -141,21 +142,16 @@ class UserProfileService(BaseService):
                 return {"success": False, "error": "Car not found in your garage"}
                 
         except Exception as e:
-            await self.logger.error(f"Error removing car from user {user_id}: {str(e)}")
-            return {"success": False, "error": str(e)}
+            await self.logger.error(f"Error removing car from user {user_id}: {type(e).__name__}")
+            raise DatabaseException("Could not remove car") from e
 
     async def _get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """Get user profile from database"""
-        try:
-            async with self.db_handler.get_connection() as db:
-                result = db.table('user_profiles').select('*').eq('user_id', user_id).execute()
-                
-                if result.data and len(result.data) > 0:
-                    return result.data[0]
-                return None
-                
-        except Exception as e:
-            await self.logger.error(f"Error getting user profile for {user_id}: {str(e)}")
+        """Get user profile from database. Database errors propagate to the caller."""
+        async with self.db_handler.get_connection() as db:
+            result = db.table('user_profiles').select('*').eq('user_id', user_id).execute()
+
+            if result.data and len(result.data) > 0:
+                return result.data[0]
             return None
 
     async def _get_or_create_user_profile(self, user_id: str) -> Dict[str, Any]:
@@ -170,32 +166,20 @@ class UserProfileService(BaseService):
                 'preferences': {}
             }
             
-            try:
-                async with self.db_handler.get_connection() as db:
-                    result = db.table('user_profiles').insert(profile_data).execute()
-                    
-                    if result.data and len(result.data) > 0:
-                        profile = result.data[0]
-                        await self.logger.info(f"Created new profile for user {user_id}")
-                    else:
-                        # Fallback - return basic profile structure
-                        profile = profile_data
-                        
-            except Exception as e:
-                await self.logger.error(f"Error creating user profile for {user_id}: {str(e)}")
-                # Return basic profile structure as fallback
-                profile = profile_data
-        
+            async with self.db_handler.get_connection() as db:
+                result = db.table('user_profiles').insert(profile_data).execute()
+
+                if result.data and len(result.data) > 0:
+                    profile = result.data[0]
+                    await self.logger.info(f"Created new profile for user {user_id}")
+                else:
+                    profile = profile_data
+
         return profile
 
     async def _update_user_profile(self, user_id: str, updates: Dict[str, Any]) -> bool:
-        """Update user profile"""
-        try:
-            async with self.db_handler.get_connection() as db:
-                result = db.table('user_profiles').update(updates).eq('user_id', user_id).execute()
-                
-                return result.data is not None
-                
-        except Exception as e:
-            await self.logger.error(f"Error updating user profile for {user_id}: {str(e)}")
-            return False
+        """Update user profile. Database errors propagate to the caller."""
+        async with self.db_handler.get_connection() as db:
+            result = db.table('user_profiles').update(updates).eq('user_id', user_id).execute()
+
+            return result.data is not None

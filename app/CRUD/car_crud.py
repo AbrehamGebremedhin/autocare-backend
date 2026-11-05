@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 from app.db.crud import BaseCRUD
 from app.services import kb
 from app.services.fetch_car_data_service import FetchCarDataService
-from app.utils.logger import get_logger_instance, Logger
+from app.utils.logger import get_logger_instance
 
 class CarCRUD(BaseCRUD):
     def __init__(self):
@@ -99,14 +99,6 @@ class CarCRUD(BaseCRUD):
         """Create a car record - now redirects to create_or_get_car for uniqueness"""
         return await self.create_or_get_car(data)
 
-    async def get_car_by_make_model_year(self, make: str, model: str, year: int):
-        """Retrieve a car by make, model, and year."""
-        car_id = self.unique_logic(make, model, year)
-        cars = await self.read({'id': car_id})
-        if cars and isinstance(cars, list) and cars:
-            return cars[0]
-        return None
-
     async def get_car_by_id(self, car_id: str):
         """Retrieve a car by its unique id."""
         # Normalize car_id to handle different formats
@@ -156,20 +148,6 @@ class CarCRUD(BaseCRUD):
         
         # If we couldn't normalize it, return the original
         return car_id
-
-    async def batch_get_cars_by_ids(self, car_ids: List[str]) -> Dict[str, dict]:
-        """
-        Retrieve multiple cars by their IDs in a single operation.
-        Returns a dictionary mapping car_id to car data.
-        """
-        results = {}
-        if car_ids:
-            batch_cars = await self.read({'id': {'in': car_ids}}) if len(car_ids) > 1 else await self.read({'id': car_ids[0]})
-            for car in batch_cars or []:
-                car_id = car.get('id')
-                if car_id:
-                    results[car_id] = car
-        return results
 
 
 _logger = get_logger_instance("car_ingest")

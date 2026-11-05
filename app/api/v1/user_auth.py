@@ -42,7 +42,7 @@ class LoginResponse(BaseModel):
 async def register_user(user: UserCreate, request: Request, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
     correlation_id = getattr(request.state, 'correlation_id', 'unknown')
     # Use custom async logger method to ensure 'log_type' is present
-    await logger.info(f"Register attempt for email: {user.email} [ID: {correlation_id}]")
+    await logger.info(f"Register attempt [ID: {correlation_id}]")
     
     try:
         async with db_handler.get_connection() as db:
@@ -76,13 +76,13 @@ async def register_user(user: UserCreate, request: Request, db_handler: Supabase
                 risk_level="low",
                 details={"email": user.email, "user_id": getattr(user_data, 'id', None)}
             )
-            await logger.info(f"Registration successful for email: {user.email} [ID: {correlation_id}]")
+            await logger.info(f"Registration successful [ID: {correlation_id}]")
             return UserBase(**(user_data.model_dump() if hasattr(user_data, "model_dump") else dict(user_data)))
             
     except AuthenticationException:
         raise
     except Exception as e:
-        await logger.error(f"Registration error for email: {user.email} - {str(e)} [ID: {correlation_id}]")
+        await logger.error(f"Registration error - {str(e)} [ID: {correlation_id}]")
         
         # Check for specific error types
         error_str = str(e).lower()
@@ -98,7 +98,7 @@ async def register_user(user: UserCreate, request: Request, db_handler: Supabase
 @router.post('/auth/login', response_model=LoginResponse)
 async def login_user(user_login: UserLogin, request: Request = None, db_handler: SupabaseDBHandler = Depends(get_db_handler)):
     correlation_id = getattr(request.state, 'correlation_id', 'unknown') if request else 'unknown'
-    await logger.info(f"Login attempt for email: {user_login.email} [ID: {correlation_id}]")
+    await logger.info(f"Login attempt [ID: {correlation_id}]")
     
     try:
         async with db_handler.get_connection() as db:
@@ -171,7 +171,7 @@ async def login_user(user_login: UserLogin, request: Request = None, db_handler:
                 details={"email": user_login.email}
             )
             
-            await logger.info(f"Login successful for email: {user_login.email} [ID: {correlation_id}]")
+            await logger.info(f"Login successful [ID: {correlation_id}]")
             return {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
@@ -183,7 +183,7 @@ async def login_user(user_login: UserLogin, request: Request = None, db_handler:
     except AuthenticationException:
         raise
     except Exception as e:
-        await logger.error(f"Login error for email: {user_login.email} - {str(e)} [ID: {correlation_id}]")
+        await logger.error(f"Login error - {str(e)} [ID: {correlation_id}]")
         
         error_str = str(e).lower()
         if "invalid" in error_str and ("credentials" in error_str or "password" in error_str):
@@ -238,7 +238,7 @@ async def confirm_email_post(request: Request, token: str = None, type: str = 's
     return await _confirm_email_logic(request, token, type, email, db_handler)
 
 async def _confirm_email_logic(request: Request, token: str = None, type: str = 'signup', email: str = None, db_handler: SupabaseDBHandler = None):
-    await logger.info(f"Email confirmation attempt - Initial params: token={token[:20] if token else None}..., type={type}, email={email}")
+    await logger.info(f"Email confirmation attempt - Initial params: token_present={bool(token)}, type={type}")
     
     if not token:
         try:
@@ -246,7 +246,7 @@ async def _confirm_email_logic(request: Request, token: str = None, type: str = 
             token = data.get('token')
             type = data.get('type', 'signup')
             email = data.get('email') or email
-            await logger.info(f"Got params from request body: token={token[:20] if token else None}..., type={type}, email={email}")
+            await logger.info(f"Got params from request body: token_present={bool(token)}, type={type}")
         except Exception as e:
             await logger.warning(f"Could not parse JSON from request: {str(e)}")
             pass
@@ -294,7 +294,7 @@ async def _confirm_email_logic(request: Request, token: str = None, type: str = 
                 user_data = response['user']
                 await logger.info(f"Got user from response dict: {user_data.get('id', 'no id')}")
             else:
-                await logger.error(f"Email confirmation failed - no user returned. Response: {str(response)[:200]}")
+                await logger.error("Email confirmation failed - no user returned")
                 raise HTTPException(status_code=400, detail="Email confirmation failed - invalid token.")
             
             # Email confirmed successfully - user is now in Supabase auth.users

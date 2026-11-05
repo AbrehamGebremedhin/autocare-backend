@@ -21,7 +21,9 @@ def test_debug_auth_endpoints_gone(client):
 def test_jwt_uses_settings_secret(monkeypatch):
     # a token signed with the old hard-coded fallback secret is rejected
     import jwt
+    from app.core.config import get_settings
     from app.utils.auth_middleware import jwt_handler, AuthenticationError
+    assert jwt_handler.secret_key == get_settings().JWT_SECRET_KEY
     bad = jwt.encode({"sub": "u", "type": "access"}, "your-super-secret-jwt-key-change-in-production", "HS256")
     with pytest.raises(AuthenticationError):
         jwt_handler.verify_token(bad)

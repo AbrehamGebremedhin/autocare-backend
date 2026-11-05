@@ -1,229 +1,87 @@
-# AutoCare Backend - Concurrent Edition
+# AutoCare Backend
 
-AutoCare Backend is a high-performance, concurrency-optimized FastAPI-based backend service designed to power intelligent automotive care applications for multiple simultaneous users. It provides RESTful APIs and WebSocket support for real-time communication, leveraging an advanced concurrent architecture for enterprise-scale deployment.
+FastAPI backend for an AI car-diagnosis assistant. A user registers, adds a car, opens a diagnosis session and chats about a problem with text, photos, audio or video. Each turn streams back as Server-Sent Events. Answers are grounded in a Postgres full-text knowledge base (car manuals and books) and use DeepSeek as the LLM (at most 2 LLM calls per turn: one streamed reply, one state update). Audio is transcribed with faster-whisper and engine sounds are tagged with CLAP.
 
-## Project Description
+## Configuration
 
-AutoCare Backend Concurrent Edition is an enterprise-grade automotive diagnostic and care management system that combines artificial intelligence, machine learning, and automotive expertise to provide intelligent vehicle diagnostics, maintenance recommendations, and real-time support to thousands of concurrent users. The system is architected for high availability, horizontal scaling, and optimal performance under heavy load.
+Put these in `.env` (names only; see `app/core/config.py` for defaults).
 
-### Key Capabilities
+Required: `JWT_SECRET_KEY` (min 32 chars), `SUPABASE_URL`, `SUPABASE_KEY`, `BASE_URL`, `DEEPSEEK_API_KEY`.
 
-**Concurrent User Support:**
+Optional: `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_BUCKET`.
 
-- Handles 10,000+ concurrent user sessions with Redis-based session management
-- Database connection pooling (10-100 connections) for optimal performance
-- WebSocket connection management with user isolation and load balancing
-- Agent pooling system for AI workload distribution
-- Distributed caching with local and Redis-based multi-level caching
+## Supabase setup
 
-**Intelligent Diagnostic System:**
+1. Review `app/db/sql/001_v2_schema.sql`. It is **destructive**: it drops `Chatsession` and `Groundknowledge` and removes two `Car` columns. RLS is not configured by the file, so use the service-role key or add policies.
+2. Run it by hand in the Supabase SQL editor. The backend never applies schema changes.
+3. In Storage, create a **private** bucket named `media` (or whatever `MEDIA_BUCKET` is set to). This is a manual step.
 
-- AI-powered symptom analysis and diagnostic recommendations
-- Multi-agent architecture with specialized diagnostic agents and load balancing
-- Real-time decision tree navigation for systematic troubleshooting
-- Integration with comprehensive automotive knowledge base
-- Concurrent processing of multiple diagnostic sessions
-
-**Advanced Performance Features:**
-
-- Enhanced session management with automatic cleanup and resource optimization
-- Rate limiting with adaptive algorithms and burst protection
-- Real-time health monitoring and metrics collection
-- Comprehensive error handling and recovery mechanisms
-- Production-ready deployment with Docker containerization
-
-**Real-time Communication:**
-
-- WebSocket-powered live chat sessions supporting concurrent users
-- Interactive diagnostic conversations with AI agents
-- Real-time status updates for background processing tasks
-- User-isolated connection tracking and message routing
-- Scalable broadcast capabilities for system notifications
-
-**Knowledge Management:**
-
-- Extensive automotive reference library with PDF document processing
-- Vector-based semantic search across automotive manuals and documentation
-- Ground truth knowledge base with verified diagnostic procedures
-- Concurrent access to knowledge base with optimized caching
-
-**Enterprise Architecture:**
-
-- Microservices-based design optimized for horizontal scaling
-- Background task processing with agent pools for heavy operations
-- Redis distributed caching for multi-instance deployments
-- Enhanced database integration with connection pooling and failover
-- Comprehensive monitoring, logging, and metrics collection
-
-### Target Use Cases
-
-- **Enterprise Service Centers:** Support hundreds of simultaneous diagnostic sessions
-- **Automotive Platforms:** Power large-scale vehicle diagnostic applications
-- **Educational Institutions:** Concurrent access for automotive technology training
-- **Fleet Management:** Simultaneous monitoring and diagnosis of multiple vehicles
-- **SaaS Providers:** White-label automotive diagnostic services
-- **Fleet Management:** Centralized vehicle health monitoring and maintenance scheduling
-
-## Version 1 Status
-
-**Version 1 is complete and production-ready for MVP use.**
-
-- All core features implemented and tested
-- Robust error handling, dependency injection, and startup/shutdown checks
-- Modular, SOLID-compliant architecture for easy extension
-
-## Features
-
-- **REST API**: Organized under `/api/v1` for versioning and modularity.
-- **WebSocket Support**: Real-time communication endpoint at `/ws`.
-- **Unified Error Handling**: Consistent error responses for HTTP and generic exceptions.
-- **Concurrent User Support**: Built for 10,000+ simultaneous users with session management and connection pooling.
-- **Enhanced Performance**: Database connection pooling, agent load balancing, and distributed caching.
-- **Rate Limiting**: Advanced rate limiting with adaptive algorithms and burst protection.
-- **Database Integration**: Enhanced Supabase integration with connection pooling and failover.
-- **Redis Distributed Caching**: Multi-level caching with local and distributed storage.
-- **Agent Pool Architecture**: Load-balanced AI agents for concurrent diagnostic processing.
-- **Real-time WebSocket**: User-isolated WebSocket connections with heartbeat monitoring.
-- **Background Task Processing**: Concurrent task processing with agent pool management.
-- **Performance Monitoring**: Comprehensive metrics, health checks, and performance analytics.
-- **Enterprise Logging**: Advanced logging with correlation IDs and audit trails.
-- **Production Deployment**: Docker-based deployment with horizontal scaling support.
-- **Session Management**: Redis-based distributed session storage for multi-instance deployments.
-- **Health Monitoring**: Real-time component health checks and system metrics.
-
-## Architecture Overview
-
-The AutoCare Backend Concurrent Edition is designed with enterprise-grade concurrency patterns:
-
-- **Session Manager**: Redis-based distributed session storage with automatic cleanup
-- **Connection Pool**: Database connection pooling with automatic scaling (10-100 connections)
-- **Agent Pool**: Load-balanced AI agent instances for concurrent processing
-- **WebSocket Manager**: User-isolated WebSocket connections with connection limits
-- **Chat Service**: Concurrent chat handling with conversation caching
-- **Health Monitoring**: Real-time system health checks and performance metrics
-
-## Project Structure
+## Run
 
 ```
-main.py                           # FastAPI app with concurrent architecture
-app/
-  api/v1/routes.py               # API route definitions
-  core/config.py                 # Enhanced configuration with concurrent settings
-  db/enhanced_connection_pool.py # Database connection pooling
-  utils/session_manager.py       # Distributed session management
-  utils/concurrent_websocket.py  # Enhanced WebSocket management
-  services/concurrent_chat_service.py # Concurrent chat service
-  agents/agent_pool.py           # Agent load balancing and pooling
-  CRUD/                          # CRUD operations for entities
-  schemas/                       # Data schemas (Pydantic)
-  services/                      # Business logic services
-  utils/                         # Enhanced utilities and middleware
-car_data/                        # Automotive reference documents
-tests/                           # Unit and integration tests
-docker-compose.yml               # Production deployment with Redis and Milvus
-Dockerfile                       # Optimized container for concurrent users
-test_concurrent_system.py        # Comprehensive concurrent testing suite
-DEPLOYMENT_GUIDE.md              # Production deployment guide
+uv sync
+uv run scripts/ingest_kb.py            # optional: ingest PDFs from car_data/ (--dir to change)
+uv run uvicorn main:app --reload
 ```
 
-## Getting Started
+Or with Docker (reads `.env`, serves on port 8000, health check on `/health`):
 
-### Quick Start with Docker (Recommended)
-
-1. **Clone the repository:**
-
-   ```sh
-   git clone https://github.com/AbrehamGebremedhin/autocare-backend
-   cd autocare-backend
-   ```
-
-2. **Configure environment variables:**
-
-   ```sh
-   cp .env.template .env
-   # Edit .env with your actual API keys and credentials
-   ```
-
-3. **Deploy with Docker Compose:**
-
-   ```sh
-   docker-compose up -d
-   ```
-
-4. **Verify deployment:**
-   ```sh
-   curl http://localhost:8000/health
-   curl http://localhost:8000/metrics
-   ```
-
-### Manual Installation
-
-1. **Install dependencies:**
-
-   ```sh
-   pip install -r requirements.txt
-   ```
-
-2. **Configure environment variables:**
-
-   - Copy `.env.template` to `.env` and configure all required values
-   - Set up Supabase, Redis, Milvus, Gemini, and YouTube credentials
-
-3. **Start external services:**
-
-   ```sh
-   # Start Redis
-   redis-server
-
-   # Start Milvus (see Milvus documentation)
-   # Configure Supabase database
-   ```
-
-4. **Run the application:**
-   ```sh
-   uvicorn main:app --host 0.0.0.0 --port 8000
-   ```
-
-### Testing Concurrent Performance
-
-Run the comprehensive testing suite to validate concurrent user support:
-
-```sh
-# Install testing dependencies
-pip install aiohttp websockets
-
-# Run concurrent system tests
-python test_concurrent_system.py --http-requests 200 --websocket-connections 50
-
-# Run specific test types
-python test_concurrent_system.py --test-type http
-python test_concurrent_system.py --test-type websocket
-python test_concurrent_system.py --test-type session
+```
+docker compose up
 ```
 
-### API Endpoints
+## API
 
-- **Root:** `GET /` — Welcome message
-- **API v1:** `/api/v1/...` — Main REST endpoints (chat, car data, search, etc.)
-- **WebSocket:** `ws://<host>/ws` — Real-time communication
-- **Background Task Status:** `GET /api/v1/task-status/{task_id}` — Check Celery task status
+Interactive reference: `http://localhost:8000/docs`. Every route except `/api/v1/auth/*` and `/health` needs `Authorization: Bearer <token>` from login; the user id always comes from the token.
 
-### Testing
+| Area | Routes |
+| --- | --- |
+| Auth | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET\|POST /api/v1/auth/confirm`, `GET /api/v1/auth/confirm-page` |
+| Cars | `GET /api/v1/cars`, `POST /api/v1/cars`, `DELETE /api/v1/cars/{car_id}` |
+| Sessions | `POST /api/v1/sessions`, `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
+| Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE) |
 
-Run all tests with:
+Adding a car starts a background ingest of its manual; the car's `kb_status` tracks progress.
 
-```sh
-pytest
+### SSE events
+
+| Event | Data |
+| --- | --- |
+| `stage` | `{"name": "processing_media" \| "searching"}` (`processing_media` only when files were sent) |
+| `token` | `{"text": "..."}` a piece of the reply |
+| `state` | updated diagnosis state: `suspected_causes` (cause, likelihood, evidence, next_check), `safety_flags`, `title` |
+| `error` | `{"message": "..."}` ends the stream |
+| `done` | `{"message_id": "..."}` ends the stream |
+
+Example (text only):
+
+```
+event: stage
+data: {"name": "searching"}
+
+event: token
+data: {"text": "A squeal "}
+
+event: token
+data: {"text": "when braking usually points to worn pads."}
+
+event: state
+data: {"suspected_causes": [{"cause": "Worn brake pads", "likelihood": 0.7, "evidence": "Squeal when braking", "next_check": "Inspect pad thickness"}], "safety_flags": [], "title": "Brake squeal"}
+
+event: done
+data: {"message_id": "..."}
 ```
 
-## Notable Dependencies
+## Media limits
 
-- fastapi, uvicorn, celery, slowapi, supabase, redis, pydantic, playwright, Crawl4AI, google-api-python-client, pypdf, pytest, and more (see `requirements.txt`).
+A message needs text (up to 5000 chars) or at least one file. Files are either up to 4 images of at most 10 MB each, or a single audio/video file of at most 60 s and 100 MB. Limits come from `MAX_IMAGES`, `MAX_IMAGE_MB`, `MAX_MEDIA_SECONDS` and `MAX_MEDIA_MB`.
 
-## Notes
+## Tests and checks
 
-- For PDF and web scraping, the backend uses Crawl4AI and Playwright.
-- The system is modular and can be extended with new agents, services, or integrations.
-- For local development, ensure all environment variables are set and required services (Supabase, Redis) are running.
-- The orchestrator agent and all major services are initialized and gracefully shut down on app startup/shutdown.
-- Test coverage is provided for all major modules in the `tests/` directory.
+```
+uv run pytest
+uv run scripts/run_cases.py [--only id,id] [--out path]   # diagnosis quality cases -> Markdown report in reports/ (uses real DeepSeek and the KB)
+uv run scripts/e2e.py --email you@example.com --password ... [--base URL] [--media-dir DIR] [--allow-skip]   # against a running stack
+```
+
+`e2e.py` looks for sample media in `tests/fixtures/e2e/` (git-ignored) and exits non-zero if a file is missing unless `--allow-skip` is given.

@@ -23,7 +23,7 @@ For a brand new Supabase project:
    2. `app/db/sql/001_v2_schema.sql`: adds `kb_passages`, the `search_kb` function, `Chatsession` and the knowledge-base columns on `Car`. It stops with an error if 000 has not been run.
 
    Both files enable RLS with no policies, so only the service-role key can reach the tables. The backend never applies schema changes. On an older project that already has data, 001 is **destructive**: it drops `Chatsession` and `Groundknowledge` and removes two `Car` columns (on a fresh project there is nothing to drop).
-2. In Storage, create a **private** bucket named `media`. This is a manual step.
+2. Media is stored on a local volume: mount a persistent, private directory at `MEDIA_DIR` (default `/data/media`). Uploads are refused while it has less than `MEDIA_MIN_FREE_MB` (default 2048) free.
 3. Put the project's **service-role** key in `SUPABASE_KEY` (see Configuration). Use the legacy JWT `service_role` key (it starts with `eyJ`): the pinned `supabase` client rejects keys that are not JWTs, such as the newer `sb_secret_...` keys, with "Invalid API key".
 
 ## Run

@@ -310,6 +310,13 @@ def _files(root: Path) -> dict[str, bytes]:
     return {f.relative_to(root).as_posix(): f.read_bytes() for f in root.rglob("*") if f.is_file()}
 
 
+async def test_low_disk_space_drops_the_file_but_the_turn_continues(fake_all, session, car, video_upload, monkeypatch):
+    monkeypatch.setattr("app.services.media_store.shutil.disk_usage", lambda p: SimpleNamespace(free=0))
+    out = await _run(session, car, None, [video_upload])
+    assert out[-1][0] == "done"
+    assert fake_all.store.messages(session["id"])[0]["media"] == [] and _files(fake_all.root) == {}
+
+
 async def test_storage_paths_follow_user_session_message_scheme(fake_all, session, car, make_upload, video_upload):
     sid, uid = session["id"], session["user_id"]
     await _run(session, car, None, [video_upload])

@@ -1,8 +1,10 @@
 """MediaStore against a real temp directory."""
 
+import errno
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -130,3 +132,17 @@ async def test_write_failure_is_raised_to_the_caller_and_leaves_no_temp(root, sr
     with pytest.raises(PermissionError):
         await MediaStore(root).upload("u1", "s1", "m1", 0, "image", ".jpg", src)
     assert _tree(root / "u1/s1/m1") == []
+
+
+async def test_low_disk_space_refuses_the_write(root, src, monkeypatch):
+    monkeypatch.setattr("app.services.media_store.shutil.disk_usage", lambda p: SimpleNamespace(free=1024))
+    with pytest.raises(OSError) as e:
+        await MediaStore(root).upload("u1", "s1", "m1", 0, "image", ".jpg", src)
+    assert e.value.errno == errno.ENOSPC
+    assert not (root / "u1").exists()
+
+
+async def test_enough_free_space_writes_normally(root, src, monkeypatch):
+    monkeypatch.setattr("app.services.media_store.shutil.disk_usage", lambda p: SimpleNamespace(free=10**12))
+    await MediaStore(root).upload("u1", "s1", "m1", 0, "image", ".jpg", src)
+    assert (root / "u1/s1/m1/0.jpg").exists()

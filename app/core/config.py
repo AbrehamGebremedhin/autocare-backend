@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     KB_TOP_K: int = 8
     HISTORY_MESSAGES: int = 10
     MEDIA_DIR: str = "/data/media"
+    MEDIA_MIN_FREE_MB: int = 2048  # uploads are refused when the media volume has less free space
 
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
     GOOGLE_CLIENT_IDS: str = ""

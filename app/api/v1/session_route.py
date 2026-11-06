@@ -109,10 +109,7 @@ async def delete_session(session_id: str, current_user: dict = Depends(get_curre
     _deleting.add(sid)
     try:
         await diagnosis.sessions.delete({"id": sid, "user_id": current_user["id"]})
-        try:
-            await diagnosis.media_store.delete_prefix(session["user_id"], sid)
-        except Exception as exc:  # best effort: the session itself is already gone
-            await logger.warning(f"session media cleanup failed: {type(exc).__name__}")
+        await diagnosis.media_store.delete_prefix(session["user_id"], sid)  # best effort, never raises
     finally:
         _deleting.discard(sid)
     return {"deleted": sid}

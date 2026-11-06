@@ -4,6 +4,7 @@ Refs handed back carry paths relative to MEDIA_DIR only; absolute server paths n
 """
 
 import asyncio
+import errno
 import os
 import re
 import shutil
@@ -42,6 +43,9 @@ class MediaStore:
         if not folder.resolve().is_relative_to(base):  # a planted symlink would resolve outside
             raise ValueError("path escapes the media directory")
         base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        floor = get_settings().MEDIA_MIN_FREE_MB * 1024 * 1024
+        if shutil.disk_usage(base).free < floor:
+            raise OSError(errno.ENOSPC, "media volume is low on free space")
         current = base
         for part in parts:
             current = current / part

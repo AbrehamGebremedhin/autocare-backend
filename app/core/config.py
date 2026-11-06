@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str  # postgresql://user:password@host:5432/db; never log it
 
-    # Still read by the Supabase auth, profile, kb and media code until it moves to Postgres.
+    # Still read by the Supabase kb and media code until it moves to Postgres.
     SUPABASE_URL: str | None = None
     SUPABASE_KEY: str | None = None
 
@@ -39,8 +39,14 @@ class Settings(BaseSettings):
     MEDIA_BUCKET: str = "media"
     MEDIA_DIR: str = "/data/media"
 
+    # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
+    GOOGLE_CLIENT_IDS: str = ""
+
     def get_allowed_origins(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+
+    def get_google_client_ids(self) -> List[str]:
+        return [c.strip() for c in self.GOOGLE_CLIENT_IDS.split(",") if c.strip()]
 
     def is_production(self) -> bool:
         return self.ENV.lower() == "production"

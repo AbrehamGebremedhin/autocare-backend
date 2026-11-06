@@ -6,8 +6,7 @@ from datetime import datetime, timedelta
 from app.core.config import get_settings
 from app.utils.logger import get_logger_instance
 from app.utils.audit_logging import audit_logger, AuditEventType
-from app.db.base import SupabaseDBHandler
-import asyncio
+from app.services import auth_service
 
 # Security scheme
 security = HTTPBearer(auto_error=False)
@@ -96,8 +95,8 @@ async def get_current_user(
         if not user_id:
             raise AuthenticationError("Invalid token payload")
         
-        # The user must still exist in Supabase Auth
-        await validate_user_with_supabase(user_id)
+        # The user must still exist (a deleted account's tokens stop working)
+        await validate_user(user_id)
         
         # Store user info in request state for easy access
         request.state.current_user = {
@@ -124,26 +123,16 @@ async def get_current_user(
         await logger.error(f"Authentication error: {type(e).__name__}")
         raise AuthenticationError("Authentication failed")
 
-async def validate_user_with_supabase(user_id: str) -> bool:
-    """
-    Check that the token's user still exists in Supabase Auth (deleted or unknown users get 401).
-
-    The app's own JWT is never sent to Supabase, so this works whatever JWT_SECRET_KEY is. It is an
-    admin lookup by id, which needs the service-role key, and it runs in a thread because the
-    Supabase client is synchronous.
-    """
+async def validate_user(user_id: str) -> bool:
+    """Check that the token's user still exists in the users table (deleted or unknown users get 401)."""
     try:
-        db_handler = SupabaseDBHandler()
-        db = await db_handler.get_client()
-
-        user_response = await asyncio.to_thread(db.auth.admin.get_user_by_id, user_id)
-        if not user_response or not user_response.user:
-            raise AuthenticationError("Unknown user")
-
-        return True
+        exists = await auth_service.user_exists(user_id)
     except Exception as e:
-        await logger.error(f"Supabase validation error: {type(e).__name__}")
+        await logger.error(f"User validation error: {type(e).__name__}")
         raise AuthenticationError("Token validation failed")
+    if not exists:
+        raise AuthenticationError("Token validation failed")
+    return True
 
 async def get_current_active_user(
     current_user: Dict[str, Any] = Depends(get_current_user)

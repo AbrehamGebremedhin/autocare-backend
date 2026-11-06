@@ -1,6 +1,11 @@
+import logging
+
+import jwt
 import pytest
 
 PUBLIC = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
+TOKEN_KEYS = {"access_token", "refresh_token", "token_type", "expires_in", "user_id"}
+CLIENT_ID = "client-1.apps.googleusercontent.com"
 
 
 def test_every_non_auth_route_requires_token(client):
@@ -13,14 +18,27 @@ def test_every_non_auth_route_requires_token(client):
             assert r.status_code == 401, (method, path)
 
 
-def test_debug_auth_endpoints_gone(client):
-    for p in ["/api/v1/auth/list-users", "/api/v1/auth/manual-confirm", "/api/v1/auth/debug-confirm"]:
-        assert client.get(p).status_code in (404, 405)
+def test_debug_and_confirm_auth_endpoints_gone(client):
+    for p in [
+        "/api/v1/auth/list-users", "/api/v1/auth/manual-confirm", "/api/v1/auth/debug-confirm",
+        "/api/v1/auth/confirm", "/api/v1/auth/confirm-page",
+    ]:
+        assert client.get(p).status_code in (404, 405), p
+        assert client.post(p, json={"token": "t"}).status_code in (404, 405), p
+
+
+def test_auth_routes_do_not_import_supabase():
+    import app.api.v1.user_auth as routes
+    import app.services.auth_service as service
+    import app.utils.auth_middleware as middleware
+
+    for module in (routes, service, middleware):
+        source = open(module.__file__, encoding="utf-8").read().lower()
+        assert "supabase" not in source, module.__name__
 
 
 def test_jwt_uses_settings_secret(monkeypatch):
     # a token signed with the old hard-coded fallback secret is rejected
-    import jwt
     from app.core.config import get_settings
     from app.utils.auth_middleware import jwt_handler, AuthenticationError
     assert jwt_handler.secret_key == get_settings().JWT_SECRET_KEY
@@ -29,107 +47,108 @@ def test_jwt_uses_settings_secret(monkeypatch):
         jwt_handler.verify_token(bad)
 
 
-def test_confirm_works_and_logs_no_secrets(client, caplog):
-    import logging
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock, patch
-    from app.db.base import get_db_handler
-    from app.api.v1 import user_auth
+def _claims(token_response: dict) -> dict:
+    from app.utils.auth_middleware import jwt_handler
 
-    token, email = "SECRET-TOKEN-abc123", "victim@example.com"
-    db = MagicMock()
-    db.auth.verify_otp.return_value = SimpleNamespace(user=SimpleNamespace(id="user-uuid-1"))
-    handler = MagicMock()
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=db)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    handler.get_connection.return_value = cm
-    client.app.dependency_overrides[get_db_handler] = lambda: handler
-    try:
-        with caplog.at_level(logging.DEBUG), patch.object(
-            user_auth.user_service, "ensure_user_profile", AsyncMock()
-        ):
-            r = client.post("/api/v1/auth/confirm", json={"token": token, "email": email})
-    finally:
-        client.app.dependency_overrides.pop(get_db_handler, None)
+    return jwt_handler.verify_token(token_response["access_token"])
+
+
+def _register(client, email="driver@example.com", password="s3cret-pass"):
+    return client.post("/api/v1/auth/register", json={"email": email, "password": password})
+
+
+def _login(client, email="driver@example.com", password="s3cret-pass"):
+    return client.post("/api/v1/auth/login", json={"email": email, "password": password})
+
+
+# --- register / login ---------------------------------------------------------
+
+def test_register_returns_the_login_token_response(client, fake_users):
+    r = _register(client, email="New.Driver@Example.com")
     assert r.status_code == 200
-    out = caplog.text + r.text
-    assert token not in out and email not in out and "user-uuid-1" not in out
+    body = r.json()
+    assert set(body) == TOKEN_KEYS and body["token_type"] == "bearer" and body["expires_in"] == 1800
+    [row] = fake_users.rows.values()
+    assert row["email"] == "new.driver@example.com"
+    assert body["user_id"] == row["id"] and _claims(body)["sub"] == row["id"]
+
+    login = _login(client, email="new.driver@example.com")
+    assert login.status_code == 200 and set(login.json()) == TOKEN_KEYS
+    assert login.json()["user_id"] == row["id"]
 
 
-def _db_override(client, db):
-    from unittest.mock import AsyncMock, MagicMock
-    from app.db.base import get_db_handler
-
-    handler = MagicMock()
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=db)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    handler.get_connection.return_value = cm
-    client.app.dependency_overrides[get_db_handler] = lambda: handler
+def test_register_token_reaches_protected_routes(client, fake_users, mocker):
+    mocker.patch("app.api.v1.car_route.user_profile_service.get_user_cars", return_value=[])
+    token = _register(client).json()["access_token"]
+    assert client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"}).status_code == 200
 
 
-def test_register_and_login_errors_log_only_exception_class(client, caplog):
-    import logging
-    from unittest.mock import MagicMock
-    from app.db.base import get_db_handler
+def test_second_register_of_an_email_is_409(client, fake_users):
+    assert _register(client).status_code == 200
+    r = _register(client, email="DRIVER@example.com", password="other-pass")
+    assert r.status_code == 409
+    assert r.json()["error_code"] == "DB_003" and r.json()["message"] == "User already exists"
+    assert len(fake_users.rows) == 1
 
-    secret = "upstream said: password=hunter2"
-    db = MagicMock()
-    db.auth.sign_up.side_effect = RuntimeError(secret)
-    db.auth.sign_in_with_password.side_effect = RuntimeError(secret)
-    _db_override(client, db)
-    try:
-        with caplog.at_level(logging.DEBUG):
-            r1 = client.post("/api/v1/auth/register", json={"email": "a@example.com", "password": "pw123456"})
-            r2 = client.post("/api/v1/auth/login", json={"email": "a@example.com", "password": "pw123456"})
-    finally:
-        client.app.dependency_overrides.pop(get_db_handler, None)
-    assert r1.status_code >= 400 and r2.status_code >= 400
+
+@pytest.mark.parametrize("password", ["short", "x" * 1025])
+def test_register_rejects_bad_password_length_without_echoing_it(client, fake_users, password):
+    r = _register(client, password=password)
+    assert r.status_code == 400
+    assert r.json()["message"] == "Password does not meet security requirements"
+    assert password not in r.text and fake_users.rows == {}
+
+
+def test_unknown_email_and_wrong_password_get_the_same_401(client, fake_users, caplog):
+    _register(client)
+    with caplog.at_level(logging.DEBUG):
+        wrong = _login(client, password="wrong-pass-123")
+        unknown = _login(client, email="nobody@example.com", password="wrong-pass-123")
+    assert wrong.status_code == unknown.status_code == 401
+    strip = lambda r: {k: v for k, v in r.json().items() if k not in ("correlation_id", "timestamp")}
+    assert strip(wrong) == strip(unknown) == {"error_code": "AUTH_001", "message": "Invalid email or password"}
+    assert "wrong-pass-123" not in caplog.text and "s3cret-pass" not in caplog.text
+    assert "$argon2" not in caplog.text
+
+
+def test_login_logs_no_password_hash_or_token(client, fake_users, caplog):
+    with caplog.at_level(logging.DEBUG):
+        _register(client)
+        r = _login(client)
+    assert r.status_code == 200
+    row = next(iter(fake_users.rows.values()))
+    for secret in ("s3cret-pass", row["password_hash"], r.json()["access_token"], r.json()["refresh_token"]):
+        assert secret not in caplog.text
+    assert "Login successful" in caplog.text
+
+
+def test_database_errors_are_generic_500_and_log_only_the_class(client, fake_pool, caplog):
+    secret = "pg: password=hunter2 host=10.0.0.5"
+    fake_pool.error = RuntimeError(secret)
+    with caplog.at_level(logging.DEBUG):
+        r1 = _register(client)
+        r2 = _login(client)
+    assert r1.status_code == r2.status_code == 500
     assert "RuntimeError" in caplog.text
     assert secret not in caplog.text + r1.text + r2.text
 
 
-def test_confirm_failure_detail_is_generic(client, caplog):
-    import logging
-    from unittest.mock import MagicMock
-    from app.db.base import get_db_handler
-
-    secret = "db host 10.0.0.5 refused"
-    db = MagicMock()
-    db.auth.verify_otp.side_effect = RuntimeError(secret)
-    db.auth.exchange_code_for_session.side_effect = RuntimeError("other")
-    _db_override(client, db)
-    try:
-        with caplog.at_level(logging.DEBUG):
-            r = client.post("/api/v1/auth/confirm", json={"token": "tok-xyz"})
-    finally:
-        client.app.dependency_overrides.pop(get_db_handler, None)
-    assert r.status_code == 400
-    assert secret not in r.text + caplog.text
-    assert "tok-xyz" not in r.text + caplog.text
-
+# --- logout -------------------------------------------------------------------
 
 def test_logout_requires_bearer_header_not_query(client):
     r = client.post("/api/v1/auth/logout", params={"token": "abc"})
     assert r.status_code == 401
 
 
-def test_logout_validates_token_and_never_calls_supabase(client, auth_headers, caplog, monkeypatch):
-    import logging
-    from unittest.mock import MagicMock
-    from app.db import base
+def test_logout_validates_token_and_tells_the_client_to_discard_it(client, auth_headers, caplog):
     from app.utils import auth_middleware
 
     token = auth_headers["Authorization"].split(" ", 1)[1]
-    fake = MagicMock()
-    monkeypatch.setattr(base, "create_client", lambda *a, **k: fake)
     with caplog.at_level(logging.DEBUG):
         r = client.post("/api/v1/auth/logout", headers=auth_headers)
     assert r.status_code == 200
     assert r.json() == {"message": "Logged out successfully."}
-    auth_middleware.validate_user_with_supabase.assert_awaited_once()
-    fake.auth.admin.sign_out.assert_not_called()
+    auth_middleware.validate_user.assert_awaited_once()
     assert token not in caplog.text
     assert "Logout successful" in caplog.text
 
@@ -139,80 +158,120 @@ def test_logout_with_invalid_token_is_401(client):
     assert r.status_code == 401
 
 
-def _real_connection_auth(monkeypatch, **side_effects):
-    """Route requests through the real get_connection with a fake Supabase client (the 62ff578 regression path)."""
-    from unittest.mock import MagicMock
-    from app.db import base
-
-    fake = MagicMock()
-    for name, effect in side_effects.items():
-        getattr(fake.auth, name).side_effect = effect
-    monkeypatch.setattr(base, "create_client", lambda *a, **k: fake)
-    return fake
-
-
-@pytest.mark.parametrize(
-    "error, status",
-    [
-        (("Invalid login credentials", 400, "invalid_credentials"), 401),
-        (("Email not confirmed", 400, "email_not_confirmed"), 401),
-        (("Invalid login credentials", 400, None), 401),  # older GoTrue sends no code
-        (("Request rate limit reached", 429, "over_request_rate_limit"), 429),
-        (("upstream exploded", 500, "unexpected_failure"), 500),
-    ],
-)
-def test_login_maps_supabase_auth_errors(client, monkeypatch, error, status):
-    from supabase import AuthApiError
-
-    _real_connection_auth(monkeypatch, sign_in_with_password=AuthApiError(*error))
-    r = client.post("/api/v1/auth/login", json={"email": "a@example.com", "password": "pw123456"})
-    assert r.status_code == status
-    assert error[0] not in r.text
-
-
-def test_wrong_password_is_401_with_generic_message(client, monkeypatch):
-    from supabase import AuthApiError
-
-    _real_connection_auth(
-        monkeypatch, sign_in_with_password=AuthApiError("Invalid login credentials", 400, "invalid_credentials")
-    )
-    r = client.post("/api/v1/auth/login", json={"email": "a@example.com", "password": "wrong-pass"})
+def test_token_of_a_deleted_user_is_401(client, fake_users):
+    token = _register(client).json()["access_token"]
+    fake_users.rows.clear()
+    r = client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 401
-    assert r.json()["message"] == "Invalid email or password"
+
+
+# --- Google sign-in -----------------------------------------------------------
+
+@pytest.fixture
+def google_on(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "GOOGLE_CLIENT_IDS", CLIENT_ID)
+
+
+def _google_claims(**overrides) -> dict:
+    return {
+        "iss": "accounts.google.com", "aud": CLIENT_ID, "sub": "google-sub-1",
+        "email": "driver@gmail.com", "email_verified": True, **overrides,
+    }
+
+
+@pytest.fixture
+def google(mocker, google_on):
+    return mocker.patch("google.oauth2.id_token.verify_oauth2_token", return_value=_google_claims())
+
+
+def _google(client, token="eyJ-google-id-token"):
+    return client.post("/api/v1/auth/google", json={"id_token": token})
+
+
+def test_google_is_404_when_no_client_ids(client, fake_users, mocker, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "GOOGLE_CLIENT_IDS", "")
+    verify = mocker.patch("google.oauth2.id_token.verify_oauth2_token")
+    assert _google(client).status_code == 404
+    verify.assert_not_called()
+
+
+def test_google_sign_in_returns_the_login_token_response(client, fake_users, google, caplog):
+    with caplog.at_level(logging.DEBUG):
+        r = _google(client)
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == TOKEN_KEYS and body["token_type"] == "bearer"
+    [row] = fake_users.rows.values()
+    assert row["password_hash"] is None and row["google_sub"] == "google-sub-1"
+    assert body["user_id"] == row["id"] and _claims(body)["sub"] == row["id"]
+    assert "eyJ-google-id-token" not in r.text + caplog.text
+
+    again = _google(client, token="another-token")
+    assert again.status_code == 200 and again.json()["user_id"] == row["id"]
+    assert len(fake_users.rows) == 1
+
+
+def test_google_takeover_of_a_preregistered_email_locks_out_the_password(client, fake_users, google):
+    squatter = _register(client, email="Driver@Gmail.com", password="attacker-pass").json()
+    r = _google(client)
+    assert r.status_code == 200 and r.json()["user_id"] == squatter["user_id"]
+    assert _login(client, email="driver@gmail.com", password="attacker-pass").status_code == 401
 
 
 @pytest.mark.parametrize(
-    "error, status",
+    "claims",
     [
-        (("User already registered", 422, "user_already_exists"), 409),
-        (("A user with this email address has already been registered", 422, "email_exists"), 409),
-        (("Unable to validate email address: invalid format", 400, "email_address_invalid"), 400),
-        (("Signups not allowed for this instance", 422, "signup_disabled"), 400),
-        (("Email rate limit exceeded", 429, "over_email_send_rate_limit"), 429),
+        _google_claims(aud="someone-elses-client"),
+        _google_claims(iss="https://evil.example.com"),
+        _google_claims(email_verified=False),
+        {k: v for k, v in _google_claims().items() if k != "sub"},
     ],
 )
-def test_register_maps_supabase_auth_errors(client, monkeypatch, error, status):
-    from supabase import AuthApiError
-
-    _real_connection_auth(monkeypatch, sign_up=AuthApiError(*error))
-    r = client.post("/api/v1/auth/register", json={"email": "a@example.com", "password": "pw123456"})
-    assert r.status_code == status
-    assert error[0] not in r.text
-
-
-def test_register_weak_password_is_400(client, monkeypatch):
-    from supabase import AuthWeakPasswordError
-
-    _real_connection_auth(
-        monkeypatch, sign_up=AuthWeakPasswordError("Password should be at least 6 characters", 422, ["length"])
-    )
-    r = client.post("/api/v1/auth/register", json={"email": "a@example.com", "password": "pw"})
-    assert r.status_code == 400
-    assert r.json()["message"] == "Password does not meet security requirements"
+def test_google_bad_claims_are_generic_401(client, fake_users, google, claims):
+    google.return_value = claims
+    r = _google(client)
+    assert r.status_code == 401
+    assert r.json()["message"] == "Google sign-in failed"
+    assert "eyJ-google-id-token" not in r.text and fake_users.rows == {}
 
 
-def test_non_auth_failure_in_connection_block_stays_generic_500(client, monkeypatch):
-    _real_connection_auth(monkeypatch, sign_in_with_password=RuntimeError("socket to 10.0.0.5 reset"))
-    r = client.post("/api/v1/auth/login", json={"email": "a@example.com", "password": "pw123456"})
-    assert r.status_code == 500
-    assert "10.0.0.5" not in r.text
+def test_google_expired_token_is_401_without_the_error_text(client, fake_users, google, caplog):
+    google.side_effect = ValueError("Token expired, 1700000000 < 1800000000")
+    with caplog.at_level(logging.DEBUG):
+        r = _google(client)
+    assert r.status_code == 401 and r.json()["message"] == "Google sign-in failed"
+    assert "expired" not in (r.text + caplog.text).lower()
+    assert "eyJ-google-id-token" not in r.text + caplog.text
+
+
+def test_google_rejects_an_oversized_token_without_verifying(client, fake_users, google):
+    r = _google(client, token="x" * 5000)
+    assert r.status_code == 401
+    google.assert_not_called()
+
+
+def test_google_cannot_reach_an_account_linked_to_another_google_user(client, fake_users, google):
+    fake_users.add("driver@gmail.com", google_sub="someone-else")
+    r = _google(client)
+    assert r.status_code == 401
+    assert next(iter(fake_users.rows.values()))["google_sub"] == "someone-else"
+
+
+# --- rate limits --------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "path, body",
+    [
+        ("/api/v1/auth/login", {"email": "nobody@example.com", "password": "s3cret-pass"}),
+        ("/api/v1/auth/register", {"email": "a@example.com", "password": "short"}),
+        ("/api/v1/auth/google", {"id_token": "t"}),
+    ],
+)
+def test_sign_in_routes_are_rate_limited(client, fake_users, path, body):
+    statuses = [client.post(path, json=body).status_code for _ in range(11)]
+    assert 429 not in statuses[:10]
+    assert statuses[10] == 429

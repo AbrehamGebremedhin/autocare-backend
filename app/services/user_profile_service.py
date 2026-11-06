@@ -1,10 +1,12 @@
+from datetime import datetime, timezone
+
 from app.services.base_service import BaseService
 from app.CRUD.car_crud import CarCRUD
-from app.db.base import SupabaseDBHandler
+from app.db import pool
+from app.db.crud import BaseCRUD
 from app.utils.exceptions import DatabaseException
 from app.utils.logger import get_logger_instance
 from typing import List, Dict, Any, Optional
-import asyncio
 
 
 class UserProfileService(BaseService):
@@ -13,7 +15,7 @@ class UserProfileService(BaseService):
     def __init__(self, car_crud: Optional[CarCRUD] = None):
         super().__init__()
         self.car_crud = car_crud or CarCRUD()
-        self.db_handler = SupabaseDBHandler()
+        self.profiles = BaseCRUD("user_profiles")
         self.logger = get_logger_instance("user_profile")
     
     async def perform_action(self, action: str, *args, **kwargs):
@@ -40,7 +42,7 @@ class UserProfileService(BaseService):
         Add a car to a user's profile. Creates car if it doesn't exist.
         
         Args:
-            user_id: Supabase user ID
+            user_id: the account's users.id
             make: Car make
             model: Car model
             year: Car year
@@ -147,39 +149,19 @@ class UserProfileService(BaseService):
 
     async def _get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user profile from database. Database errors propagate to the caller."""
-        async with self.db_handler.get_connection() as db:
-            result = await asyncio.to_thread(db.table('user_profiles').select('*').eq('user_id', user_id).execute)
-
-            if result.data and len(result.data) > 0:
-                return result.data[0]
-            return None
+        rows = await self.profiles.read({'user_id': user_id})
+        return rows[0] if rows else None
 
     async def _get_or_create_user_profile(self, user_id: str) -> Dict[str, Any]:
-        """Get or create user profile"""
-        profile = await self._get_user_profile(user_id)
-        
-        if not profile:
-            # Create new profile
-            profile_data = {
-                'user_id': user_id,
-                'cars': [],
-                'preferences': {}
-            }
-            
-            async with self.db_handler.get_connection() as db:
-                result = await asyncio.to_thread(db.table('user_profiles').insert(profile_data).execute)
-
-                if result.data and len(result.data) > 0:
-                    profile = result.data[0]
-                    await self.logger.info(f"Created new profile for user {user_id}")
-                else:
-                    profile = profile_data
-
-        return profile
+        """Get or create user profile (cars and preferences start empty)"""
+        status = await pool.execute(
+            "INSERT INTO user_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id
+        )
+        if status == "INSERT 0 1":
+            await self.logger.info(f"Created new profile for user {user_id}")
+        return await self._get_user_profile(user_id) or {'user_id': user_id, 'cars': [], 'preferences': {}}
 
     async def _update_user_profile(self, user_id: str, updates: Dict[str, Any]) -> bool:
-        """Update user profile. Database errors propagate to the caller."""
-        async with self.db_handler.get_connection() as db:
-            result = await asyncio.to_thread(db.table('user_profiles').update(updates).eq('user_id', user_id).execute)
-
-            return result.data is not None
+        """Update user profile; False when it has no row. Database errors propagate to the caller."""
+        rows = await self.profiles.update({'user_id': user_id}, {**updates, 'updated_at': datetime.now(timezone.utc)})
+        return bool(rows)

@@ -30,20 +30,9 @@ def test_cars_responses_are_not_cached(client, auth_headers, mocker):
 
 
 def test_csp_has_no_unsafe_inline_or_websockets(client):
-    for path in ("/health", "/api/v1/auth/confirm-page"):
-        csp = client.get(path).headers["Content-Security-Policy"]
-        assert "unsafe-inline" not in csp and "unsafe-eval" not in csp, path
-        assert "ws:" not in csp and "wss:" not in csp, path
-
-
-def test_confirm_page_inline_code_is_nonced(client):
-    import re
-
-    r = client.get("/api/v1/auth/confirm-page")
-    nonce = r.headers["X-CSP-Nonce"]
-    assert f"'nonce-{nonce}'" in r.headers["Content-Security-Policy"]
-    assert r.text.count(f'nonce="{nonce}"') == 2  # the one <style> and the one <script>
-    assert not re.search(r"\sstyle=", r.text)  # inline style attributes cannot carry a nonce
+    csp = client.get("/health").headers["Content-Security-Policy"]
+    assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+    assert "ws:" not in csp and "wss:" not in csp
 
 
 def test_only_docs_pages_skip_csp(client):

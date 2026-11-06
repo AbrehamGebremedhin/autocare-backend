@@ -28,7 +28,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Determine CSP policy based on endpoint
         # Swagger UI / ReDoc pages need inline scripts and CDN assets, so only they skip the CSP
         is_docs_endpoint = request.url.path in DOCS_PATHS
-        is_confirm_page = '/auth/confirm-page' in str(request.url.path)
         
         # Security headers
         headers = {
@@ -54,7 +53,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         # Only add security headers for non-docs endpoints
         if not is_docs_endpoint:
-            headers["Content-Security-Policy"] = self._get_csp_policy(nonce, is_confirm_page)
+            headers["Content-Security-Policy"] = self._get_csp_policy(nonce)
             headers["X-Frame-Options"] = "DENY"
         
         # A route's own Cache-Control (e.g. the SSE stream's no-cache) wins
@@ -68,35 +67,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         return response
     
-    def _get_csp_policy(self, nonce: str, is_confirm_page: bool = False) -> str:
+    def _get_csp_policy(self, nonce: str) -> str:
         """Generate Content Security Policy"""
-        
-        if is_confirm_page:
-            # Confirmation page: its inline <script>/<style> carry the nonce
-            return (
-                f"default-src 'self'; "
-                f"script-src 'self' 'nonce-{nonce}'; "
-                f"style-src 'self' 'nonce-{nonce}'; "
-                f"font-src 'self' https://fonts.gstatic.com; "
-                f"img-src 'self' data: https:; "
-                f"connect-src 'self'; "
-                f"frame-ancestors 'none'; "
-                f"base-uri 'self'; "
-                f"object-src 'none'"
-            )
-        else:
-            # Strict CSP for other endpoints
-            return (
-                f"default-src 'self'; "
-                f"script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net; "
-                f"style-src 'self' 'nonce-{nonce}' https://fonts.googleapis.com; "
-                f"font-src 'self' https://fonts.gstatic.com; "
-                f"img-src 'self' data: https:; "
-                f"connect-src 'self'; "
-                f"frame-ancestors 'none'; "
-                f"base-uri 'self'; "
-                f"object-src 'none'"
-            )
+        return (
+            f"default-src 'self'; "
+            f"script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+            f"style-src 'self' 'nonce-{nonce}' https://fonts.googleapis.com; "
+            f"font-src 'self' https://fonts.gstatic.com; "
+            f"img-src 'self' data: https:; "
+            f"connect-src 'self'; "
+            f"frame-ancestors 'none'; "
+            f"base-uri 'self'; "
+            f"object-src 'none'"
+        )
     
     def _is_production(self) -> bool:
         """Check if running in production"""

@@ -13,7 +13,7 @@ SCHEMA = Path(__file__).resolve().parents[2] / "app" / "db" / "sql" / "schema.sq
 # Columns the code touches outside the pydantic models.
 CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", "created_at", "updated_at"}  # chat_session_crud.py, session_route.py
 KB_PASSAGE_COLUMNS = {"source_type", "car_id", "title", "page", "content"}  # kb.ingest_pdf rows, kb._delete_existing filters
-PROFILE_COLUMNS_WRITTEN = {"user_id", "cars", "preferences", "created_at", "updated_at"}  # user_service, user_profile_service
+PROFILE_COLUMNS_WRITTEN = {"user_id", "cars", "preferences", "created_at", "updated_at"}  # user_profile_service
 USER_COLUMNS = {"id", "email", "password_hash", "google_sub", "created_at"}  # accounts (email+password, Google sign-in)
 TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages"}
 
@@ -127,6 +127,8 @@ def test_car_has_every_model_field(schema):
 
 def test_chatsession_columns(schema):
     assert CHATSESSION_COLUMNS <= schema["Chatsession"]
+    body = " ".join(_table_bodies(_sql())["Chatsession"].split()).lower()
+    assert "user_id uuid not null references users (id) on delete cascade" in body
 
 
 def test_kb_passages_columns(schema):

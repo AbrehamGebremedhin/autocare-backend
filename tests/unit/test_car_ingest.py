@@ -105,20 +105,6 @@ def test_script_does_not_run_on_import():
     assert callable(mod.main)
 
 
-def _profile_db(mocker, db):
-    from contextlib import asynccontextmanager
-
-    from app.api.v1 import car_route
-
-    @asynccontextmanager
-    async def conn():
-        yield db
-
-    handler = mocker.MagicMock()
-    handler.get_connection = conn
-    mocker.patch.object(car_route.user_profile_service, "db_handler", handler)
-
-
 def test_add_car_database_error_is_generic_500(client, auth_headers, mocker):
     ingest = mocker.patch("app.api.v1.car_route.ingest_car_manual")
     mocker.patch(
@@ -131,37 +117,29 @@ def test_add_car_database_error_is_generic_500(client, auth_headers, mocker):
     ingest.assert_not_called()
 
 
-def test_add_car_fails_when_profile_update_fails(client, auth_headers, mocker):
+def test_add_car_fails_when_profile_update_fails(client, auth_headers, mocker, fake_pool):
+    from app.api.v1 import car_route
+
     ingest = mocker.patch("app.api.v1.car_route.ingest_car_manual")
     mocker.patch(
         "app.api.v1.car_route.user_profile_service.car_crud.create_or_get_car",
         return_value=[{**CAR, "kb_status": "pending"}],
     )
-    db = mocker.MagicMock()
-    db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-        {"user_id": "u", "cars": []}
-    ]
-    db.table.return_value.update.return_value.eq.return_value.execute.side_effect = RuntimeError("down")
-    _profile_db(mocker, db)
+    fake_pool.rows = [{"user_id": "u", "cars": []}]
+    mocker.patch.object(car_route.user_profile_service.profiles, "update", side_effect=RuntimeError("down"))
     r = client.post("/api/v1/cars", json=NEW_CAR, headers=auth_headers)
     assert r.status_code == 500
     ingest.assert_not_called()
 
 
-def test_delete_car_database_error_is_500_not_404(client, auth_headers, mocker):
-    db = mocker.MagicMock()
-    db.table.side_effect = RuntimeError("connection reset")
-    _profile_db(mocker, db)
+def test_delete_car_database_error_is_500_not_404(client, auth_headers, fake_pool):
+    fake_pool.error = RuntimeError("connection reset")
     r = client.delete(f"/api/v1/cars/{CAR['id']}", headers=auth_headers)
     assert r.status_code == 500
     assert "connection reset" not in r.text and r.json()["message"] == "Could not remove car"
 
 
-def test_delete_car_not_in_garage_is_404(client, auth_headers, mocker):
-    db = mocker.MagicMock()
-    db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-        {"user_id": "u", "cars": ["other-car"]}
-    ]
-    _profile_db(mocker, db)
+def test_delete_car_not_in_garage_is_404(client, auth_headers, fake_pool):
+    fake_pool.rows = [{"user_id": "u", "cars": ["other-car"]}]
     r = client.delete(f"/api/v1/cars/{CAR['id']}", headers=auth_headers)
     assert r.status_code == 404

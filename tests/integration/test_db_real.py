@@ -7,9 +7,11 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+import asyncpg
 import pytest
 
 from app.CRUD.chat_session_crud import ChatSessionCRUD
+from app.CRUD.user_crud import UserCRUD
 from app.db import pool
 from app.db.crud import BaseCRUD
 
@@ -63,7 +65,8 @@ async def test_schema_is_idempotent_and_crud_and_search_work(real_pool):
 async def test_chatsession_round_trip_keeps_str_ids_and_utf8(real_pool):
     await pool.execute(SCHEMA.read_text(encoding="utf-8"))
     sessions = ChatSessionCRUD()
-    user_id = str(uuid4())
+    tag = uuid4().hex[:8]
+    user_id = (await UserCRUD().create_google_user(f"session-{tag}@example.com", f"sub-{tag}"))["id"]
     try:
         created = await sessions.create({"user_id": user_id, "car_id": "test-make-model-2001"})
         sid = created["id"]
@@ -83,4 +86,24 @@ async def test_chatsession_round_trip_keeps_str_ids_and_utf8(real_pool):
         raw = await pool.fetchval('select messages::text from "Chatsession" where id = $1', sid)
         assert "ጎማ" in raw and "\\u" not in raw
     finally:
-        await pool.execute('delete from "Chatsession" where user_id = $1', user_id)
+        await pool.execute("delete from users where id = $1", user_id)  # cascades to the sessions
+    assert await pool.fetchval('select count(*) from "Chatsession" where user_id = $1', user_id) == 0
+
+
+async def test_users_unique_email_and_google_link(real_pool):
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    users = UserCRUD()
+    tag = uuid4().hex[:8]
+    email = f"driver-{tag}@example.com"
+    try:
+        created = await users.create_password_user(email, "$argon2id$placeholder")
+        assert isinstance(created["id"], str) and await users.exists(created["id"])
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await users.create_google_user(email.upper(), f"sub-{tag}")  # unique on lower(email)
+        linked = await users.link_google(email, f"sub-{tag}")
+        assert linked == created
+        row = await users.get_by_google_sub(f"sub-{tag}")
+        assert row["password_hash"] is None and row["email"] == email
+        assert await users.link_google(email, f"other-{tag}") is None  # already linked
+    finally:
+        await pool.execute("delete from users where lower(email) = $1", email)

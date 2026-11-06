@@ -161,7 +161,7 @@ class TestAuthenticationMiddleware:
         jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
         
         try:
-            with patch('app.utils.auth_middleware.validate_user_with_supabase', new_callable=AsyncMock) as mock_validate:
+            with patch('app.utils.auth_middleware.validate_user', new_callable=AsyncMock) as mock_validate:
                 mock_validate.return_value = True
                 
                 user = await get_current_user(mock_request, valid_credentials)
@@ -249,7 +249,7 @@ class TestAuthenticationMiddleware:
         jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
         
         try:
-            with patch('app.utils.auth_middleware.validate_user_with_supabase', new_callable=AsyncMock) as mock_validate:
+            with patch('app.utils.auth_middleware.validate_user', new_callable=AsyncMock) as mock_validate:
                 mock_validate.return_value = True
                 
                 user = await get_current_user(mock_request, valid_credentials)
@@ -343,120 +343,88 @@ class TestAuthorizationDecorators:
         assert "required role" in str(exc_info.value.detail).lower()
 
 
-class TestSupabaseValidation:
-    """The user check is an admin lookup by the token's sub; the app JWT never goes to Supabase."""
+class TestValidateUser:
+    """The token's sub must still be a row in the users table."""
 
     USER = "11111111-1111-4111-8111-111111111111"
 
-    @staticmethod
-    def _client(mock_db_handler, **admin):
-        mock_db = MagicMock()
-        for name, value in admin.items():
-            setattr(mock_db.auth.admin.get_user_by_id, name, value)
-        mock_db_handler.return_value.get_client = AsyncMock(return_value=mock_db)
-        return mock_db
+    @pytest.mark.asyncio
+    async def test_existing_user_passes(self, fake_users):
+        from app.utils.auth_middleware import validate_user
+
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
+        assert await validate_user(user["id"]) is True
 
     @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_existing_user_passes(self, mock_db_handler):
-        from app.utils.auth_middleware import validate_user_with_supabase
+    async def test_unknown_user_is_401(self, fake_users):
+        from app.utils.auth_middleware import validate_user
 
-        db = self._client(mock_db_handler, return_value=MagicMock(user=MagicMock(id=self.USER)))
-        assert await validate_user_with_supabase(self.USER) is True
-        db.auth.admin.get_user_by_id.assert_called_once_with(self.USER)
-        db.auth.get_user.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_lookup_runs_off_the_event_loop(self, mock_db_handler):
-        import threading
-        from app.utils.auth_middleware import validate_user_with_supabase
-
-        seen = []
-        self._client(mock_db_handler, side_effect=lambda uid: seen.append(threading.current_thread()) or MagicMock())
-        await validate_user_with_supabase(self.USER)
-        assert seen and seen[0] is not threading.main_thread()
-
-    @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_no_user_returned_is_401(self, mock_db_handler):
-        from app.utils.auth_middleware import validate_user_with_supabase
-
-        self._client(mock_db_handler, return_value=MagicMock(user=None))
-        with pytest.raises(AuthenticationError):
-            await validate_user_with_supabase(self.USER)
-
-    @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_deleted_user_is_401(self, mock_db_handler):
-        from supabase import AuthApiError
-        from app.utils.auth_middleware import validate_user_with_supabase
-
-        self._client(mock_db_handler, side_effect=AuthApiError("User not found", 404, "user_not_found"))
         with pytest.raises(AuthenticationError) as exc_info:
-            await validate_user_with_supabase(self.USER)
+            await validate_user(self.USER)
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_client_failure_is_401(self, mock_db_handler):
-        from app.utils.auth_middleware import validate_user_with_supabase
+    async def test_lookup_is_one_bound_query(self, fake_pool):
+        from app.utils.auth_middleware import validate_user
 
-        mock_db_handler.return_value.get_client = AsyncMock(side_effect=Exception("Database error"))
+        fake_pool.value = True
+        assert await validate_user(self.USER) is True
+        [(method, sql, args)] = fake_pool.calls
+        assert method == "fetchval" and "users" in sql and args == (self.USER,)
+
+    @pytest.mark.asyncio
+    async def test_non_uuid_sub_is_401_without_a_query(self, fake_pool):
+        from app.utils.auth_middleware import validate_user
+
         with pytest.raises(AuthenticationError):
-            await validate_user_with_supabase(self.USER)
+            await validate_user("user-123")
+        assert fake_pool.calls == []
+
+    @pytest.mark.asyncio
+    async def test_database_failure_is_401(self, fake_pool):
+        from app.utils.auth_middleware import validate_user
+
+        fake_pool.error = ConnectionError("db down")
+        with pytest.raises(AuthenticationError):
+            await validate_user(self.USER)
 
 
-class TestTokenCheckIndependentOfSupabaseSecret:
-    """An app token signed with JWT_SECRET_KEY (not the Supabase project secret) reaches protected routes."""
+class TestProtectedRoutesWithRealValidator:
+    """An app token reaches protected routes only while its user exists."""
 
-    def test_protected_route_with_app_token_and_real_validator(self, client, monkeypatch):
-        from app.db import base
+    def test_existing_user_reaches_protected_route(self, client, fake_users, monkeypatch):
         from app.utils.auth_middleware import jwt_handler
         from app.api.v1 import car_route
 
-        user = "11111111-1111-4111-8111-111111111111"
-        fake = MagicMock()
-        fake.auth.get_user.side_effect = AssertionError("app JWT must not be sent to Supabase")
-        fake.auth.admin.get_user_by_id.return_value = MagicMock(user=MagicMock(id=user))
-        monkeypatch.setattr(base.SupabaseDBHandler(), "_client", fake)
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
         monkeypatch.setattr(car_route.user_profile_service, "get_user_cars", AsyncMock(return_value=[]))
 
-        token = jwt_handler.create_access_token({"sub": user})
+        token = jwt_handler.create_access_token({"sub": user["id"]})
         r = client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        fake.auth.admin.get_user_by_id.assert_called_once_with(user)
 
-    def test_deleted_user_gets_401_on_protected_route(self, client, monkeypatch):
-        from supabase import AuthApiError
-        from app.db import base
+    def test_deleted_user_gets_401_on_protected_route(self, client, fake_users):
         from app.utils.auth_middleware import jwt_handler
 
-        fake = MagicMock()
-        fake.auth.admin.get_user_by_id.side_effect = AuthApiError("User not found", 404, "user_not_found")
-        monkeypatch.setattr(base.SupabaseDBHandler(), "_client", fake)
-
-        token = jwt_handler.create_access_token({"sub": "11111111-1111-4111-8111-111111111111"})
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
+        token = jwt_handler.create_access_token({"sub": user["id"]})
+        del fake_users.rows[user["id"]]
         r = client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 401
-        assert "User not found" not in r.text
 
 
 class TestErrorLogsHideDetails:
     """Error logs carry only the exception class, never its message."""
 
     @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_supabase_validation_logs_class_only(self, mock_db_handler, caplog):
+    async def test_user_validation_logs_class_only(self, fake_pool, caplog):
         import logging
-        from app.utils.auth_middleware import validate_user_with_supabase
+        from app.utils.auth_middleware import validate_user
 
-        mock_db = MagicMock()
-        mock_db.auth.admin.get_user_by_id.side_effect = RuntimeError("leaked eyJ-token-body")
-        mock_db_handler.return_value.get_client = AsyncMock(return_value=mock_db)
+        fake_pool.error = RuntimeError("leaked eyJ-token-body")
 
         with caplog.at_level(logging.DEBUG), pytest.raises(AuthenticationError):
-            await validate_user_with_supabase("user-123")
+            await validate_user("11111111-1111-4111-8111-111111111111")
         assert "RuntimeError" in caplog.text
         assert "eyJ-token-body" not in caplog.text
 

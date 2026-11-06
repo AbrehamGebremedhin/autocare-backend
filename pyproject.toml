@@ -28,6 +28,9 @@ dependencies = [
     # faster-whisper 1.2.1 passes metadata_errors to av.open, which av>=19 rejects
     "av==16.1.0",
     "asyncpg==0.32.0",
+    "argon2-cffi==25.1.0",
+    "google-auth==2.62.1",
+    "requests==2.34.2",
 ]
 
 [dependency-groups]

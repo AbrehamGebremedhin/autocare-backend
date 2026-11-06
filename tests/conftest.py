@@ -7,6 +7,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://autocare:test@db.invalid:543
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "test-supabase-key")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
+os.environ.setdefault("GOOGLE_CLIENT_IDS", "")  # Google sign-in off unless a test turns it on
 os.environ.setdefault("ENV", "development")
 
 import asyncio
@@ -17,6 +18,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import asyncpg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -100,6 +102,88 @@ def fake_pool():
     pool.set_pool_for_tests(fake)
     yield fake
     pool.set_pool_for_tests(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_google_network(monkeypatch):
+    """Google ID token checks never fetch Google's keys in tests; a test that needs one patches it again."""
+    from google.oauth2 import id_token
+
+    def offline(*args, **kwargs):
+        raise RuntimeError("network disabled in tests")
+
+    monkeypatch.setattr(id_token, "verify_oauth2_token", offline)
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """The limiter keeps its counters in memory for the whole run; every test starts from zero."""
+    from app.utils.limiter import limiter
+
+    limiter.reset()
+
+
+class FakeUserStore:
+    """In-memory stand-in for UserCRUD, with the users table's unique indexes on lower(email) and google_sub."""
+
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+
+    def _check_unique(self, email: str | None = None, google_sub: str | None = None, skip: str | None = None) -> None:
+        for row in self.rows.values():
+            if row["id"] == skip:
+                continue
+            if (email is not None and row["email"].lower() == email.lower()) or (
+                google_sub is not None and row["google_sub"] == google_sub
+            ):
+                raise asyncpg.UniqueViolationError("duplicate key value violates unique constraint")
+
+    def add(self, email: str, password_hash: str | None = None, google_sub: str | None = None) -> dict:
+        self._check_unique(email, google_sub)
+        row = {"id": str(uuid4()), "email": email, "password_hash": password_hash, "google_sub": google_sub}
+        self.rows[row["id"]] = row
+        return row
+
+    def by_email(self, email: str) -> dict | None:
+        return next((r for r in self.rows.values() if r["email"].lower() == email), None)
+
+    @staticmethod
+    def _public(row: dict | None) -> dict | None:
+        return None if row is None else {"id": row["id"], "email": row["email"]}
+
+    async def get_by_email(self, email: str) -> dict | None:
+        row = self.by_email(email)
+        return dict(row) if row else None
+
+    async def get_by_google_sub(self, google_sub: str) -> dict | None:
+        row = next((r for r in self.rows.values() if r["google_sub"] == google_sub), None)
+        return dict(row) if row else None
+
+    async def exists(self, user_id: str) -> bool:
+        return user_id in self.rows
+
+    async def create_password_user(self, email: str, password_hash: str) -> dict:
+        return self._public(self.add(email, password_hash=password_hash))
+
+    async def create_google_user(self, email: str, google_sub: str) -> dict:
+        return self._public(self.add(email, google_sub=google_sub))
+
+    async def link_google(self, email: str, google_sub: str) -> dict | None:
+        row = self.by_email(email)
+        if row is None or row["google_sub"] is not None:
+            return None
+        self._check_unique(google_sub=google_sub, skip=row["id"])
+        row.update(google_sub=google_sub, password_hash=None)
+        return self._public(row)
+
+
+@pytest.fixture
+def fake_users(monkeypatch):
+    from app.services import auth_service
+
+    store = FakeUserStore()
+    monkeypatch.setattr(auth_service, "users", store)
+    return store
 
 
 @pytest.fixture
@@ -415,7 +499,7 @@ def existing_session(session, fake_garage):
 def _bearer(monkeypatch, user_id: str) -> dict:
     from app.utils import auth_middleware
 
-    monkeypatch.setattr(auth_middleware, "validate_user_with_supabase", AsyncMock(return_value=True))
+    monkeypatch.setattr(auth_middleware, "validate_user", AsyncMock(return_value=True))
     token = auth_middleware.jwt_handler.create_access_token({"sub": user_id})
     return {"Authorization": f"Bearer {token}"}
 

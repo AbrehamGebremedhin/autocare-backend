@@ -10,9 +10,9 @@ Required: `JWT_SECRET_KEY` (min 32 chars), `SUPABASE_URL`, `SUPABASE_KEY`, `DEEP
 
 `SUPABASE_KEY` must be the project's **service-role** key, not the anon key. The schema enables RLS with no policies (so the public anon key reads nothing), and the per-request user check uses the auth admin API. Keep it server-side only.
 
-`JWT_SECRET_KEY` signs the app's own access and refresh tokens (HS256). It can be any random secret of 32+ chars and does not need to match the Supabase project's JWT secret: on each request the app checks the signature itself, then looks the user up by id (`auth.admin.get_user_by_id`), so a deleted user gets `401`. Bans are not checked (the Supabase client drops `banned_until`).
+`JWT_SECRET_KEY` signs the app's own access and refresh tokens (HS256). It can be any random secret of 32+ chars: on each request the app checks the signature itself, then looks the user up by id in the `users` table, so a deleted user gets `401`.
 
-Optional: `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_BUCKET`.
+Optional: `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_BUCKET`, `GOOGLE_CLIENT_IDS` (comma-separated Google OAuth client ids; when empty, Google sign-in is off and `POST /api/v1/auth/google` returns `404`).
 
 ## Supabase setup
 
@@ -25,7 +25,6 @@ For a brand new Supabase project:
    Both files enable RLS with no policies, so only the service-role key can reach the tables. The backend never applies schema changes. On an older project that already has data, 001 is **destructive**: it drops `Chatsession` and `Groundknowledge` and removes two `Car` columns (on a fresh project there is nothing to drop).
 2. In Storage, create a **private** bucket named `media` (or whatever `MEDIA_BUCKET` is set to). This is a manual step.
 3. Put the project's **service-role** key in `SUPABASE_KEY` (see Configuration). Use the legacy JWT `service_role` key (it starts with `eyJ`): the pinned `supabase` client rejects keys that are not JWTs, such as the newer `sb_secret_...` keys, with "Invalid API key".
-4. Email confirmation: new projects make users confirm their email before they can sign in (the "Confirm email" setting of the Email provider under Authentication). While it is on, `POST /api/v1/auth/login` returns `401` "Email address not verified" until the user opens the link in the confirmation email. Turn it off for local testing if you don't want to deal with emails. Either way the user's `user_profiles` row is created when it is first needed.
 
 ## Run
 
@@ -47,14 +46,16 @@ Interactive reference: `http://localhost:8000/docs`. `/docs`, `/redoc` and `/ope
 
 | Area | Routes |
 | --- | --- |
-| Auth | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET\|POST /api/v1/auth/confirm`, `GET /api/v1/auth/confirm-page` |
+| Auth | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/google`, `POST /api/v1/auth/logout` |
 | Cars | `GET /api/v1/cars`, `POST /api/v1/cars`, `DELETE /api/v1/cars/{car_id}` |
 | Sessions | `POST /api/v1/sessions`, `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
 | Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE) |
 
+Accounts are email+password (argon2id, no email confirmation; `register` returns the same tokens as `login`) or Google: the client gets a Google ID token and sends it as `{"id_token": ...}` to `POST /api/v1/auth/google`, which returns the same tokens. Signing in with Google for an email that already has a password account links it and removes its password, because emails are not verified at registration. Register, login and Google sign-in are limited to 10 requests per minute per client address.
+
 Adding a car starts a background ingest of its manual; the car's `kb_status` tracks progress.
 
-**Logout does not revoke the app's tokens.** They are stateless JWTs with no server-side session, so after logout the access token stays valid until it expires (30 minutes) and the refresh token for 7 days. Clients must discard both on logout. `POST /api/v1/auth/logout` only validates the bearer token and returns `200`; it does not call Supabase.
+**Logout does not revoke the app's tokens.** They are stateless JWTs with no server-side session, so after logout the access token stays valid until it expires (30 minutes) and the refresh token for 7 days. Clients must discard both on logout. `POST /api/v1/auth/logout` only validates the bearer token and returns `200`.
 
 ### SSE events
 

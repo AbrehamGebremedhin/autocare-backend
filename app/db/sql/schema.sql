@@ -54,9 +54,10 @@ create table if not exists "Car" (
 );
 
 -- Chat sessions -----------------------------------------------------------------
+-- Deleting an account deletes its sessions.
 create table if not exists "Chatsession" (
     id         uuid primary key default gen_random_uuid(),
-    user_id    uuid not null,
+    user_id    uuid not null references users (id) on delete cascade,
     car_id     text not null,
     title      text not null default 'New diagnosis',
     messages   jsonb not null default '[]',

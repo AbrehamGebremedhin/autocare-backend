@@ -1,7 +1,6 @@
 .env
 .env.*
 !.env.example
-!.env.template
 .venv/
 
 **.pyc
@@ -9,3 +8,4 @@ __pycache__/
 car_data/
 reports/
 tests/fixtures/e2e/
+backups/

@@ -16,10 +16,6 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str  # postgresql://user:password@host:5432/db; never log it
 
-    # Still read by the Supabase kb and media code until it moves to Postgres.
-    SUPABASE_URL: str | None = None
-    SUPABASE_KEY: str | None = None
-
     DEEPSEEK_API_KEY: str
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     DEEPSEEK_MODEL: str = "deepseek-flash"

@@ -1,10 +1,11 @@
-"""End-to-end check against a running stack: login, add a car, chat (text, photo, audio, video), clean up.
+"""End-to-end check against a running stack: health, sign in, add a car, chat (text, photo, audio, video), clean up.
 
-Prints one OK/FAIL line per message with time-to-first-token and total time. Exits non-zero on any
-failure, and also when a media message was skipped for a missing file unless --allow-skip is given.
+Prints one OK/FAIL line per step and per message with time-to-first-token and total time. Exits non-zero
+on any failure, and also when a media message was skipped for a missing file unless --allow-skip is given.
+With --register, an account that does not exist yet (login answers 401) is registered first.
 Never prints tokens or the password.
 Usage: uv run scripts/e2e.py --base http://localhost:8000 --email you@example.com --password ...
-       [--media-dir tests/fixtures/e2e] [--allow-skip]
+       [--register] [--media-dir tests/fixtures/e2e] [--allow-skip]
 """
 import argparse
 import json
@@ -112,15 +113,42 @@ def wait_for_kb(client: httpx.Client, car_id: str) -> str:
         time.sleep(POLL_EVERY_S)
 
 
-def run(base: str, email: str, password: str, media_dir: Path, allow_skip: bool) -> int:
+def health_problems(body: dict) -> list[str]:
+    """Problems in a /health body; empty means the stack is ready."""
+    return [f"{key} down" for key in ("database", "deepseek") if body.get(key) is not True]
+
+
+def sign_in(client: httpx.Client, email: str, password: str, register: bool) -> str | None:
+    """Access token from login, or from register when login says 401 and `register` is set; None on failure."""
+    creds = {"email": email, "password": password}
+    resp = client.post("/api/v1/auth/login", json=creds)
+    if resp.status_code == 401 and register:
+        print("     login 401, registering the account")
+        resp = client.post("/api/v1/auth/register", json=creds)
+    if resp.status_code != 200:
+        print(f"FAIL sign in: HTTP {resp.status_code}")
+        return None
+    return resp.json()["access_token"]
+
+
+def run(base: str, email: str, password: str, media_dir: Path, allow_skip: bool, register: bool) -> int:
     failures = skipped = 0
     with httpx.Client(base_url=base, timeout=httpx.Timeout(120.0, connect=10.0)) as client:
-        resp = client.post("/api/v1/auth/login", json={"email": email, "password": password})
-        if resp.status_code != 200:
-            print(f"FAIL login: HTTP {resp.status_code}")
+        try:
+            resp = client.get("/health")
+            problems = health_problems(resp.json()) if resp.status_code == 200 else [f"HTTP {resp.status_code}"]
+        except (httpx.HTTPError, ValueError) as exc:
+            problems = [type(exc).__name__]
+        if problems:
+            print(f"FAIL health: {'; '.join(problems)}")
             return 1
-        client.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
-        print("OK   login")
+        print("OK   health")
+
+        token = sign_in(client, email, password, register)
+        if token is None:
+            return 1
+        client.headers["Authorization"] = f"Bearer {token}"
+        print("OK   sign in")
 
         resp = client.post("/api/v1/cars", json=CAR)
         if resp.status_code != 200:
@@ -165,7 +193,8 @@ if __name__ == "__main__":
     parser.add_argument("--base", default="http://localhost:8000")
     parser.add_argument("--email", required=True)
     parser.add_argument("--password", required=True)
+    parser.add_argument("--register", action="store_true", help="register the account if login answers 401")
     parser.add_argument("--media-dir", type=Path, default=ROOT / "tests" / "fixtures" / "e2e")
     parser.add_argument("--allow-skip", action="store_true", help="exit 0 even if media files are missing")
     args = parser.parse_args()
-    sys.exit(run(args.base.rstrip("/"), args.email, args.password, args.media_dir, args.allow_skip))
+    sys.exit(run(args.base.rstrip("/"), args.email, args.password, args.media_dir, args.allow_skip, args.register))

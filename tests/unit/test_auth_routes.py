@@ -27,16 +27,6 @@ def test_debug_and_confirm_auth_endpoints_gone(client):
         assert client.post(p, json={"token": "t"}).status_code in (404, 405), p
 
 
-def test_auth_routes_do_not_import_supabase():
-    import app.api.v1.user_auth as routes
-    import app.services.auth_service as service
-    import app.utils.auth_middleware as middleware
-
-    for module in (routes, service, middleware):
-        source = open(module.__file__, encoding="utf-8").read().lower()
-        assert "supabase" not in source, module.__name__
-
-
 def test_jwt_uses_settings_secret(monkeypatch):
     # a token signed with the old hard-coded fallback secret is rejected
     from app.core.config import get_settings

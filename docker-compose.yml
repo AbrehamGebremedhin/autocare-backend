@@ -1,7 +1,35 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: autocare
+      POSTGRES_DB: autocare
+      # Must be URL-safe (letters, digits, - _ . ~) because it is also put into DATABASE_URL below.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs only when pgdata is empty (first start); later schema changes are applied by hand with psql.
+      - ./app/db/sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "autocare", "-d", "autocare"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # No published ports: only the api service reaches Postgres, over the compose network.
+    restart: unless-stopped
+
   api:
     build: .
     env_file: .env
+    environment:
+      DATABASE_URL: postgresql://autocare:${POSTGRES_PASSWORD}@db:5432/autocare
+      # Address of the reverse proxy whose X-Forwarded-For uvicorn trusts (see README).
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - media:/data/media
     ports:
       - "8000:8000"
     restart: unless-stopped
@@ -11,3 +39,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 90s
+
+volumes:
+  pgdata:
+  media:

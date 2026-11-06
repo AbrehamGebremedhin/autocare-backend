@@ -1,7 +1,9 @@
 """AutoCare backend entrypoint."""
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,8 +25,18 @@ settings = get_settings()
 logger = logging.getLogger("autocare")
 
 
+def media_dir_writable(path: str) -> bool:
+    """True if uploads can be stored: MEDIA_DIR, or its nearest existing parent (uploads create the rest), is writable."""
+    current = Path(path).absolute()
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    return current.is_dir() and os.access(current, os.W_OK | os.X_OK)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not media_dir_writable(settings.MEDIA_DIR):
+        logger.warning("MEDIA_DIR %s is not writable by this process; media uploads will fail", settings.MEDIA_DIR)
     await pool.init_pool()
     try:
         yield

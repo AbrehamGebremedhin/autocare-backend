@@ -50,3 +50,35 @@ def test_lifespan_opens_and_closes_the_pool(mocker, fake_pool):
         init.assert_awaited_once_with()
         assert not fake_pool.closed
     assert fake_pool.closed
+
+
+def test_media_dir_writable_checks_nearest_existing_folder(tmp_path):
+    import main
+
+    assert main.media_dir_writable(str(tmp_path))
+    assert main.media_dir_writable(str(tmp_path / "not" / "yet"))  # uploads create missing folders
+    (tmp_path / "file").write_text("x")
+    assert not main.media_dir_writable(str(tmp_path / "file"))
+    assert not main.media_dir_writable(str(tmp_path / "file" / "below"))
+
+
+def _startup_log(mocker, monkeypatch, caplog, media_dir: str, writable: bool) -> str:
+    import logging
+
+    import main
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(main.settings, "MEDIA_DIR", media_dir)
+    mocker.patch("main.os.access", return_value=writable)
+    with caplog.at_level(logging.WARNING, logger="autocare"), TestClient(main.app):
+        pass
+    return caplog.text
+
+
+def test_startup_warns_when_media_dir_not_writable(mocker, monkeypatch, caplog, tmp_path, fake_pool):
+    text = _startup_log(mocker, monkeypatch, caplog, str(tmp_path), writable=False)
+    assert "MEDIA_DIR" in text and "not writable" in text
+
+
+def test_startup_quiet_when_media_dir_writable(mocker, monkeypatch, caplog, tmp_path, fake_pool):
+    assert "MEDIA_DIR" not in _startup_log(mocker, monkeypatch, caplog, str(tmp_path), writable=True)

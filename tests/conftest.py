@@ -4,8 +4,6 @@ import os
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-0123456789-abcdefghijklmnop")
 # .invalid never resolves: nothing can reach a real database even if the fake pool were bypassed.
 os.environ.setdefault("DATABASE_URL", "postgresql://autocare:test@db.invalid:5432/autocare")
-os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
-os.environ.setdefault("SUPABASE_KEY", "test-supabase-key")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
 os.environ.setdefault("GOOGLE_CLIENT_IDS", "")  # Google sign-in off unless a test turns it on
 os.environ.setdefault("ENV", "development")
@@ -256,31 +254,6 @@ def sample_car_data():
 
 
 @pytest.fixture
-def mock_db_handler():
-    """Mock database handler for testing."""
-    db_handler = AsyncMock()
-    db_handler.create = AsyncMock()
-    db_handler.read = AsyncMock()
-    db_handler.update = AsyncMock()
-    db_handler.delete = AsyncMock()
-    db_handler.close = AsyncMock()
-    return db_handler
-
-
-@pytest.fixture
-def mock_settings():
-    """Mock settings using the real Settings field names."""
-    settings = MagicMock()
-    settings.ENV = "test"
-    settings.DEBUG = False
-    settings.JWT_SECRET_KEY = "test-secret-key-0123456789-abcdefghijklmnop"
-    settings.SUPABASE_URL = "https://test.supabase.co"
-    settings.SUPABASE_KEY = "test_key"
-    settings.ALLOWED_ORIGINS = "http://localhost:3000"
-    return settings
-
-
-@pytest.fixture
 def mock_request():
     """Mock FastAPI request for testing."""
     from starlette.requests import Request
@@ -297,7 +270,7 @@ def mock_request():
 
 
 # --- Chat sessions and diagnosis turns ----------------------------------------
-# Offline fakes: no Supabase, no DeepSeek. The store round-trips through JSON like jsonb.
+# Offline fakes: no database, no DeepSeek. The store round-trips through JSON like jsonb.
 
 USER_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_USER_ID = "22222222-2222-4222-8222-222222222222"

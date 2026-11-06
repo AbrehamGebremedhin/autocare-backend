@@ -16,6 +16,9 @@ RUN useradd --create-home --uid 10001 autocare \
     && mkdir /app \
     && chown autocare:autocare /app
 
+# A fresh named volume mounted here copies this owner, so the non-root app can write uploads.
+RUN mkdir -p /data/media && chown autocare:autocare /data/media
+
 WORKDIR /app
 USER autocare
 
@@ -27,11 +30,12 @@ RUN uv sync --frozen --no-dev
 
 # Bake the models into HF_HOME. Settings validation needs placeholder values at build time only.
 RUN JWT_SECRET_KEY=build-time-placeholder-not-a-secret-000 \
-    SUPABASE_URL=http://placeholder SUPABASE_KEY=placeholder \
     DEEPSEEK_API_KEY=placeholder \
     DATABASE_URL=postgresql://placeholder@localhost/placeholder \
     uv run --no-sync python -m app.services.hearing
 
 EXPOSE 8000
 
-CMD ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# One worker only: the in-flight session lock lives in process memory.
+# --proxy-headers trusts X-Forwarded-For only from the addresses in $FORWARDED_ALLOW_IPS (uvicorn's default: 127.0.0.1).
+CMD ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

@@ -90,7 +90,7 @@ def test_every_statement_is_guarded_and_nothing_is_dropped():
     assert not re.search(r"\bdelete\s+from\b|\binsert\s+into\b|\bupdate\s+\S+\s+set\b", sql, re.IGNORECASE)
 
 
-def test_no_supabase_leftovers():
+def test_no_rls_or_auth_schema_leftovers():
     sql = _sql().lower()
     assert "row level security" not in sql and "create policy" not in sql
     assert "auth." not in sql and "to_regclass" not in sql

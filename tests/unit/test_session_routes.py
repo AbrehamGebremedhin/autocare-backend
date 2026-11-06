@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import json
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 import httpx
@@ -291,7 +292,8 @@ async def test_append_messages_reads_appends_and_writes(monkeypatch):
     await crud.append_messages("sid", [{"id": "b"}])
     filters, data = crud.update.call_args.args
     assert filters == {"id": "sid"}
-    assert data["messages"] == [{"id": "a"}, {"id": "b"}] and data["updated_at"]
+    assert data["messages"] == [{"id": "a"}, {"id": "b"}]
+    assert isinstance(data["updated_at"], datetime) and data["updated_at"].utcoffset() == timedelta(0)
 
 
 async def test_get_for_user_filters_by_owner_and_rejects_bad_ids(monkeypatch):
@@ -301,8 +303,22 @@ async def test_get_for_user_filters_by_owner_and_rejects_bad_ids(monkeypatch):
     assert await crud.get_for_user(sid, "u1") == {"id": sid}
     crud.read.assert_awaited_once_with({"id": sid, "user_id": "u1"})
     assert await crud.get_for_user("not-a-uuid", "u1") is None
+    assert await crud.get_for_user("33333333-3333-4333-8333-33333333333", "u1") is None  # one digit short
     crud.read.return_value = []
     assert await crud.get_for_user(sid, "u2") is None
+
+
+async def test_get_for_user_queries_the_canonical_uuid(monkeypatch):
+    crud = ChatSessionCRUD()
+    monkeypatch.setattr(crud, "read", AsyncMock(return_value=[]))
+    await crud.get_for_user("{33333333333343338333333333333333}", "u1")
+    crud.read.assert_awaited_once_with({"id": "33333333-3333-4333-8333-333333333333", "user_id": "u1"})
+
+
+async def test_malformed_session_id_is_404_not_500(client, auth_headers, fake_pool):
+    response = client.get("/api/v1/sessions/not-a-uuid", headers=auth_headers)
+    assert response.status_code == 404
+    assert fake_pool.calls == []
 
 
 async def test_save_state_writes_state_title_and_updated_at(monkeypatch):
@@ -311,7 +327,8 @@ async def test_save_state_writes_state_title_and_updated_at(monkeypatch):
     await crud.save_state("sid", {"title": "Fan"}, "Fan")
     filters, data = crud.update.call_args.args
     assert filters == {"id": "sid"}
-    assert data["state"] == {"title": "Fan"} and data["title"] == "Fan" and data["updated_at"]
+    assert data["state"] == {"title": "Fan"} and data["title"] == "Fan"
+    assert isinstance(data["updated_at"], datetime) and data["updated_at"].utcoffset() == timedelta(0)
 
 
 async def test_update_message_patches_one_message_and_bumps_updated_at(monkeypatch):

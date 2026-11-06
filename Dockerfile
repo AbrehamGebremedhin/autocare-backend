@@ -29,6 +29,7 @@ RUN uv sync --frozen --no-dev
 RUN JWT_SECRET_KEY=build-time-placeholder-not-a-secret-000 \
     SUPABASE_URL=http://placeholder SUPABASE_KEY=placeholder \
     DEEPSEEK_API_KEY=placeholder \
+    DATABASE_URL=postgresql://placeholder@localhost/placeholder \
     uv run --no-sync python -m app.services.hearing
 
 EXPOSE 8000

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.CRUD.chat_session_crud import ChatSessionCRUD
 from app.db import pool
 from app.db.crud import BaseCRUD
 
@@ -57,3 +58,29 @@ async def test_schema_is_idempotent_and_crud_and_search_work(real_pool):
     finally:
         await pool.execute("delete from kb_passages where car_id = $1", car_id)
         await cars.delete({"id": car_id})
+
+
+async def test_chatsession_round_trip_keeps_str_ids_and_utf8(real_pool):
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    sessions = ChatSessionCRUD()
+    user_id = str(uuid4())
+    try:
+        created = await sessions.create({"user_id": user_id, "car_id": "test-make-model-2001"})
+        sid = created["id"]
+        assert isinstance(sid, str) and created["user_id"] == user_id
+        assert (await sessions.get_for_user(sid, user_id))["id"] == sid
+        assert await sessions.get_for_user(sid, str(uuid4())) is None
+
+        await sessions.append_messages(sid, [{"id": "m1", "role": "user", "content": "ጎማ"}])
+        await sessions.save_state(sid, {"title": "ጎማ"}, "ጎማ")
+        row = await sessions.get_for_user(sid, user_id)
+        assert row["messages"] == [{"id": "m1", "role": "user", "content": "ጎማ"}]
+        assert row["state"] == {"title": "ጎማ"} and row["title"] == "ጎማ"
+
+        [listed] = await sessions.list_for_user(user_id)
+        assert listed["id"] == sid and listed["message_count"] == 1
+
+        raw = await pool.fetchval('select messages::text from "Chatsession" where id = $1', sid)
+        assert "ጎማ" in raw and "\\u" not in raw
+    finally:
+        await pool.execute('delete from "Chatsession" where user_id = $1', user_id)

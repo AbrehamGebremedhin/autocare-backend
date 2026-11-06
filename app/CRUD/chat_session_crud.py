@@ -15,7 +15,7 @@ class ChatSessionCRUD(BaseCRUD):
 
     async def get_for_user(self, session_id: str, user_id: str) -> dict | None:
         try:
-            UUID(session_id)
+            session_id = str(UUID(session_id))  # canonical form, the shape the uuid codec returns
         except ValueError:
             return None  # the uuid column would reject it with a 500
         rows = await self.read({'id': session_id, 'user_id': user_id})

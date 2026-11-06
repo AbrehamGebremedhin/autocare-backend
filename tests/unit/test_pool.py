@@ -1,4 +1,6 @@
 """app.db.pool against a fake asyncpg pool: no database."""
+import asyncio
+
 import pytest
 
 from app.db import pool
@@ -105,6 +107,20 @@ async def test_init_pool_sizes_and_codecs_and_is_idempotent(created, fake_pool):
     assert kwargs["init"] is pool._init_connection
     fake_pool.value = 1
     assert await pool.fetchval("select 1") == 1
+
+
+async def test_concurrent_init_pool_calls_open_one_pool(monkeypatch, fake_pool):
+    pool.set_pool_for_tests(None)
+    calls = []
+
+    async def slow_create_pool(**kwargs):
+        calls.append(kwargs)
+        await asyncio.sleep(0.01)  # both callers are waiting here without the lock
+        return fake_pool
+
+    monkeypatch.setattr(pool.asyncpg, "create_pool", slow_create_pool)
+    await asyncio.gather(*(pool.init_pool("postgresql://u:p@db.invalid/x") for _ in range(3)))
+    assert len(calls) == 1
 
 
 async def test_init_pool_defaults_to_settings_database_url(created):

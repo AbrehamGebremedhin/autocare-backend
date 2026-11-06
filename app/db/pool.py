@@ -5,6 +5,7 @@ Every helper acquires a connection for one statement and gives it straight back;
 back as plain dicts. jsonb/json travel as Python objects (UTF-8, no \\u escapes)
 and uuid as str, the same shapes the code got from PostgREST.
 """
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
@@ -14,6 +15,7 @@ import asyncpg
 from app.core.config import get_settings
 
 _pool = None
+_init_lock = asyncio.Lock()
 
 
 def _dumps(value: Any) -> str:
@@ -27,12 +29,13 @@ async def _init_connection(conn) -> None:
 
 
 async def init_pool(dsn: str | None = None) -> None:
-    """Open the pool; a second call while it is open does nothing."""
+    """Open the pool; a second call, or one racing the first, does nothing."""
     global _pool
-    if _pool is None:
-        _pool = await asyncpg.create_pool(
-            dsn=dsn or get_settings().DATABASE_URL, min_size=1, max_size=10, init=_init_connection
-        )
+    async with _init_lock:
+        if _pool is None:
+            _pool = await asyncpg.create_pool(
+                dsn=dsn or get_settings().DATABASE_URL, min_size=1, max_size=10, init=_init_connection
+            )
 
 
 async def close_pool() -> None:
@@ -43,8 +46,9 @@ async def close_pool() -> None:
 
 
 def set_pool_for_tests(fake) -> None:
-    global _pool
+    global _pool, _init_lock
     _pool = fake
+    _init_lock = asyncio.Lock()  # each test has its own event loop; a used lock is bound to the old one
 
 
 def _require():

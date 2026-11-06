@@ -86,8 +86,7 @@ async def create_session(payload: SessionCreate, current_user: dict = Depends(ge
     cars = await profiles.get_user_cars(current_user["id"])
     if not any(c.get("id") == payload.car_id for c in cars):
         raise RecordNotFoundException("Car")
-    rows = await diagnosis.sessions.create({"user_id": current_user["id"], "car_id": payload.car_id})
-    return rows[0]
+    return await diagnosis.sessions.create({"user_id": current_user["id"], "car_id": payload.car_id})
 
 
 @router.get("", summary="List the user's sessions")

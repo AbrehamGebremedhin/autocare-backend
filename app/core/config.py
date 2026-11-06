@@ -14,8 +14,11 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = Field(..., min_length=32)
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:8080"
 
-    SUPABASE_URL: str
-    SUPABASE_KEY: str
+    DATABASE_URL: str  # postgresql://user:password@host:5432/db; never log it
+
+    # Still read by the Supabase auth, profile, kb and media code until it moves to Postgres.
+    SUPABASE_URL: str | None = None
+    SUPABASE_KEY: str | None = None
 
     DEEPSEEK_API_KEY: str
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
@@ -34,6 +37,7 @@ class Settings(BaseSettings):
     KB_TOP_K: int = 8
     HISTORY_MESSAGES: int = 10
     MEDIA_BUCKET: str = "media"
+    MEDIA_DIR: str = "/data/media"
 
     def get_allowed_origins(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]

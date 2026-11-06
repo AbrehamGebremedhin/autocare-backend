@@ -1,21 +1,17 @@
-import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
+from app.db import pool
 from app.db.crud import BaseCRUD
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class ChatSessionCRUD(BaseCRUD):
     def __init__(self):
         super().__init__('Chatsession')
-
-    async def unique_logic(self, *args, **kwargs):
-        # Implement any Chat_Session-specific logic here
-        pass
 
     async def get_for_user(self, session_id: str, user_id: str) -> dict | None:
         try:
@@ -26,18 +22,11 @@ class ChatSessionCRUD(BaseCRUD):
         return rows[0] if rows else None
 
     async def list_for_user(self, user_id: str) -> list[dict]:
-        async with self.db_handler.get_connection() as db:
-            query = (
-                db.table(self.table_name)
-                .select('id,car_id,title,updated_at,messages')
-                .eq('user_id', user_id)
-                .order('updated_at', desc=True)
-            )
-            response = await asyncio.to_thread(query.execute)
-        return [
-            {**{k: r[k] for k in ('id', 'car_id', 'title', 'updated_at')}, 'message_count': len(r.get('messages') or [])}
-            for r in response.data or []
-        ]
+        return await pool.fetch(
+            'SELECT id, car_id, title, updated_at, jsonb_array_length(messages) AS message_count'
+            ' FROM "Chatsession" WHERE user_id = $1 ORDER BY updated_at DESC',
+            user_id,
+        )
 
     async def append_messages(self, session_id: str, messages: list[dict]) -> None:
         # Read-modify-write; the route's per-session in-flight lock keeps it single-writer.

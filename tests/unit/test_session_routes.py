@@ -276,6 +276,14 @@ async def test_finished_stream_does_not_release_a_later_turn(existing_session, c
 
 # --- ChatSessionCRUD ------------------------------------------------------------
 
+async def test_list_for_user_counts_messages_in_sql_without_loading_them(fake_pool):
+    fake_pool.rows = [{"id": "s", "car_id": "c", "title": "t", "updated_at": "now", "message_count": 2}]
+    assert await ChatSessionCRUD().list_for_user("u1") == fake_pool.rows
+    [(method, sql, args)] = fake_pool.calls
+    assert "jsonb_array_length(messages) AS message_count" in sql and "messages," not in sql
+    assert "WHERE user_id = $1" in sql and "ORDER BY updated_at DESC" in sql and args == ("u1",)
+
+
 async def test_append_messages_reads_appends_and_writes(monkeypatch):
     crud = ChatSessionCRUD()
     monkeypatch.setattr(crud, "read", AsyncMock(return_value=[{"messages": [{"id": "a"}]}]))

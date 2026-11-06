@@ -10,7 +10,7 @@ def test_no_header_logging(client, caplog):
 
 
 def test_health_reports_dependencies(client):
-    assert client.get("/health").json() == {"status": "ok", "supabase": True, "deepseek": True}
+    assert client.get("/health").json() == {"status": "ok", "database": True, "deepseek": True}
 
 
 def test_health_reports_deepseek_down(client, mocker):
@@ -19,12 +19,34 @@ def test_health_reports_deepseek_down(client, mocker):
     assert body["status"] == "ok" and body["deepseek"] is False
 
 
-def test_health_supabase_down_keeps_status_ok(mocker):
+def _health(mocker):
     import main
     from fastapi.testclient import TestClient
 
     mocker.patch("main.llm.ping", return_value=True)
-    mocker.patch("main._ping_supabase", side_effect=RuntimeError("down"))
     with TestClient(main.app) as c:
-        body = c.get("/health").json()
-    assert body == {"status": "ok", "supabase": False, "deepseek": True}
+        return c.get("/health").json()
+
+
+def test_health_pings_database_with_select_1(mocker, fake_pool):
+    fake_pool.value = 1
+    assert _health(mocker) == {"status": "ok", "database": True, "deepseek": True}
+    assert ("fetchval", "select 1", ()) in fake_pool.calls
+
+
+def test_health_database_down_keeps_status_ok(mocker, fake_pool):
+    fake_pool.error = OSError("connection refused")
+    assert _health(mocker) == {"status": "ok", "database": False, "deepseek": True}
+
+
+def test_lifespan_opens_and_closes_the_pool(mocker, fake_pool):
+    import main
+    from fastapi.testclient import TestClient
+
+    from app.db import pool
+
+    init = mocker.patch("main.pool.init_pool", wraps=pool.init_pool)
+    with TestClient(main.app):
+        init.assert_awaited_once_with()
+        assert not fake_pool.closed
+    assert fake_pool.closed

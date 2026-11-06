@@ -27,6 +27,7 @@ dependencies = [
     "faster-whisper==1.2.1",
     # faster-whisper 1.2.1 passes metadata_errors to av.open, which av>=19 rejects
     "av==16.1.0",
+    "asyncpg==0.32.0",
 ]
 
 [dependency-groups]
@@ -65,12 +66,13 @@ addopts = [
     "--disable-warnings",           # Disable pytest warnings
     "--color=yes",                  # Colored output
     "--durations=10",               # Show 10 slowest tests
-    "-m", "not slow",               # Skip real-model tests unless -m slow is passed
+    "-m", "not slow and not db",    # Skip real-model and real-database tests unless selected with -m
 ]
 
 # Markers
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "db: needs a real Postgres in TEST_DATABASE_URL (run with -m db)",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
     "database: marks tests that require database",

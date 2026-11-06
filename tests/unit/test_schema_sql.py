@@ -1,4 +1,4 @@
-"""The SQL files in app/db/sql define every column the code reads or writes. Parsed offline; no database."""
+"""app/db/sql/schema.sql defines every column the code reads or writes. Parsed offline; no database."""
 import re
 from pathlib import Path
 
@@ -8,19 +8,21 @@ from app.schemas.Car import CarBase
 from app.schemas.User import UserProfile
 from app.services import kb
 
-SQL_DIR = Path(__file__).resolve().parents[2] / "app" / "db" / "sql"
-FILES = sorted(SQL_DIR.glob("*.sql"))
+SCHEMA = Path(__file__).resolve().parents[2] / "app" / "db" / "sql" / "schema.sql"
 
 # Columns the code touches outside the pydantic models.
-CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", "updated_at"}  # chat_session_crud.py, session_route.py
+CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", "created_at", "updated_at"}  # chat_session_crud.py, session_route.py
 KB_PASSAGE_COLUMNS = {"source_type", "car_id", "title", "page", "content"}  # kb.ingest_pdf rows, kb._delete_existing filters
 PROFILE_COLUMNS_WRITTEN = {"user_id", "cars", "preferences", "created_at", "updated_at"}  # user_service, user_profile_service
+USER_COLUMNS = {"id", "email", "password_hash", "google_sub", "created_at"}  # accounts (email+password, Google sign-in)
+TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages"}
 
 _CONSTRAINT_WORDS = {"constraint", "primary", "unique", "check", "foreign", "exclude"}
+_IDENT = r'("[^"]+"|\w+)'
 
 
-def _sql(path: Path) -> str:
-    return re.sub(r"--[^\n]*", "", path.read_text(encoding="utf-8"))
+def _sql() -> str:
+    return re.sub(r"--[^\n]*", "", SCHEMA.read_text(encoding="utf-8"))
 
 
 def _name(raw: str) -> str:
@@ -50,64 +52,77 @@ def _split_top_level(body: str) -> list[str]:
 
 
 def _columns(body: str) -> set[str]:
-    cols = set()
-    for item in _split_top_level(body):
-        first = item.split()[0]
-        if first.lower() not in _CONSTRAINT_WORDS:
-            cols.add(_name(first))
-    return cols
+    return {_name(item.split()[0]) for item in _split_top_level(body) if item.split()[0].lower() not in _CONSTRAINT_WORDS}
 
 
-_IDENT = r'("[^"]+"|\w+)'
-_STATEMENT = re.compile(
-    rf"create\s+table\s+(?:if\s+not\s+exists\s+)?{_IDENT}\s*\("
-    rf"|drop\s+table\s+(?:if\s+exists\s+)?{_IDENT}"
-    rf"|alter\s+table\s+{_IDENT}\s+(add|drop)\s+column\s+(?:if\s+(?:not\s+)?exists\s+)?{_IDENT}",
-    re.IGNORECASE,
-)
-
-
-def apply(paths, tables=None) -> dict[str, set[str]]:
-    """Replay create/drop table and add/drop column statements, in file order."""
-    tables = {} if tables is None else tables
-    for path in paths:
-        sql = _sql(path)
-        for m in _STATEMENT.finditer(sql):
-            created, dropped, altered, action, column = m.groups()
-            if created:
-                tables[_name(created)] = _columns(_paren_body(sql, m.end() - 1))
-            elif dropped:
-                tables.pop(_name(dropped), None)
-            else:
-                assert _name(altered) in tables, f"{path.name} alters {altered} before any file creates it"
-                cols = tables[_name(altered)]
-                (cols.add if action.lower() == "add" else cols.discard)(_name(column))
-    return tables
+def _table_bodies(sql: str) -> dict[str, str]:
+    bodies = {}
+    for m in re.finditer(rf"create\s+table\s+(?:if\s+not\s+exists\s+)?{_IDENT}\s*\(", sql, re.IGNORECASE):
+        bodies[_name(m.group(1))] = _paren_body(sql, m.end() - 1)
+    return bodies
 
 
 @pytest.fixture(scope="module")
-def schema():
-    return apply(FILES)
+def schema() -> dict[str, set[str]]:
+    """Replay the create table statements: table -> columns."""
+    return {table: _columns(body) for table, body in _table_bodies(_sql()).items()}
 
 
-def test_base_schema_runs_first():
-    assert [p.name for p in FILES][:2] == ["000_base_schema.sql", "001_v2_schema.sql"]
+def test_creates_exactly_the_app_tables(schema):
+    assert set(schema) == TABLES
 
 
-@pytest.mark.parametrize("path", FILES, ids=lambda p: p.name)
-def test_file_is_one_transaction_with_lf_endings(path):
-    raw = path.read_bytes()
+def test_file_is_one_transaction_with_lf_endings():
+    raw = SCHEMA.read_bytes()
     assert b"\r" not in raw
-    statements = [s.strip().lower() for s in _sql(path).split(";") if s.strip()]
+    statements = [s.strip().lower() for s in _sql().split(";") if s.strip()]
     assert statements[0] == "begin" and statements[-1] == "commit"
+    assert [s for s in statements if s in ("begin", "commit")] == ["begin", "commit"]
+
+
+def test_every_statement_is_guarded_and_nothing_is_dropped():
+    sql = _sql()
+    assert not re.search(r"\bcreate\s+table\b(?!\s+if\s+not\s+exists)", sql, re.IGNORECASE)
+    assert not re.search(r"\bcreate\s+(?:unique\s+)?index\b(?!\s+if\s+not\s+exists)", sql, re.IGNORECASE)
+    assert not re.search(r"\bcreate\s+function\b", sql, re.IGNORECASE)  # only create or replace
+    assert re.search(r"\bcreate\s+or\s+replace\s+function\s+search_kb\b", sql, re.IGNORECASE)
+    assert not re.search(r"\b(?:drop|alter|truncate)\b", sql, re.IGNORECASE)
+    assert not re.search(r"\bdelete\s+from\b|\binsert\s+into\b|\bupdate\s+\S+\s+set\b", sql, re.IGNORECASE)
+
+
+def test_no_supabase_leftovers():
+    sql = _sql().lower()
+    assert "row level security" not in sql and "create policy" not in sql
+    assert "auth." not in sql and "to_regclass" not in sql
+
+
+def test_users_table(schema):
+    assert USER_COLUMNS <= schema["users"]
+    body = " ".join(_table_bodies(_sql())["users"].split()).lower()
+    assert "id uuid primary key default gen_random_uuid()" in body
+    assert "email text not null" in body
+    assert re.search(r"check \(password_hash is not null or google_sub is not null\)", body)
+    for column in ("password_hash", "google_sub"):
+        assert not re.search(rf"\b{column} text not null", body)
+
+
+def test_users_unique_indexes():
+    sql = " ".join(_sql().split()).lower()
+    assert re.search(r"create unique index if not exists \w+ on users \(lower\(email\)\);", sql)
+    assert re.search(r"create unique index if not exists \w+ on users \(google_sub\) where google_sub is not null;", sql)
+
+
+def test_user_profiles_reference_users(schema):
+    assert set(UserProfile.model_fields) | PROFILE_COLUMNS_WRITTEN <= schema["user_profiles"]
+    body = " ".join(_table_bodies(_sql())["user_profiles"].split()).lower()
+    assert "user_id uuid primary key references users (id) on delete cascade" in body
 
 
 def test_car_has_every_model_field(schema):
-    assert set(CarBase.model_fields) <= schema["Car"]
-
-
-def test_user_profiles_has_every_model_field(schema):
-    assert set(UserProfile.model_fields) | PROFILE_COLUMNS_WRITTEN <= schema["user_profiles"]
+    assert set(CarBase.model_fields) | {"created_at"} <= schema["Car"]
+    assert {"is_vectorized", "vector_chunk_count"}.isdisjoint(schema["Car"])
+    body = " ".join(_table_bodies(_sql())["Car"].split()).lower()
+    assert "check (kb_status in ('pending', 'ready', 'failed', 'no_manual'))" in body
 
 
 def test_chatsession_columns(schema):
@@ -116,50 +131,12 @@ def test_chatsession_columns(schema):
 
 def test_kb_passages_columns(schema):
     assert KB_PASSAGE_COLUMNS <= schema["kb_passages"]
-
-
-def test_base_schema_alone_has_what_v2_adds_to_car():
-    """001 only no-ops on "Car" when 000 already has its kb columns."""
-    base = apply(FILES[:1])
-    assert {"kb_status", "kb_passage_count"} <= base["Car"]
-    assert {"is_vectorized", "vector_chunk_count"}.isdisjoint(base["Car"])
-
-
-def _kb_status_checks(sql: str) -> list[str]:
-    found = re.findall(r"constraint\s+car_kb_status_check\s+check\s*\((.*?)\)\s*\)", sql, re.IGNORECASE | re.DOTALL)
-    return [" ".join(c.split()) for c in found]
-
-
-def test_kb_status_check_matches_between_files():
-    base, v2 = (_kb_status_checks(_sql(p)) for p in FILES[:2])
-    assert len(base) == 1 and base == v2
-
-
-def test_v2_is_idempotent_on_top_of_base():
-    sql = _sql(FILES[1])
-    assert not re.search(r"\badd\s+column\b(?!\s+if\s+not\s+exists)", sql, re.IGNORECASE)
-    assert not re.search(r"\bdrop\s+(?:column|table|constraint)\b(?!\s+if\s+exists)", sql, re.IGNORECASE)
-    assert not re.search(r"\bcreate\s+index\b(?!\s+if\s+not\s+exists)", sql, re.IGNORECASE)
-    for name in re.findall(r"add\s+constraint\s+(\w+)", sql, re.IGNORECASE):
-        assert re.search(rf"drop\s+constraint\s+if\s+exists\s+{name}\b", sql, re.IGNORECASE)
-    # A plain create table is only allowed after a drop table if exists of the same table.
-    for name in re.findall(rf"\bcreate\s+table\b(?!\s+if\s+not\s+exists)\s+{_IDENT}", sql, re.IGNORECASE):
-        assert re.search(rf"drop\s+table\s+if\s+exists\s+{re.escape(name)}", sql, re.IGNORECASE)
-
-
-def test_base_schema_creates_only_if_missing_and_enables_rls():
-    sql = _sql(FILES[0])
-    created = re.findall(rf"create\s+table\s+(if\s+not\s+exists\s+)?{_IDENT}", sql, re.IGNORECASE)
-    assert {_name(t) for _, t in created} == {"Car", "user_profiles"}
-    assert all(guard for guard, _ in created)
-    for table in ("Car", "user_profiles"):
-        assert re.search(rf'alter\s+table\s+"?{table}"?\s+enable\s+row\s+level\s+security', sql, re.IGNORECASE)
-    assert not re.search(r"create\s+policy", sql, re.IGNORECASE)
-    assert re.search(r"user_id\s+uuid\s+primary\s+key\s+references\s+auth\.users\s*\(\s*id\s*\)\s+on\s+delete\s+cascade", sql, re.IGNORECASE)
+    sql = " ".join(_sql().split()).lower()
+    assert "create index if not exists kb_passages_tsv_idx on kb_passages using gin (tsv);" in sql
 
 
 def _search_kb_signature() -> tuple[list[str], set[str]]:
-    sql = _sql(FILES[1])
+    sql = _sql()
     m = re.search(r"function\s+search_kb\s*\(", sql, re.IGNORECASE)
     args = [a.split()[0] for a in _split_top_level(_paren_body(sql, m.end() - 1))]
     ret = re.search(r"returns\s+table\s*\(", sql[m.end():], re.IGNORECASE)
@@ -167,7 +144,13 @@ def _search_kb_signature() -> tuple[list[str], set[str]]:
     return args, returned
 
 
-async def test_search_kb_args_match_kb_rpc_params(mocker):
+def test_search_kb_signature_unchanged():
+    args, returned = _search_kb_signature()
+    assert args == ["tsq", "p_car_id", "k"]
+    assert returned == {"source_type", "car_id", "title", "page", "content", "rank"}
+
+
+async def test_search_kb_args_match_kb_search_params(mocker):
     rpc = mocker.patch("app.services.kb._rpc", return_value=[])
     await kb.search("engine overheating", "toyota-echo-2001", 5)
     name, params = rpc.call_args.args

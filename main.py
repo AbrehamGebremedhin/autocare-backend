@@ -1,6 +1,7 @@
 """AutoCare backend entrypoint."""
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.api.v1.routes import router as v1_router
 from app.core.config import get_settings
-from app.db.base import SupabaseDBHandler
+from app.db import pool
 from app.services import llm
 from app.utils.body_limit import BodySizeLimitMiddleware
 from app.utils.exceptions import BaseAPIException
@@ -21,7 +22,17 @@ from app.utils.security_middleware import SecurityHeadersMiddleware
 settings = get_settings()
 logger = logging.getLogger("autocare")
 
-app = FastAPI(title="AutoCare API", debug=settings.DEBUG)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await pool.init_pool()
+    try:
+        yield
+    finally:
+        await pool.close_pool()
+
+
+app = FastAPI(title="AutoCare API", debug=settings.DEBUG, lifespan=lifespan)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -63,19 +74,14 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(v1_router, prefix="/api/v1")
 
 
-def _ping_supabase() -> None:
-    SupabaseDBHandler().client.table("Car").select("id").limit(1).execute()
-
-
-async def check_supabase() -> bool:
+async def check_database() -> bool:
     try:
-        await asyncio.wait_for(asyncio.to_thread(_ping_supabase), 5)
-        return True
+        return await asyncio.wait_for(pool.fetchval("select 1"), 5) == 1
     except Exception:
         return False
 
 
 @app.get("/health")
 async def health():
-    supabase, deepseek = await asyncio.gather(check_supabase(), llm.ping())
-    return {"status": "ok", "supabase": supabase, "deepseek": deepseek}
+    database, deepseek = await asyncio.gather(check_database(), llm.ping())
+    return {"status": "ok", "database": database, "deepseek": deepseek}

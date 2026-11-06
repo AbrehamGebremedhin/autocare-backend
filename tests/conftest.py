@@ -2,6 +2,8 @@ import os
 
 # Required settings come from env vars so tests never need a real .env.
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-0123456789-abcdefghijklmnop")
+# .invalid never resolves: nothing can reach a real database even if the fake pool were bypassed.
+os.environ.setdefault("DATABASE_URL", "postgresql://autocare:test@db.invalid:5432/autocare")
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "test-supabase-key")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
@@ -19,12 +21,93 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+class _FakeTransaction:
+    def __init__(self, pool):
+        self.pool = pool
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.pool.transactions.append("rollback" if exc_type else "commit")
+        return False
+
+
+class _FakeAcquire:
+    def __init__(self, pool):
+        self.pool = pool
+
+    async def __aenter__(self):
+        self.pool.acquired += 1
+        return self.pool  # the fake pool doubles as its own connection
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.pool.acquired -= 1
+        return False
+
+
+class FakePool:
+    """Stand-in for an asyncpg pool (and its connections): records (method, sql, args) for every statement.
+    `rows` answers fetch/fetchrow, `value` answers fetchval, `status` answers execute; `error` makes every statement raise."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str, tuple]] = []
+        self.rows: list[dict] = []
+        self.value = None
+        self.status = "OK"
+        self.error: Exception | None = None
+        self.transactions: list[str] = []
+        self.acquired = 0
+        self.closed = False
+
+    def _run(self, method: str, sql: str, args: tuple):
+        self.calls.append((method, sql, args))
+        if self.error is not None:
+            raise self.error
+
+    async def fetch(self, sql, *args):
+        self._run("fetch", sql, args)
+        return [dict(r) for r in self.rows]
+
+    async def fetchrow(self, sql, *args):
+        self._run("fetchrow", sql, args)
+        return dict(self.rows[0]) if self.rows else None
+
+    async def fetchval(self, sql, *args):
+        self._run("fetchval", sql, args)
+        return self.value
+
+    async def execute(self, sql, *args):
+        self._run("execute", sql, args)
+        return self.status
+
+    def acquire(self):
+        return _FakeAcquire(self)
+
+    def transaction(self):
+        return _FakeTransaction(self)
+
+    async def close(self):
+        self.closed = True
+
+
+@pytest.fixture(autouse=True)
+def fake_pool():
+    """Every test runs against a fake pool, so no test can open a real database connection."""
+    from app.db import pool
+
+    fake = FakePool()
+    pool.set_pool_for_tests(fake)
+    yield fake
+    pool.set_pool_for_tests(None)
+
+
 @pytest.fixture
 def client():
     import main
 
     with patch("main.llm.ping", AsyncMock(return_value=True)), patch(
-        "main.check_supabase", AsyncMock(return_value=True)
+        "main.check_database", AsyncMock(return_value=True)
     ), TestClient(main.app) as c:
         yield c
 
@@ -133,8 +216,8 @@ class FakeSessionStore:
     def messages(self, session_id: str) -> list[dict]:
         return self.rows[session_id]["messages"]
 
-    async def create(self, data: dict) -> list[dict]:
-        return [self.add(**data)]
+    async def create(self, data: dict) -> dict:
+        return self.add(**data)
 
     async def get_for_user(self, session_id: str, user_id: str) -> dict | None:
         row = self.rows.get(session_id)

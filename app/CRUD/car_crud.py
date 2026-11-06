@@ -81,7 +81,7 @@ class CarCRUD(BaseCRUD):
         data['car_guide_links'] = self.ensure_list(data.get('car_guide_links'))
         
         # Create the car record
-        return await super().create(data)
+        return [await super().create(data)]
 
     async def read(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Override read to properly parse car_guide_links JSON field"""

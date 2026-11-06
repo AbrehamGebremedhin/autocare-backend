@@ -285,15 +285,15 @@ async def test_list_for_user_counts_messages_in_sql_without_loading_them(fake_po
     assert "WHERE user_id = $1" in sql and "ORDER BY updated_at DESC" in sql and args == ("u1",)
 
 
-async def test_append_messages_reads_appends_and_writes(monkeypatch):
+async def test_append_messages_is_one_atomic_concat_statement(fake_pool):
     crud = ChatSessionCRUD()
-    monkeypatch.setattr(crud, "read", AsyncMock(return_value=[{"messages": [{"id": "a"}]}]))
-    monkeypatch.setattr(crud, "update", AsyncMock())
+    await crud.append_messages("sid", [{"id": "a"}])
     await crud.append_messages("sid", [{"id": "b"}])
-    filters, data = crud.update.call_args.args
-    assert filters == {"id": "sid"}
-    assert data["messages"] == [{"id": "a"}, {"id": "b"}]
-    assert isinstance(data["updated_at"], datetime) and data["updated_at"].utcoffset() == timedelta(0)
+    # Two appends, two statements, no read in between: neither can overwrite the other.
+    assert [c[0] for c in fake_pool.calls] == ["execute", "execute"]
+    for _, sql, _ in fake_pool.calls:
+        assert sql == 'UPDATE "Chatsession" SET messages = messages || $2::jsonb, updated_at = now() WHERE id = $1'
+    assert [c[2] for c in fake_pool.calls] == [("sid", [{"id": "a"}]), ("sid", [{"id": "b"}])]
 
 
 async def test_get_for_user_filters_by_owner_and_rejects_bad_ids(monkeypatch):
@@ -331,20 +331,17 @@ async def test_save_state_writes_state_title_and_updated_at(monkeypatch):
     assert isinstance(data["updated_at"], datetime) and data["updated_at"].utcoffset() == timedelta(0)
 
 
-async def test_update_message_patches_one_message_and_bumps_updated_at(monkeypatch):
-    crud = ChatSessionCRUD()
-    monkeypatch.setattr(crud, "read", AsyncMock(return_value=[{"messages": [{"id": "a", "media": []}, {"id": "b"}]}]))
-    monkeypatch.setattr(crud, "update", AsyncMock())
-    await crud.update_message("sid", "a", {"media": [{"kind": "image", "path": "p"}]})
-    filters, data = crud.update.call_args.args
-    assert filters == {"id": "sid"}
-    assert data["messages"] == [{"id": "a", "media": [{"kind": "image", "path": "p"}]}, {"id": "b"}]
-    assert data["updated_at"]
+async def test_update_message_patches_one_element_by_id_in_one_statement(fake_pool):
+    fake_pool.status = "UPDATE 1"
+    patch = {"media": [{"kind": "image", "path": "p"}]}
+    assert await ChatSessionCRUD().update_message("sid", "a", patch) is True
+    [(method, sql, args)] = fake_pool.calls
+    assert method == "execute" and args == ("sid", "a", patch)
+    assert "jsonb_set(s.messages" in sql and "WITH ORDINALITY" in sql
+    assert "e.elem ->> 'id' = $2" in sql and "|| $3::jsonb" in sql and "updated_at = now()" in sql
+    assert "'a'" not in sql and "sid" not in sql  # every value is a bind parameter
 
 
-async def test_update_message_on_missing_session_is_a_no_op(monkeypatch):
-    crud = ChatSessionCRUD()
-    monkeypatch.setattr(crud, "read", AsyncMock(return_value=[]))
-    monkeypatch.setattr(crud, "update", AsyncMock())
-    await crud.update_message("sid", "a", {"media": []})
-    crud.update.assert_not_called()
+async def test_update_message_for_unknown_message_or_session_writes_nothing(fake_pool):
+    fake_pool.status = "UPDATE 0"
+    assert await ChatSessionCRUD().update_message("sid", "missing", {"media": []}) is False

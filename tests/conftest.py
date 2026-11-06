@@ -59,6 +59,7 @@ class FakePool:
         self.value = None
         self.status = "OK"
         self.error: Exception | None = None
+        self.error_on_executemany = 0  # n: the nth executemany call raises
         self.transactions: list[str] = []
         self.acquired = 0
         self.closed = False
@@ -83,6 +84,11 @@ class FakePool:
     async def execute(self, sql, *args):
         self._run("execute", sql, args)
         return self.status
+
+    async def executemany(self, sql, args_list):
+        self._run("executemany", sql, tuple(tuple(a) for a in args_list))
+        if self.error_on_executemany and len([c for c in self.calls if c[0] == "executemany"]) == self.error_on_executemany:
+            raise RuntimeError("batch failed")
 
     def acquire(self):
         return _FakeAcquire(self)
@@ -345,10 +351,12 @@ class FakeSessionStore:
         if session_id in self.rows:
             self._write(session_id, messages=[*self.rows[session_id]["messages"], *_json_copy(messages)])
 
-    async def update_message(self, session_id: str, message_id: str, patch: dict) -> None:
-        if session_id in self.rows:
-            msgs = [{**m, **_json_copy(patch)} if m["id"] == message_id else m for m in self.rows[session_id]["messages"]]
-            self._write(session_id, messages=msgs)
+    async def update_message(self, session_id: str, message_id: str, patch: dict) -> bool:
+        if session_id not in self.rows or not any(m["id"] == message_id for m in self.rows[session_id]["messages"]):
+            return False
+        msgs = [{**m, **_json_copy(patch)} if m["id"] == message_id else m for m in self.rows[session_id]["messages"]]
+        self._write(session_id, messages=msgs)
+        return True
 
     async def save_state(self, session_id: str, state: dict, title: str) -> None:
         self._write(session_id, state=_json_copy(state), title=title)

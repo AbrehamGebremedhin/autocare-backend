@@ -40,21 +40,22 @@ def test_chunk_pages_packs_small_paragraphs_and_skips_blank():
     assert all(w in chunks[0][1] for w in ("one", "two", "three"))
 
 
-async def test_search_skips_rpc_for_empty_query(mocker):
-    rpc = mocker.patch("app.services.kb._rpc")
+async def test_search_skips_the_database_for_empty_query(fake_pool):
     assert await search("is it on?", "toyota-echo-2001", 8) == []
-    rpc.assert_not_called()
+    assert fake_pool.calls == []
 
 
-async def test_search_passes_car_and_k(mocker):
-    rpc = mocker.patch("app.services.kb._rpc", return_value=[{"source_type": "manual", "title": "Echo", "page": 3, "content": "x", "rank": 0.5}])
+async def test_search_sends_exact_sql_and_params(fake_pool):
+    fake_pool.rows = [{"source_type": "manual", "title": "Echo", "page": 3, "content": "x", "rank": 0.5}]
     out = await search("radiator fan", "toyota-echo-2001", 8)
-    rpc.assert_called_once_with("search_kb", {"tsq": "radiator | fan", "p_car_id": "toyota-echo-2001", "k": 8})
+    assert fake_pool.calls == [
+        ("fetch", "SELECT * FROM search_kb($1, $2, $3)", ("radiator | fan", "toyota-echo-2001", 8))
+    ]
     assert out[0]["page"] == 3
 
 
-async def test_search_maps_rows_to_passages(mocker):
-    mocker.patch("app.services.kb._rpc", return_value=[{"source_type": "book", "car_id": None, "title": "T", "page": 1, "content": "c", "rank": 1.0}])
+async def test_search_maps_rows_to_passages(fake_pool):
+    fake_pool.rows = [{"source_type": "book", "car_id": None, "title": "T", "page": 1, "content": "c", "rank": 1.0}]
     out = await search("radiator fan", "x", 3)
     assert out == [{"source_type": "book", "title": "T", "page": 1, "content": "c"}]
 
@@ -65,77 +66,65 @@ def _fake_reader(mocker, pages):
     return reader
 
 
-async def test_ingest_pdf_deletes_then_inserts_in_batches(mocker, tmp_path):
-    calls = []
-    mocker.patch("app.services.kb._delete_existing", side_effect=lambda t, c: calls.append(("delete", t, c)))
-    mocker.patch("app.services.kb._insert_batch", side_effect=lambda rows: calls.append(("insert", len(rows))))
+def _batches(fake_pool):
+    return [c for c in fake_pool.calls if c[0] == "executemany"]
+
+
+async def test_ingest_pdf_deletes_then_inserts_in_batches_in_one_transaction(mocker, tmp_path, fake_pool):
     # 1100 pages of one short chunk each
     _fake_reader(mocker, [f"page text {i}" for i in range(1100)])
     n = await ingest_pdf(tmp_path / "m.pdf", source_type="manual", title="Echo", car_id="toyota-echo-2001")
     assert n == 1100
-    assert calls == [("delete", "Echo", "toyota-echo-2001"), ("insert", 500), ("insert", 500), ("insert", 100)]
+    delete, *inserts = fake_pool.calls
+    assert delete[0] == "execute" and delete[1].startswith("DELETE FROM kb_passages WHERE source_type = $1")
+    assert "car_id IS NOT DISTINCT FROM $3" in delete[1]
+    assert delete[2] == ("manual", "Echo", "toyota-echo-2001")
+    assert [m for m, *_ in inserts] == ["executemany"] * 3
+    assert [len(c[2]) for c in inserts] == [500, 500, 100]
+    assert fake_pool.transactions == ["commit"] and fake_pool.acquired == 0
 
 
-async def test_ingest_pdf_row_shape(mocker, tmp_path):
-    inserted = []
-    mocker.patch("app.services.kb._delete_existing")
-    mocker.patch("app.services.kb._insert_batch", side_effect=inserted.append)
+async def test_ingest_pdf_row_shape(mocker, tmp_path, fake_pool):
     _fake_reader(mocker, ["hello"])
     await ingest_pdf(tmp_path / "b.pdf", source_type="book", title="Book")
-    assert inserted == [[{"source_type": "book", "car_id": None, "title": "Book", "page": 1, "content": "hello"}]]
+    [(_, sql, rows)] = _batches(fake_pool)
+    assert sql == "INSERT INTO kb_passages (source_type, car_id, title, page, content) VALUES ($1, $2, $3, $4, $5)"
+    assert rows == (("book", None, "Book", 1, "hello"),)
+    assert fake_pool.calls[0][2] == ("book", "Book", None)
 
 
-async def test_ingest_pdf_returns_zero_for_textless_pdf(mocker, tmp_path):
-    insert = mocker.patch("app.services.kb._insert_batch")
-    delete = mocker.patch("app.services.kb._delete_existing")
+async def test_ingest_pdf_returns_zero_for_textless_pdf(mocker, tmp_path, fake_pool):
     _fake_reader(mocker, ["", None, "  \n "])
     assert await ingest_pdf(tmp_path / "s.pdf", source_type="book", title="Scan") == 0
-    insert.assert_not_called()
-    delete.assert_not_called()
+    assert fake_pool.calls == [] and fake_pool.transactions == []
 
 
-async def test_ingest_pdf_strips_nul_characters(mocker, tmp_path):
-    inserted = []
-    mocker.patch("app.services.kb._delete_existing")
-    mocker.patch("app.services.kb._insert_batch", side_effect=inserted.append)
+async def test_ingest_pdf_strips_nul_characters(mocker, tmp_path, fake_pool):
     _fake_reader(mocker, ["a\x00b"])
     await ingest_pdf(tmp_path / "n.pdf", source_type="book", title="Nul")
-    assert inserted[0][0]["content"] == "ab"
+    assert _batches(fake_pool)[0][2][0][4] == "ab"
 
 
-async def test_ingest_pdf_unreadable_pdf_leaves_existing_rows(mocker, tmp_path):
-    delete = mocker.patch("app.services.kb._delete_existing")
+async def test_ingest_pdf_unreadable_pdf_never_opens_a_transaction(mocker, tmp_path, fake_pool):
     mocker.patch("app.services.kb.PdfReader", side_effect=ValueError("corrupt"))
     with pytest.raises(ValueError):
         await ingest_pdf(tmp_path / "bad.pdf", source_type="book", title="Bad")
-    delete.assert_not_called()
+    assert fake_pool.calls == [] and fake_pool.transactions == []
 
 
-async def test_ingest_pdf_failed_batch_removes_partial_rows(mocker, tmp_path):
-    calls = []
-    mocker.patch("app.services.kb._delete_existing", side_effect=lambda t, c: calls.append(("delete", t, c)))
+async def test_ingest_pdf_parses_before_any_connection_is_acquired(mocker, tmp_path, fake_pool):
+    seen = []
+    reader = _fake_reader(mocker, ["hello"])
+    reader.return_value.pages[0].extract_text.side_effect = lambda: seen.append(fake_pool.acquired) or "hello"
+    await ingest_pdf(tmp_path / "b.pdf", source_type="book", title="Book")
+    assert seen == [0]
 
-    def insert(rows):
-        if len([c for c in calls if c[0] == "insert"]) == 1:
-            raise RuntimeError("insert failed")
-        calls.append(("insert", len(rows)))
 
-    mocker.patch("app.services.kb._insert_batch", side_effect=insert)
+async def test_ingest_pdf_failed_second_batch_rolls_everything_back(mocker, tmp_path, fake_pool):
+    fake_pool.error_on_executemany = 2
     _fake_reader(mocker, [f"page text {i}" for i in range(1100)])
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="batch failed"):
         await ingest_pdf(tmp_path / "m.pdf", source_type="manual", title="Echo", car_id="toyota-echo-2001")
-    assert calls == [
-        ("delete", "Echo", "toyota-echo-2001"),
-        ("insert", 500),
-        ("delete", "Echo", "toyota-echo-2001"),  # the partial load is removed
-    ]
-
-
-async def test_ingest_pdf_cleanup_failure_still_raises_insert_error(mocker, tmp_path):
-    delete = mocker.patch("app.services.kb._delete_existing", side_effect=[None, OSError("down")])
-    mocker.patch("app.services.kb._insert_batch", side_effect=RuntimeError("insert failed"))
-    _fake_reader(mocker, ["hello"])
-    with pytest.raises(RuntimeError, match="insert failed"):
-        await ingest_pdf(tmp_path / "b.pdf", source_type="book", title="Book")
-    assert delete.call_count == 2
-    assert delete.call_args.args == ("Book", None)
+    assert fake_pool.transactions == ["rollback"]  # the delete and batch 1 are undone with it
+    assert fake_pool.acquired == 0
+    assert len(_batches(fake_pool)) == 2  # batch 3 never ran

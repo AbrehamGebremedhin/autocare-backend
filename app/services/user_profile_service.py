@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 from app.services.base_service import BaseService
 from app.CRUD.car_crud import CarCRUD
 from app.db import pool
@@ -68,20 +66,15 @@ class UserProfileService(BaseService):
             
             await self.logger.info(f"Car {car_id} ready for user {user_id}")
             
-            # Get or create user profile
-            profile = await self._get_or_create_user_profile(user_id)
+            await self._get_or_create_user_profile(user_id)
             
-            # Add car to user's profile if not already there
-            user_cars = profile.get('cars', [])
-            if not isinstance(user_cars, list):
-                user_cars = []
-            
-            if car_id not in user_cars:
-                user_cars.append(car_id)
-                
-                # Update user profile
-                await self._update_user_profile(user_id, {'cars': user_cars})
-                
+            # One atomic statement: concurrent adds cannot overwrite each other, and a duplicate matches no row.
+            status = await pool.execute(
+                "UPDATE user_profiles SET cars = array_append(cars, $2::text), updated_at = now()"
+                " WHERE user_id = $1 AND NOT ($2::text = ANY(cars))",
+                user_id, car_id,
+            )
+            if status == "UPDATE 1":
                 await self.logger.info(f"Added car {car_id} to user {user_id}'s profile")
             else:
                 await self.logger.info(f"Car {car_id} already in user {user_id}'s profile")
@@ -127,17 +120,12 @@ class UserProfileService(BaseService):
     async def remove_car_from_user(self, user_id: str, car_id: str) -> Dict[str, Any]:
         """Remove a car from user's profile"""
         try:
-            profile = await self._get_user_profile(user_id)
-            if not profile:
-                return {"success": False, "error": "User profile not found"}
-            
-            user_cars = profile.get('cars', [])
-            if not isinstance(user_cars, list):
-                user_cars = []
-            
-            if car_id in user_cars:
-                user_cars.remove(car_id)
-                await self._update_user_profile(user_id, {'cars': user_cars})
+            status = await pool.execute(
+                "UPDATE user_profiles SET cars = array_remove(cars, $2::text), updated_at = now()"
+                " WHERE user_id = $1 AND $2::text = ANY(cars)",
+                user_id, car_id,
+            )
+            if status == "UPDATE 1":
                 await self.logger.info(f"Removed car {car_id} from user {user_id}'s profile")
                 return {"success": True, "message": "Car removed from your garage"}
             else:
@@ -160,8 +148,3 @@ class UserProfileService(BaseService):
         if status == "INSERT 0 1":
             await self.logger.info(f"Created new profile for user {user_id}")
         return await self._get_user_profile(user_id) or {'user_id': user_id, 'cars': [], 'preferences': {}}
-
-    async def _update_user_profile(self, user_id: str, updates: Dict[str, Any]) -> bool:
-        """Update user profile; False when it has no row. Database errors propagate to the caller."""
-        rows = await self.profiles.update({'user_id': user_id}, {**updates, 'updated_at': datetime.now(timezone.utc)})
-        return bool(rows)

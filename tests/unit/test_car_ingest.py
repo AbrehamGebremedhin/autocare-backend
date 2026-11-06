@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -118,18 +119,52 @@ def test_add_car_database_error_is_generic_500(client, auth_headers, mocker):
 
 
 def test_add_car_fails_when_profile_update_fails(client, auth_headers, mocker, fake_pool):
-    from app.api.v1 import car_route
-
     ingest = mocker.patch("app.api.v1.car_route.ingest_car_manual")
     mocker.patch(
         "app.api.v1.car_route.user_profile_service.car_crud.create_or_get_car",
         return_value=[{**CAR, "kb_status": "pending"}],
     )
-    fake_pool.rows = [{"user_id": "u", "cars": []}]
-    mocker.patch.object(car_route.user_profile_service.profiles, "update", side_effect=RuntimeError("down"))
+    fake_pool.error = RuntimeError("down")
     r = client.post("/api/v1/cars", json=NEW_CAR, headers=auth_headers)
     assert r.status_code == 500
     ingest.assert_not_called()
+
+
+async def test_create_car_inserts_on_conflict_do_nothing_then_reads_back(fake_pool):
+    from app.CRUD.car_crud import CarCRUD
+
+    row = {**CAR, "kb_status": "pending", "car_guide_links": []}
+    fake_pool.rows = []  # first read: not there yet
+    original = fake_pool.fetch
+
+    async def fetch(sql, *args):
+        fake_pool.rows = [row] if any(c[0] == "execute" for c in fake_pool.calls) else []
+        return await original(sql, *args)
+
+    fake_pool.fetch = fetch
+    cars = await CarCRUD().create_or_get_car(dict(NEW_CAR))
+    assert cars == [row]
+    [(m1, _, _), (m2, sql, args), (m3, _, _)] = fake_pool.calls
+    assert (m1, m2, m3) == ("fetch", "execute", "fetch")
+    assert sql.startswith('INSERT INTO "Car" (') and sql.endswith('ON CONFLICT ("id") DO NOTHING')
+    assert "toyota-echo-2001" in args and "Toyota" in args and "toyota-echo-2001" not in sql
+
+
+async def test_concurrent_adds_of_the_same_new_car_do_not_raise(fake_pool):
+    from app.CRUD.car_crud import CarCRUD
+
+    row = {**CAR, "kb_status": "pending", "car_guide_links": []}
+    fake_pool.rows = []
+    original = fake_pool.fetch
+
+    async def fetch(sql, *args):
+        # Both callers see no row on their first read; once either insert has run, the row exists.
+        fake_pool.rows = [row] if any(c[0] == "execute" for c in fake_pool.calls) else []
+        return await original(sql, *args)
+
+    fake_pool.fetch = fetch
+    first, second = await asyncio.gather(CarCRUD().create_or_get_car(dict(NEW_CAR)), CarCRUD().create_or_get_car(dict(NEW_CAR)))
+    assert first == second == [row]
 
 
 def test_delete_car_database_error_is_500_not_404(client, auth_headers, fake_pool):

@@ -1,5 +1,5 @@
 """user_profiles on the asyncpg pool: one bound statement per step, no read-then-insert race on creation."""
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from app.services.user_profile_service import UserProfileService
 
@@ -31,13 +31,32 @@ async def test_get_or_create_inserts_on_conflict_do_nothing_then_reads(fake_pool
     assert insert_args == (USER,) and read_method == "fetch" and read_args == (USER,)
 
 
-async def test_update_returns_whether_a_row_changed(fake_pool):
-    fake_pool.rows = [{"user_id": USER, "cars": ["c1"]}]
-    assert await _service()._update_user_profile(USER, {"cars": ["c1"]}) is True
-    _, sql, args = fake_pool.calls[0]
-    assert sql.startswith('UPDATE "user_profiles" SET "cars" = $1, "updated_at" = $2 WHERE "user_id" = $3')
-    assert sql.endswith("RETURNING *")
-    assert args[0] == ["c1"] and args[2] == USER
+async def test_add_car_is_one_guarded_array_append(fake_pool):
+    service = UserProfileService(car_crud=MagicMock(create_or_get_car=AsyncMock(return_value=[{"id": "c1"}])))
+    fake_pool.status = "UPDATE 1"
+    result = await service.add_car_to_user(USER, "Toyota", "Echo", 2001)
+    assert result["success"] and result["car_id"] == "c1"
+    [(method, sql, args)] = [c for c in fake_pool.calls if "array_append" in c[1]]  # the profile is never read-modified
+    assert method == "execute" and args == (USER, "c1")
+    assert "SET cars = array_append(cars, $2::text)" in sql
+    assert "WHERE user_id = $1 AND NOT ($2::text = ANY(cars))" in sql
 
-    fake_pool.rows = []
-    assert await _service()._update_user_profile(USER, {"cars": []}) is False
+
+async def test_add_car_already_present_is_still_success(fake_pool):
+    service = UserProfileService(car_crud=MagicMock(create_or_get_car=AsyncMock(return_value=[{"id": "c1"}])))
+    fake_pool.status = "UPDATE 0"
+    assert (await service.add_car_to_user(USER, "Toyota", "Echo", 2001))["success"] is True
+
+
+async def test_remove_car_is_one_guarded_array_remove(fake_pool):
+    fake_pool.status = "UPDATE 1"
+    assert (await _service().remove_car_from_user(USER, "c1"))["success"] is True
+    [(method, sql, args)] = fake_pool.calls
+    assert method == "execute" and args == (USER, "c1")
+    assert "SET cars = array_remove(cars, $2::text)" in sql and "AND $2::text = ANY(cars)" in sql
+
+
+async def test_remove_car_not_in_garage(fake_pool):
+    fake_pool.status = "UPDATE 0"
+    result = await _service().remove_car_from_user(USER, "c1")
+    assert result["success"] is False

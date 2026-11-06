@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.db import pool  # noqa: E402
 from app.services import kb  # noqa: E402
 
 MANUAL_SUFFIX = "_manual"
@@ -25,10 +26,14 @@ def parse_pdf_name(path: Path) -> dict:
 
 
 async def main(directory: Path) -> None:
-    for path in sorted(directory.glob("*.pdf")):
-        args = parse_pdf_name(path)
-        count = await kb.ingest_pdf(path, **args)
-        print(f"{args['title']}: {count} passages")
+    await pool.init_pool()
+    try:
+        for path in sorted(directory.glob("*.pdf")):
+            args = parse_pdf_name(path)
+            count = await kb.ingest_pdf(path, **args)
+            print(f"{args['title']}: {count} passages")
+    finally:
+        await pool.close_pool()
 
 
 if __name__ == "__main__":

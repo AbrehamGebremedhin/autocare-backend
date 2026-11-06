@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 from urllib.parse import urljoin
 
-from app.db.crud import BaseCRUD
+from app.db import pool
+from app.db.crud import BaseCRUD, _ident
 from app.services import kb
 from app.services.fetch_car_data_service import FetchCarDataService
 from app.utils.logger import get_logger_instance
@@ -80,8 +81,13 @@ class CarCRUD(BaseCRUD):
         data['service_manual_url'] = data.get('service_manual_url') or ""
         data['car_guide_links'] = self.ensure_list(data.get('car_guide_links'))
         
-        # Create the car record
-        return [await super().create(data)]
+        # Two requests can add the same new car at once: the loser's insert is a no-op, and both read it back.
+        columns = ", ".join(_ident(key) for key in data)
+        params = ", ".join(f"${n}" for n in range(1, len(data) + 1))
+        await pool.execute(
+            f'INSERT INTO {self._table} ({columns}) VALUES ({params}) ON CONFLICT ("id") DO NOTHING', *data.values()
+        )
+        return [(await self.read({'id': car_id}))[0]]
 
     async def read(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Override read to properly parse car_guide_links JSON field"""

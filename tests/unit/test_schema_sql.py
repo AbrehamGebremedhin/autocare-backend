@@ -12,7 +12,7 @@ SCHEMA = Path(__file__).resolve().parents[2] / "app" / "db" / "sql" / "schema.sq
 
 # Columns the code touches outside the pydantic models.
 CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", "created_at", "updated_at"}  # chat_session_crud.py, session_route.py
-KB_PASSAGE_COLUMNS = {"source_type", "car_id", "title", "page", "content"}  # kb.ingest_pdf rows, kb._delete_existing filters
+KB_PASSAGE_COLUMNS = {"source_type", "car_id", "title", "page", "content"}  # kb.ingest_pdf rows and its delete filter
 PROFILE_COLUMNS_WRITTEN = {"user_id", "cars", "preferences", "created_at", "updated_at"}  # user_profile_service
 USER_COLUMNS = {"id", "email", "password_hash", "google_sub", "created_at", "tokens_valid_after"}  # accounts (email+password, Google sign-in)
 TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages"}
@@ -153,13 +153,12 @@ def test_search_kb_signature_unchanged():
     assert returned == {"source_type", "car_id", "title", "page", "content", "rank"}
 
 
-async def test_search_kb_args_match_kb_search_params(mocker):
-    rpc = mocker.patch("app.services.kb._rpc", return_value=[])
+async def test_search_kb_args_match_kb_search_params(fake_pool):
     await kb.search("engine overheating", "toyota-echo-2001", 5)
-    name, params = rpc.call_args.args
+    [(_, sql, params)] = fake_pool.calls
     args, _ = _search_kb_signature()
-    assert name == "search_kb"
-    assert set(params) == set(args)
+    assert sql == "SELECT * FROM search_kb($1, $2, $3)"
+    assert len(params) == len(args) == 3
 
 
 def test_search_kb_returns_every_passage_field():

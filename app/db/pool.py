@@ -76,6 +76,9 @@ class Connection:
     async def execute(self, sql: str, *args) -> str:
         return await self._target.execute(sql, *args)
 
+    async def executemany(self, sql: str, args_list: list) -> None:
+        await self._target.executemany(sql, args_list)
+
 
 async def fetch(sql: str, *args) -> list[dict]:
     return await Connection(_require()).fetch(sql, *args)

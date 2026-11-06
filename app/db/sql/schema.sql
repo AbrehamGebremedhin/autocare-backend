@@ -29,7 +29,7 @@ create unique index if not exists users_email_lower_idx on users (lower(email));
 create unique index if not exists users_google_sub_idx on users (google_sub) where google_sub is not null;
 
 -- User profiles -----------------------------------------------------------------
--- cars holds "Car".id values; the app reads and rewrites the whole array.
+-- cars holds "Car".id values; the app adds and removes single ids with array_append/array_remove.
 create table if not exists user_profiles (
     user_id     uuid primary key references users (id) on delete cascade,
     cars        text[] not null default '{}',

@@ -5,7 +5,7 @@ from typing import Literal, TypedDict
 
 from pypdf import PdfReader
 
-from app.db.base import SupabaseDBHandler
+from app.db import pool
 from app.utils.logger import get_logger_instance
 
 logger = get_logger_instance("kb")
@@ -55,25 +55,6 @@ def chunk_pages(pages: list[str], size: int = 1500) -> list[tuple[int, str]]:
     return chunks
 
 
-def _client():
-    return SupabaseDBHandler().client
-
-
-async def _rpc(name: str, params: dict) -> list[dict]:
-    response = await asyncio.to_thread(lambda: _client().rpc(name, params).execute())
-    return response.data or []
-
-
-def _delete_existing(title: str, car_id: str | None) -> None:
-    query = _client().table("kb_passages").delete().eq("title", title)
-    query = query.is_("car_id", "null") if car_id is None else query.eq("car_id", car_id)
-    query.execute()
-
-
-def _insert_batch(rows: list[dict]) -> None:
-    _client().table("kb_passages").insert(rows).execute()
-
-
 async def ingest_pdf(
     path: Path,
     *,
@@ -81,25 +62,23 @@ async def ingest_pdf(
     title: str,
     car_id: str | None = None,
 ) -> int:
+    # Parse first: no database connection is held while the PDF is read.
     reader = await asyncio.to_thread(PdfReader, path)
     pages = await asyncio.to_thread(lambda: [(p.extract_text() or "").replace("\x00", "") for p in reader.pages])
-    rows = [
-        {"source_type": source_type, "car_id": car_id, "title": title, "page": page, "content": text}
-        for page, text in chunk_pages(pages)
-    ]
+    rows = [(source_type, car_id, title, page, text) for page, text in chunk_pages(pages)]
     if not rows:
         return 0
-    await asyncio.to_thread(_delete_existing, title, car_id)
-    try:
+    # Replace the document atomically: a failed batch rolls the delete back too.
+    async with pool.transaction() as tx:
+        await tx.execute(
+            "DELETE FROM kb_passages WHERE source_type = $1 AND title = $2 AND car_id IS NOT DISTINCT FROM $3",
+            source_type, title, car_id,
+        )
         for i in range(0, len(rows), _INSERT_BATCH):
-            await asyncio.to_thread(_insert_batch, rows[i:i + _INSERT_BATCH])
-    except Exception:
-        # Don't leave a half-loaded document behind: drop the batches that did land.
-        try:
-            await asyncio.to_thread(_delete_existing, title, car_id)
-        except Exception as cleanup_exc:
-            await logger.error(f"Cleanup after failed ingest of '{title}' failed: {type(cleanup_exc).__name__}")
-        raise
+            await tx.executemany(
+                "INSERT INTO kb_passages (source_type, car_id, title, page, content) VALUES ($1, $2, $3, $4, $5)",
+                rows[i:i + _INSERT_BATCH],
+            )
     await logger.info(f"Ingested '{title}': {len(rows)} passages")
     return len(rows)
 
@@ -108,7 +87,7 @@ async def search(query: str, car_id: str, k: int) -> list[Passage]:
     tsq = build_tsquery(query)
     if not tsq:
         return []
-    rows = await _rpc("search_kb", {"tsq": tsq, "p_car_id": car_id, "k": k})
+    rows = await pool.fetch("SELECT * FROM search_kb($1, $2, $3)", tsq, car_id, k)
     return [
         Passage(source_type=r["source_type"], title=r["title"], page=r["page"], content=r["content"])
         for r in rows

@@ -13,6 +13,7 @@ os.environ.setdefault("ENV", "development")
 import asyncio
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -124,7 +125,8 @@ def _reset_rate_limits():
 
 
 class FakeUserStore:
-    """In-memory stand-in for UserCRUD, with the users table's unique indexes on lower(email) and google_sub."""
+    """In-memory stand-in for UserCRUD, with the users table's unique indexes on lower(email) and google_sub.
+    tokens_valid_after is epoch seconds (float), compared with a token's iat like the SQL does."""
 
     def __init__(self):
         self.rows: dict[str, dict] = {}
@@ -140,7 +142,10 @@ class FakeUserStore:
 
     def add(self, email: str, password_hash: str | None = None, google_sub: str | None = None) -> dict:
         self._check_unique(email, google_sub)
-        row = {"id": str(uuid4()), "email": email, "password_hash": password_hash, "google_sub": google_sub}
+        row = {
+            "id": str(uuid4()), "email": email, "password_hash": password_hash, "google_sub": google_sub,
+            "tokens_valid_after": time.time(),
+        }
         self.rows[row["id"]] = row
         return row
 
@@ -159,8 +164,9 @@ class FakeUserStore:
         row = next((r for r in self.rows.values() if r["google_sub"] == google_sub), None)
         return dict(row) if row else None
 
-    async def exists(self, user_id: str) -> bool:
-        return user_id in self.rows
+    async def exists(self, user_id: str, issued_at: float) -> bool:
+        row = self.rows.get(user_id)
+        return row is not None and row["tokens_valid_after"] <= issued_at
 
     async def create_password_user(self, email: str, password_hash: str) -> dict:
         return self._public(self.add(email, password_hash=password_hash))
@@ -173,12 +179,25 @@ class FakeUserStore:
         if row is None or row["google_sub"] is not None:
             return None
         self._check_unique(google_sub=google_sub, skip=row["id"])
-        row.update(google_sub=google_sub, password_hash=None)
+        row.update(google_sub=google_sub, password_hash=None, tokens_valid_after=time.time())
         return self._public(row)
 
 
 @pytest.fixture
-def fake_users(monkeypatch):
+def strict_clock(monkeypatch):
+    """time.time() that never repeats a value (Windows' clock can tick in ~16 ms steps), so a token issued
+    before a tokens_valid_after bump and one issued after it never share a timestamp in tests."""
+    real, last = time.time, [0.0]
+
+    def now() -> float:
+        last[0] = max(real(), last[0] + 1e-6)
+        return last[0]
+
+    monkeypatch.setattr(time, "time", now)
+
+
+@pytest.fixture
+def fake_users(monkeypatch, strict_clock):
     from app.services import auth_service
 
     store = FakeUserStore()

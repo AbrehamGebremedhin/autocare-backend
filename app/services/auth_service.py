@@ -17,6 +17,10 @@ from app.core.config import get_settings
 from app.utils.logger import get_logger_instance
 
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
+# Google is authoritative for these addresses (and for any Workspace account, which has an hd claim).
+# For other addresses a verified email only means the address was verified once, maybe long ago.
+GOOGLE_EMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
+GOOGLE_CLOCK_SKEW_SECONDS = 10
 
 _hasher = PasswordHasher()  # argon2id with the library's defaults
 # Checked when there is no hash to compare with (unknown email, Google-only account), so that
@@ -75,17 +79,21 @@ async def authenticate(email: str, password: str) -> dict | None:
     return _public(user)
 
 
-async def user_exists(user_id: str) -> bool:
-    return await users.exists(user_id)
+async def user_exists(user_id: str, issued_at: float) -> bool:
+    """The user exists and a token of theirs issued at `issued_at` has not been revoked."""
+    return await users.exists(user_id, issued_at)
 
 
 def _verify_google_token(token: str) -> dict:
     # Checks the signature (against Google's published keys) and expiry; audience is checked by the caller.
-    return google_id_token.verify_oauth2_token(token, Request(), audience=None)
+    return google_id_token.verify_oauth2_token(
+        token, Request(), audience=None, clock_skew_in_seconds=GOOGLE_CLOCK_SKEW_SECONDS
+    )
 
 
-async def _google_identity(token: str) -> tuple[str, str]:
-    """(sub, lower-cased email) of a valid Google ID token for one of our client ids, else GoogleAuthError."""
+async def _google_identity(token: str) -> tuple[str, str, bool]:
+    """(sub, lower-cased email, Google is authoritative for the email) of a valid Google ID token for one
+    of our client ids, else GoogleAuthError."""
     try:
         claims = await asyncio.to_thread(_verify_google_token, token)
     except Exception as e:
@@ -103,30 +111,35 @@ async def _google_identity(token: str) -> tuple[str, str]:
     ):
         await logger.warning("Google ID token rejected: claims")
         raise GoogleAuthError()
-    return sub, normalise_email(email)
+    email = normalise_email(email)
+    hd = claims.get("hd")
+    authoritative = email.rsplit("@", 1)[-1] in GOOGLE_EMAIL_DOMAINS or (isinstance(hd, str) and bool(hd.strip()))
+    return sub, email, authoritative
 
 
-async def _google_user(sub: str, email: str) -> dict:
+async def _google_user(sub: str, email: str, authoritative: bool) -> dict:
     user = await users.get_by_google_sub(sub)
-    if user is None:
-        # A password account with this email and no Google link: link it and drop its password (see
-        # UserCRUD.link_google). Emails are not verified at registration, so the Google-verified owner wins.
+    if user is None and authoritative:
+        # A password account with this email and no Google link: link it, drop its password and revoke its
+        # tokens (see UserCRUD.link_google). Emails are not verified at registration, so the owner wins.
         user = await users.link_google(email, sub)
     if user is None:
+        # Any verified email may open a new account. If the email already has one that Google cannot
+        # vouch for (or that is linked to another Google user), the unique index refuses it: no change.
         user = await users.create_google_user(email, sub)
     return _public(user)
 
 
 async def login_with_google(token: str) -> dict:
     """The account for a Google ID token, created or linked on first sign-in. Raises GoogleAuthError."""
-    sub, email = await _google_identity(token)
+    identity = await _google_identity(token)
     try:
-        return await _google_user(sub, email)
+        return await _google_user(*identity)
     except asyncpg.UniqueViolationError:
         pass  # a concurrent sign-in created or linked the row first: look again
     try:
-        return await _google_user(sub, email)
+        return await _google_user(*identity)
     except asyncpg.UniqueViolationError:
-        # The email belongs to an account linked to a different Google user.
-        await logger.warning("Google sign-in conflict: email linked to another Google account")
+        # The email belongs to another account that this Google user may not take over.
+        await logger.warning("Google sign-in conflict: email belongs to an account it cannot link")
         raise GoogleAuthError() from None

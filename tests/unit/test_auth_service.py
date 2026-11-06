@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import threading
+import time
 
 import asyncpg
 import pytest
@@ -134,8 +135,20 @@ async def test_google_only_account_never_logs_in_by_password(fake_users, verify_
 
 async def test_user_exists(fake_users):
     user = fake_users.add("driver@example.com", google_sub="google-sub-1")
-    assert await auth_service.user_exists(user["id"]) is True
-    assert await auth_service.user_exists(USER) is False
+    assert await auth_service.user_exists(user["id"], time.time()) is True
+    assert await auth_service.user_exists(USER, time.time()) is False
+
+
+async def test_token_validity_boundary_is_exact_not_per_second(fake_users):
+    """Chosen boundary: valid iff tokens_valid_after <= iat, both with microseconds. A token minted earlier
+    in the same second as the bump is rejected; one minted at or after the bump is accepted."""
+    user = fake_users.add("driver@example.com", google_sub="google-sub-1")
+    bump = 1_800_000_000.5
+    user["tokens_valid_after"] = bump
+    assert await auth_service.user_exists(user["id"], bump) is True
+    assert await auth_service.user_exists(user["id"], bump + 0.4) is True
+    assert await auth_service.user_exists(user["id"], bump - 0.000001) is False
+    assert await auth_service.user_exists(user["id"], 1_800_000_000.0) is False  # flooring to the second is not enough
 
 
 # --- Google sign-in -----------------------------------------------------------
@@ -146,7 +159,7 @@ async def test_google_first_sign_in_creates_a_user_without_password(fake_users, 
     assert user == {"id": row["id"], "email": "driver@gmail.com"}
     assert row["google_sub"] == "google-sub-1" and row["password_hash"] is None
     assert google.call_args.args[0] == "google-id-token"
-    assert google.call_args.kwargs == {"audience": None}
+    assert google.call_args.kwargs == {"audience": None, "clock_skew_in_seconds": 10}
 
 
 async def test_google_second_sign_in_with_same_sub_reuses_the_user(fake_users, google):
@@ -156,15 +169,48 @@ async def test_google_second_sign_in_with_same_sub_reuses_the_user(fake_users, g
     assert len(fake_users.rows) == 1
 
 
-async def test_google_email_match_takes_over_a_password_account(fake_users, google):
-    """Pre-registration takeover: the Google-verified owner gets the account and the old password stops working."""
-    squatter = await auth_service.register("driver@gmail.com", "attacker-pass")
+@pytest.mark.parametrize(
+    "email, hd",
+    [("Driver@Gmail.com", None), ("driver@googlemail.com", None), ("alice@company.com", "company.com")],
+)
+async def test_google_email_match_takes_over_a_password_account_when_google_is_authoritative(
+    fake_users, google, email, hd
+):
+    """Pre-registration takeover: the Google-verified owner gets the account, the old password stops
+    working and every token issued before the link is revoked."""
+    google.return_value = _claims(email=email, **({"hd": hd} if hd else {}))
+    squatter = await auth_service.register(email, "attacker-pass")
+    issued_before = time.time()
     user = await auth_service.login_with_google("google-id-token")
     assert user["id"] == squatter["id"]
     row = fake_users.rows[user["id"]]
     assert row["google_sub"] == "google-sub-1" and row["password_hash"] is None
-    assert await auth_service.authenticate("driver@gmail.com", "attacker-pass") is None
+    assert row["tokens_valid_after"] > issued_before
+    assert await auth_service.user_exists(user["id"], issued_before) is False
+    assert await auth_service.user_exists(user["id"], time.time()) is True
+    assert await auth_service.authenticate(email, "attacker-pass") is None
     assert len(fake_users.rows) == 1
+
+
+@pytest.mark.parametrize("hd", [None, "", "  "])
+async def test_google_does_not_link_an_address_it_is_not_authoritative_for(fake_users, google, hd):
+    google.return_value = _claims(email="Alice@Company.com", **({} if hd is None else {"hd": hd}))
+    owner = fake_users.add("alice@company.com", password_hash=auth_service.hash_password("alice-pass"))
+    before = dict(owner)
+    with pytest.raises(GoogleAuthError):
+        await auth_service.login_with_google("google-id-token")
+    assert fake_users.rows == {owner["id"]: before}
+    assert await auth_service.authenticate("alice@company.com", "alice-pass") == {
+        "id": owner["id"], "email": "alice@company.com",
+    }
+
+
+async def test_google_creates_a_new_account_for_any_verified_email(fake_users, google):
+    google.return_value = _claims(email="Bob@Company.com")
+    user = await auth_service.login_with_google("google-id-token")
+    row = fake_users.rows[user["id"]]
+    assert row["email"] == "bob@company.com" and row["google_sub"] == "google-sub-1"
+    assert row["password_hash"] is None
 
 
 async def test_google_cannot_sign_into_an_account_linked_to_another_google_user(fake_users, google):
@@ -242,15 +288,17 @@ async def test_google_verification_runs_off_the_event_loop(fake_users, google):
 async def test_email_lookup_uses_the_lower_email_index(fake_pool):
     await UserCRUD().get_by_email("driver@example.com")
     method, sql, args = fake_pool.calls[0]
-    assert "lower(email) = $1" in sql and args == ("driver@example.com",)
+    assert "lower(email) = lower($1)" in sql and args == ("driver@example.com",)
 
 
 async def test_exists_skips_the_query_for_a_non_uuid(fake_pool):
-    assert await UserCRUD().exists("user-123") is False
+    assert await UserCRUD().exists("user-123", 1.5) is False
     assert fake_pool.calls == []
     fake_pool.value = True
-    assert await UserCRUD().exists(USER.upper()) is True
-    assert fake_pool.calls[0][2] == (USER,)
+    assert await UserCRUD().exists(USER.upper(), 1_800_000_000.25) is True
+    [(method, sql, args)] = fake_pool.calls
+    assert method == "fetchval" and "tokens_valid_after <= to_timestamp($2)" in sql
+    assert args == (USER, 1_800_000_000.25)
 
 
 async def test_link_google_sets_sub_and_drops_password_in_one_statement(fake_pool):
@@ -258,8 +306,8 @@ async def test_link_google_sets_sub_and_drops_password_in_one_statement(fake_poo
     assert len(fake_pool.calls) == 1
     _, sql, args = fake_pool.calls[0]
     flat = " ".join(sql.split())
-    assert "SET google_sub = $2, password_hash = NULL" in flat
-    assert "WHERE lower(email) = $1 AND google_sub IS NULL" in flat
+    assert "SET google_sub = $2, password_hash = NULL, tokens_valid_after = now()" in flat
+    assert "WHERE lower(email) = lower($1) AND google_sub IS NULL" in flat
     assert args == ("driver@gmail.com", "google-sub-1")
 
 

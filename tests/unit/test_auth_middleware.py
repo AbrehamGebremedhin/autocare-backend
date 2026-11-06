@@ -63,6 +63,15 @@ class TestJWTHandler:
         payload = jwt.decode(token, jwt_handler.secret_key, algorithms=[jwt_handler.algorithm])
         assert payload["sub"] == "user-123"
         assert payload["type"] == "refresh"
+
+    def test_tokens_carry_a_fractional_iat(self, jwt_handler, sample_user_data):
+        """iat keeps sub-second precision so revocation (users.tokens_valid_after) is exact."""
+        import time
+
+        before = time.time()
+        for token in (jwt_handler.create_access_token(sample_user_data), jwt_handler.create_refresh_token(sample_user_data)):
+            payload = jwt.decode(token, jwt_handler.secret_key, algorithms=[jwt_handler.algorithm])
+            assert isinstance(payload["iat"], float) and before <= payload["iat"] <= time.time()
     
     def test_verify_valid_token(self, jwt_handler, sample_user_data):
         """Test verification of valid token"""
@@ -350,17 +359,38 @@ class TestValidateUser:
 
     @pytest.mark.asyncio
     async def test_existing_user_passes(self, fake_users):
+        import time
         from app.utils.auth_middleware import validate_user
 
         user = fake_users.add("driver@example.com", google_sub="sub-1")
-        assert await validate_user(user["id"]) is True
+        assert await validate_user(user["id"], time.time()) is True
+
+    @pytest.mark.asyncio
+    async def test_token_issued_before_revocation_is_401(self, fake_users):
+        from app.utils.auth_middleware import validate_user
+
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
+        with pytest.raises(AuthenticationError):
+            await validate_user(user["id"], user["tokens_valid_after"] - 0.000001)
+
+    @pytest.mark.asyncio
+    async def test_token_without_iat_is_401(self, mock_request, fake_users):
+        from app.utils.auth_middleware import jwt_handler
+
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
+        token = jwt.encode(
+            {"sub": user["id"], "type": "access", "exp": datetime.utcnow() + timedelta(minutes=5)},
+            jwt_handler.secret_key, algorithm=jwt_handler.algorithm,
+        )
+        with pytest.raises(AuthenticationError):
+            await get_current_user(mock_request, HTTPAuthorizationCredentials(scheme="Bearer", credentials=token))
 
     @pytest.mark.asyncio
     async def test_unknown_user_is_401(self, fake_users):
         from app.utils.auth_middleware import validate_user
 
         with pytest.raises(AuthenticationError) as exc_info:
-            await validate_user(self.USER)
+            await validate_user(self.USER, 1.0)
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
@@ -368,16 +398,16 @@ class TestValidateUser:
         from app.utils.auth_middleware import validate_user
 
         fake_pool.value = True
-        assert await validate_user(self.USER) is True
+        assert await validate_user(self.USER, 1_800_000_000.25) is True
         [(method, sql, args)] = fake_pool.calls
-        assert method == "fetchval" and "users" in sql and args == (self.USER,)
+        assert method == "fetchval" and "users" in sql and args == (self.USER, 1_800_000_000.25)
 
     @pytest.mark.asyncio
     async def test_non_uuid_sub_is_401_without_a_query(self, fake_pool):
         from app.utils.auth_middleware import validate_user
 
         with pytest.raises(AuthenticationError):
-            await validate_user("user-123")
+            await validate_user("user-123", 1.0)
         assert fake_pool.calls == []
 
     @pytest.mark.asyncio
@@ -386,7 +416,7 @@ class TestValidateUser:
 
         fake_pool.error = ConnectionError("db down")
         with pytest.raises(AuthenticationError):
-            await validate_user(self.USER)
+            await validate_user(self.USER, 1.0)
 
 
 class TestProtectedRoutesWithRealValidator:
@@ -424,7 +454,7 @@ class TestErrorLogsHideDetails:
         fake_pool.error = RuntimeError("leaked eyJ-token-body")
 
         with caplog.at_level(logging.DEBUG), pytest.raises(AuthenticationError):
-            await validate_user("11111111-1111-4111-8111-111111111111")
+            await validate_user("11111111-1111-4111-8111-111111111111", 1.0)
         assert "RuntimeError" in caplog.text
         assert "eyJ-token-body" not in caplog.text
 

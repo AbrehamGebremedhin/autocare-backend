@@ -2,7 +2,8 @@ from fastapi import HTTPException, Request, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, Dict, Any
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import time
 from app.core.config import get_settings
 from app.utils.logger import get_logger_instance
 from app.utils.audit_logging import audit_logger, AuditEventType
@@ -39,19 +40,22 @@ class JWTHandler:
         self.access_token_expire_minutes = 30
         self.refresh_token_expire_days = 7
     
+    def _encode(self, data: Dict[str, Any], lifetime: timedelta, token_type: str) -> str:
+        # iat keeps microseconds (a JWT NumericDate may be fractional): users.tokens_valid_after is compared
+        # with it exactly, so a token minted just before a bump in the same second is still rejected.
+        issued_at = time.time()
+        expire = datetime.fromtimestamp(issued_at, timezone.utc) + lifetime
+        return jwt.encode(
+            {**data, "iat": issued_at, "exp": expire, "type": token_type}, self.secret_key, algorithm=self.algorithm
+        )
+
     def create_access_token(self, data: Dict[str, Any]) -> str:
         """Create access token"""
-        to_encode = data.copy()
-        expire = datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
-        to_encode.update({"exp": expire, "type": "access"})
-        return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+        return self._encode(data, timedelta(minutes=self.access_token_expire_minutes), "access")
     
     def create_refresh_token(self, data: Dict[str, Any]) -> str:
         """Create refresh token"""
-        to_encode = data.copy()
-        expire = datetime.utcnow() + timedelta(days=self.refresh_token_expire_days)
-        to_encode.update({"exp": expire, "type": "refresh"})
-        return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+        return self._encode(data, timedelta(days=self.refresh_token_expire_days), "refresh")
     
     def verify_token(self, token: str) -> Dict[str, Any]:
         """Verify and decode token"""
@@ -92,11 +96,12 @@ async def get_current_user(
             raise AuthenticationError("Invalid token type")
         
         user_id = payload.get("sub")
-        if not user_id:
+        issued_at = payload.get("iat")
+        if not user_id or isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
             raise AuthenticationError("Invalid token payload")
         
-        # The user must still exist (a deleted account's tokens stop working)
-        await validate_user(user_id)
+        # The user must still exist and the token must not predate a revocation (deleted account, Google link)
+        await validate_user(user_id, issued_at)
         
         # Store user info in request state for easy access
         request.state.current_user = {
@@ -123,10 +128,10 @@ async def get_current_user(
         await logger.error(f"Authentication error: {type(e).__name__}")
         raise AuthenticationError("Authentication failed")
 
-async def validate_user(user_id: str) -> bool:
-    """Check that the token's user still exists in the users table (deleted or unknown users get 401)."""
+async def validate_user(user_id: str, issued_at: float) -> bool:
+    """Check that the token's user still exists and accepts tokens issued at `issued_at` (else 401)."""
     try:
-        exists = await auth_service.user_exists(user_id)
+        exists = await auth_service.user_exists(user_id, issued_at)
     except Exception as e:
         await logger.error(f"User validation error: {type(e).__name__}")
         raise AuthenticationError("Token validation failed")

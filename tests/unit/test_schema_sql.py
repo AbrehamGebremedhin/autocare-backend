@@ -14,7 +14,7 @@ SCHEMA = Path(__file__).resolve().parents[2] / "app" / "db" / "sql" / "schema.sq
 CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", "created_at", "updated_at"}  # chat_session_crud.py, session_route.py
 KB_PASSAGE_COLUMNS = {"source_type", "car_id", "title", "page", "content"}  # kb.ingest_pdf rows, kb._delete_existing filters
 PROFILE_COLUMNS_WRITTEN = {"user_id", "cars", "preferences", "created_at", "updated_at"}  # user_profile_service
-USER_COLUMNS = {"id", "email", "password_hash", "google_sub", "created_at"}  # accounts (email+password, Google sign-in)
+USER_COLUMNS = {"id", "email", "password_hash", "google_sub", "created_at", "tokens_valid_after"}  # accounts (email+password, Google sign-in)
 TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages"}
 
 _CONSTRAINT_WORDS = {"constraint", "primary", "unique", "check", "foreign", "exclude"}
@@ -101,6 +101,7 @@ def test_users_table(schema):
     body = " ".join(_table_bodies(_sql())["users"].split()).lower()
     assert "id uuid primary key default gen_random_uuid()" in body
     assert "email text not null" in body
+    assert "tokens_valid_after timestamptz not null default now()" in body
     assert re.search(r"check \(password_hash is not null or google_sub is not null\)", body)
     for column in ("password_hash", "google_sub"):
         assert not re.search(rf"\b{column} text not null", body)

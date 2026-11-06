@@ -13,12 +13,14 @@ begin;
 
 -- Accounts ----------------------------------------------------------------------
 -- email is stored lower-cased; a row signs in with a password, Google, or both.
+-- App tokens issued before tokens_valid_after are rejected (it moves when Google is linked).
 create table if not exists users (
-    id            uuid primary key default gen_random_uuid(),
-    email         text not null,
-    password_hash text,
-    google_sub    text,
-    created_at    timestamptz not null default now(),
+    id                 uuid primary key default gen_random_uuid(),
+    email              text not null,
+    password_hash      text,
+    google_sub         text,
+    created_at         timestamptz not null default now(),
+    tokens_valid_after timestamptz not null default now(),
     constraint users_login_method_check
         check (password_hash is not null or google_sub is not null)
 );

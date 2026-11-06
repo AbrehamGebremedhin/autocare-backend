@@ -100,8 +100,16 @@ async def test_users_unique_email_and_google_link(real_pool):
         assert isinstance(created["id"], str) and await users.exists(created["id"])
         with pytest.raises(asyncpg.UniqueViolationError):
             await users.create_google_user(email.upper(), f"sub-{tag}")  # unique on lower(email)
+        before_link = await pool.fetchval("select extract(epoch from clock_timestamp())::float8")
+        assert await users.exists(created["id"], before_link) is True
         linked = await users.link_google(email, f"sub-{tag}")
         assert linked == created
+        bump = await pool.fetchval(
+            "select extract(epoch from tokens_valid_after)::float8 from users where id = $1", created["id"]
+        )
+        assert await users.exists(created["id"], before_link) is False  # tokens issued before the link
+        assert await users.exists(created["id"], bump - 0.000001) is False
+        assert await users.exists(created["id"], bump) is True
         row = await users.get_by_google_sub(f"sub-{tag}")
         assert row["password_hash"] is None and row["email"] == email
         assert await users.link_google(email, f"other-{tag}") is None  # already linked

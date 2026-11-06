@@ -47,10 +47,14 @@ def test_jwt_uses_settings_secret(monkeypatch):
         jwt_handler.verify_token(bad)
 
 
-def _claims(token_response: dict) -> dict:
+def _claims_of(token: str) -> dict:
     from app.utils.auth_middleware import jwt_handler
 
-    return jwt_handler.verify_token(token_response["access_token"])
+    return jwt_handler.verify_token(token)
+
+
+def _claims(token_response: dict) -> dict:
+    return _claims_of(token_response["access_token"])
 
 
 def _register(client, email="driver@example.com", password="s3cret-pass"):
@@ -215,11 +219,43 @@ def test_google_sign_in_returns_the_login_token_response(client, fake_users, goo
     assert len(fake_users.rows) == 1
 
 
+def _logout(client, token):
+    return client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {token}"})
+
+
 def test_google_takeover_of_a_preregistered_email_locks_out_the_password(client, fake_users, google):
     squatter = _register(client, email="Driver@Gmail.com", password="attacker-pass").json()
     r = _google(client)
     assert r.status_code == 200 and r.json()["user_id"] == squatter["user_id"]
     assert _login(client, email="driver@gmail.com", password="attacker-pass").status_code == 401
+
+
+def test_google_link_revokes_tokens_issued_before_it(client, fake_users, google):
+    import asyncio
+    from app.services import auth_service
+
+    squatter = _register(client, email="driver@gmail.com", password="attacker-pass").json()
+    assert _logout(client, squatter["access_token"]).status_code == 200  # valid until the link
+
+    victim = _google(client).json()
+    assert victim["user_id"] == squatter["user_id"]
+    assert _logout(client, squatter["access_token"]).status_code == 401
+    assert _logout(client, victim["access_token"]).status_code == 200
+
+    # Refresh tokens carry iat too, so a future refresh route rejects the squatter's and accepts the victim's.
+    old_refresh, new_refresh = _claims_of(squatter["refresh_token"]), _claims_of(victim["refresh_token"])
+    assert old_refresh["type"] == new_refresh["type"] == "refresh"
+    assert asyncio.run(auth_service.user_exists(old_refresh["sub"], old_refresh["iat"])) is False
+    assert asyncio.run(auth_service.user_exists(new_refresh["sub"], new_refresh["iat"])) is True
+
+
+def test_google_will_not_link_a_non_google_address(client, fake_users, google):
+    google.return_value = _google_claims(email="alice@company.com")
+    owner = _register(client, email="alice@company.com", password="alice-pass").json()
+    r = _google(client)
+    assert r.status_code == 401 and r.json()["message"] == "Google sign-in failed"
+    assert _login(client, email="alice@company.com", password="alice-pass").json()["user_id"] == owner["user_id"]
+    assert _logout(client, owner["access_token"]).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -246,6 +282,15 @@ def test_google_expired_token_is_401_without_the_error_text(client, fake_users, 
     assert r.status_code == 401 and r.json()["message"] == "Google sign-in failed"
     assert "expired" not in (r.text + caplog.text).lower()
     assert "eyJ-google-id-token" not in r.text + caplog.text
+
+
+def test_google_library_issuer_error_is_generic_401(client, fake_users, google):
+    from google.auth import exceptions
+
+    google.side_effect = exceptions.GoogleAuthError("Wrong issuer. 'iss' should be one of the following: ...")
+    r = _google(client)
+    assert r.status_code == 401 and r.json()["message"] == "Google sign-in failed"
+    assert "issuer" not in r.text.lower() and fake_users.rows == {}
 
 
 def test_google_rejects_an_oversized_token_without_verifying(client, fake_users, google):

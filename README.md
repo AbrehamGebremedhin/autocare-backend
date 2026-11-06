@@ -12,7 +12,7 @@ Required: `JWT_SECRET_KEY` (min 32 chars), `SUPABASE_URL`, `SUPABASE_KEY`, `DEEP
 
 `JWT_SECRET_KEY` signs the app's own access and refresh tokens (HS256). It can be any random secret of 32+ chars: on each request the app checks the signature itself, then looks the user up by id in the `users` table, so a deleted user gets `401`.
 
-Optional: `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_BUCKET`, `GOOGLE_CLIENT_IDS` (comma-separated Google OAuth client ids; when empty, Google sign-in is off and `POST /api/v1/auth/google` returns `404`).
+Optional: `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `GOOGLE_CLIENT_IDS` (comma-separated Google OAuth client ids; when empty, Google sign-in is off and `POST /api/v1/auth/google` returns `404`).
 
 ## Supabase setup
 
@@ -23,7 +23,7 @@ For a brand new Supabase project:
    2. `app/db/sql/001_v2_schema.sql`: adds `kb_passages`, the `search_kb` function, `Chatsession` and the knowledge-base columns on `Car`. It stops with an error if 000 has not been run.
 
    Both files enable RLS with no policies, so only the service-role key can reach the tables. The backend never applies schema changes. On an older project that already has data, 001 is **destructive**: it drops `Chatsession` and `Groundknowledge` and removes two `Car` columns (on a fresh project there is nothing to drop).
-2. In Storage, create a **private** bucket named `media` (or whatever `MEDIA_BUCKET` is set to). This is a manual step.
+2. In Storage, create a **private** bucket named `media`. This is a manual step.
 3. Put the project's **service-role** key in `SUPABASE_KEY` (see Configuration). Use the legacy JWT `service_role` key (it starts with `eyJ`): the pinned `supabase` client rejects keys that are not JWTs, such as the newer `sb_secret_...` keys, with "Invalid API key".
 
 ## Run

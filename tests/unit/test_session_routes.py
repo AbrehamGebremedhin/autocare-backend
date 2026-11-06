@@ -87,39 +87,49 @@ def test_delete_own_session(client, auth_headers, existing_session, fake_store):
     assert existing_session["id"] not in fake_store.rows
 
 
-def test_delete_other_users_session_is_404(client, auth_headers_other_user, existing_session, fake_store, fake_bucket):
+def test_delete_other_users_session_is_404(client, auth_headers_other_user, existing_session, fake_store, media_root, user_id):
+    keep = _put(media_root, user_id, existing_session["id"], "m1/0.jpg")
     r = client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers_other_user)
     assert r.status_code == 404
-    assert existing_session["id"] in fake_store.rows and fake_bucket.prefix_deletes == []
+    assert existing_session["id"] in fake_store.rows and keep.exists()
 
 
-def test_delete_removes_the_sessions_media(client, auth_headers, existing_session, fake_bucket, user_id):
+def _put(root, user_id, sid, rel):
+    f = root / user_id / sid / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"x")
+    return f
+
+
+def test_delete_removes_the_sessions_media(client, auth_headers, existing_session, media_root, user_id):
     sid = existing_session["id"]
-    fake_bucket.objects = {
-        ("media", f"{user_id}/{sid}/m1/0.jpg"): b"a",
-        ("media", f"{user_id}/{sid}/m2/0.mp4"): b"b",
-        ("media", f"{user_id}/other-session/m1/0.jpg"): b"c",
-    }
+    mine = [_put(media_root, user_id, sid, "m1/0.jpg"), _put(media_root, user_id, sid, "m2/0.mp4")]
+    other = _put(media_root, user_id, "other-session", "m1/0.jpg")
     r = client.delete(f"/api/v1/sessions/{sid}", headers=auth_headers)
     assert r.status_code == 200
-    assert fake_bucket.prefix_deletes == [("media", f"{user_id}/{sid}/")]
-    assert list(fake_bucket.objects) == [("media", f"{user_id}/other-session/m1/0.jpg")]
+    assert not any(f.exists() for f in mine) and not (media_root / user_id / sid).exists()
+    assert other.exists()
 
 
-def test_delete_succeeds_when_storage_fails(client, auth_headers, existing_session, fake_store, fake_bucket):
-    fake_bucket.error = RuntimeError("Bucket not found")
+def test_delete_succeeds_when_storage_fails(client, auth_headers, existing_session, fake_store, media_root, monkeypatch):
+    def boom(*a, **k):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("app.services.media_store.shutil.rmtree", boom)
+    _put(media_root, existing_session["user_id"], existing_session["id"], "m1/0.jpg")
     r = client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
     assert r.status_code == 200 and existing_session["id"] not in fake_store.rows
 
 
-def test_delete_while_a_turn_is_in_flight_is_409(client, auth_headers, existing_session, fake_store, fake_bucket):
+def test_delete_while_a_turn_is_in_flight_is_409(client, auth_headers, existing_session, fake_store, media_root, user_id):
+    keep = _put(media_root, user_id, existing_session["id"], "m1/0.jpg")
     session_route._in_flight.add(existing_session["id"])
     r = client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
     assert r.status_code == 409 and r.json()["message"] == BUSY
-    assert existing_session["id"] in fake_store.rows and fake_bucket.prefix_deletes == []
+    assert existing_session["id"] in fake_store.rows and keep.exists()
 
 
-async def test_send_while_delete_is_running_is_409(auth_headers, existing_session, fake_store, fake_bucket, fake_llm):
+async def test_send_while_delete_is_running_is_409(auth_headers, existing_session, fake_store, media_root, fake_llm):
     import main
 
     sid = existing_session["id"]

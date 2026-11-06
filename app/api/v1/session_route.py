@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.core.config import get_settings
 from app.services import diagnosis
 from app.services.diagnosis import run_turn, sse
 from app.services.media import Upload, validate_uploads
@@ -111,7 +110,7 @@ async def delete_session(session_id: str, current_user: dict = Depends(get_curre
     try:
         await diagnosis.sessions.delete({"id": sid, "user_id": current_user["id"]})
         try:
-            await diagnosis.bucket.delete_prefix(get_settings().MEDIA_BUCKET, f"{session['user_id']}/{sid}/")
+            await diagnosis.media_store.delete_prefix(session["user_id"], sid)
         except Exception as exc:  # best effort: the session itself is already gone
             await logger.warning(f"session media cleanup failed: {type(exc).__name__}")
     finally:

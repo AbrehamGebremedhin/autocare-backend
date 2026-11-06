@@ -36,7 +36,6 @@ class Settings(BaseSettings):
 
     KB_TOP_K: int = 8
     HISTORY_MESSAGES: int = 10
-    MEDIA_BUCKET: str = "media"
     MEDIA_DIR: str = "/data/media"
 
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.

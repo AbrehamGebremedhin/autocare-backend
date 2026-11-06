@@ -16,7 +16,6 @@ import pytest
 from PIL import Image
 
 from app.api.v1 import session_route
-from app.db.bucket_operations import SupabaseBucketManager
 from app.schemas.session import SoundTag
 from app.services import diagnosis, hearing, media
 from app.services.diagnosis import run_turn
@@ -86,9 +85,9 @@ def fake_media(monkeypatch):
 
 
 @pytest.fixture
-def fake_all(fake_llm, fake_kb, fake_store, fake_bucket, fake_hearing, fake_media):
+def fake_all(fake_llm, fake_kb, fake_store, media_root, fake_hearing, fake_media):
     return SimpleNamespace(
-        llm=fake_llm, kb=fake_kb, store=fake_store, bucket=fake_bucket, hearing=fake_hearing, media=fake_media
+        llm=fake_llm, kb=fake_kb, store=fake_store, root=media_root, hearing=fake_hearing, media=fake_media
     )
 
 
@@ -207,7 +206,7 @@ async def test_media_failure_is_error_event_and_keeps_user_message(fake_all, ses
     msgs = fake_all.store.messages(session["id"])
     assert [(m["role"], m["content"]) for m in msgs] == [("user", "listen to this")]
     assert msgs[0]["observations"] is None
-    # The original still reached Storage (it uploads alongside processing), so the ref is kept.
+    # The original was still stored (it is copied alongside processing), so the ref is kept.
     assert msgs[0]["media"] == [{"kind": "video", "path": f"{session['user_id']}/{session['id']}/{msgs[0]['id']}/0.mp4"}]
     assert fake_all.llm.calls == 0
     assert fake_all.store.rows[session["id"]]["state"] == {}
@@ -257,7 +256,7 @@ async def test_video_with_no_frames_but_audio_still_runs(fake_all, session, car,
 async def test_storage_frames_and_hearing_run_concurrently(fake_all, session, car, video_upload, monkeypatch):
     # A ring: each job waits for an event only the next one sets, so any serial order deadlocks.
     stored, framed, heard = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    real_upload = fake_all.bucket.upload_file
+    real_upload = diagnosis.media_store.upload
 
     async def upload(*args):
         stored.set()
@@ -274,7 +273,7 @@ async def test_storage_frames_and_hearing_run_concurrently(fake_all, session, ca
         await framed.wait()
         return TRANSCRIPT
 
-    monkeypatch.setattr(fake_all.bucket, "upload_file", upload)
+    monkeypatch.setattr(diagnosis.media_store, "upload", upload)
     fake_all.media.extract_frames.side_effect = frames
     fake_all.hearing.transcribe.side_effect = transcribe
     out = await asyncio.wait_for(_run(session, car, None, [video_upload]), 2)
@@ -295,8 +294,11 @@ async def test_media_only_turn_uses_a_placeholder_for_empty_content(fake_all, fa
     assert fake_store.messages(session["id"])[2]["content"] == ""  # stored as sent; only the prompt is padded
 
 
-async def test_storage_failure_does_not_kill_the_turn(fake_all, session, car, video_upload):
-    fake_all.bucket.error = RuntimeError("Bucket not found")
+async def test_storage_failure_does_not_kill_the_turn(fake_all, session, car, video_upload, monkeypatch):
+    async def boom(*args):
+        raise OSError("/srv/secret/path: disk full")
+
+    monkeypatch.setattr(diagnosis.media_store, "upload", boom)
     out = await _run(session, car, None, [video_upload])
     assert out[-1][0] == "done"
     assert len(_image_blocks(fake_all.llm.prompt)) == 8
@@ -304,12 +306,16 @@ async def test_storage_failure_does_not_kill_the_turn(fake_all, session, car, vi
     assert user_msg["media"] == [] and user_msg["observations"]["sounds"]
 
 
+def _files(root: Path) -> dict[str, bytes]:
+    return {f.relative_to(root).as_posix(): f.read_bytes() for f in root.rglob("*") if f.is_file()}
+
+
 async def test_storage_paths_follow_user_session_message_scheme(fake_all, session, car, make_upload, video_upload):
     sid, uid = session["id"], session["user_id"]
     await _run(session, car, None, [video_upload])
     msg_id = fake_all.store.messages(sid)[0]["id"]
     path = f"{uid}/{sid}/{msg_id}/0.mp4"
-    assert fake_all.bucket.objects == {("media", path): b"original video bytes"}
+    assert _files(fake_all.root) == {path: b"original video bytes"}
     assert fake_all.store.messages(sid)[0]["media"] == [{"kind": "video", "path": path}]
 
     images = [make_upload("image", _jpeg((1, 2, 3))), make_upload("image", _jpeg((4, 5, 6)))]
@@ -319,8 +325,7 @@ async def test_storage_paths_follow_user_session_message_scheme(fake_all, sessio
         {"kind": "image", "path": f"{uid}/{sid}/{msg_id}/0.jpg"},
         {"kind": "image", "path": f"{uid}/{sid}/{msg_id}/1.jpg"},
     ]
-    assert fake_all.bucket.objects[("media", f"{uid}/{sid}/{msg_id}/1.jpg")] == images[1].path.read_bytes()
-    assert {ct for _, p, ct in fake_all.bucket.uploads if p.endswith(".jpg")} == {"image/jpeg"}
+    assert (fake_all.root / uid / sid / msg_id / "1.jpg").read_bytes() == images[1].path.read_bytes()
 
 
 async def test_audio_original_stored_with_audio_label(fake_all, session, car, audio_upload):
@@ -469,73 +474,3 @@ def test_tmpdir_removed_if_stream_never_starts(existing_session, car, make_uploa
     del stream
     gc.collect()
     assert sid not in session_route._in_flight and not Path(tmpdir).exists()
-
-
-# --- Storage --------------------------------------------------------------------
-
-class _FakeStorage:
-    """Mimics supabase storage list(): one folder level per call, sub-folders have id None, paged."""
-
-    def __init__(self, files):
-        self.files = set(files)
-        self.removed: list[list[str]] = []
-        self.uploaded: list[tuple] = []
-
-    def from_(self, bucket):
-        self.bucket = bucket
-        return self
-
-    def list(self, path=None, options=None):
-        path = (path or "").strip("/")
-        level: dict[str, str | None] = {}
-        for f in sorted(self.files):
-            if f.startswith(path + "/"):
-                head, sep, _ = f[len(path) + 1 :].partition("/")
-                level[head] = None if sep else f"id-{head}"
-        entries = [{"name": n, "id": i} for n, i in sorted(level.items())]
-        options = options or {}
-        offset, limit = options.get("offset", 0), options.get("limit", 100)
-        return entries[offset : offset + limit]
-
-    def remove(self, paths):
-        self.removed.append(list(paths))
-        self.files -= set(paths)
-        return [{"name": p} for p in paths]
-
-    def upload(self, path, file, file_options=None):
-        self.uploaded.append((self.bucket, path, file.read(), file_options))
-
-
-@pytest.fixture
-def fake_storage(monkeypatch):
-    def install(files=()):
-        storage = _FakeStorage(files)
-        monkeypatch.setattr(SupabaseBucketManager, "client", property(lambda self: SimpleNamespace(storage=storage)))
-        return storage
-
-    return install
-
-
-async def test_delete_prefix_removes_nested_files_in_batches(fake_storage):
-    keep = "u1/other-session/m1/0.jpg"
-    mine = ["u1/s1/m1/0.jpg", "u1/s1/m1/1.jpg", "u1/s1/m2/0.mp4"] + [f"u1/s1/m3/{i}.jpg" for i in range(150)]
-    storage = fake_storage([*mine, keep])
-    n = await SupabaseBucketManager().delete_prefix("media", "u1/s1/")
-    assert n == len(mine)
-    assert storage.files == {keep} and storage.bucket == "media"
-    assert all(len(batch) <= 100 for batch in storage.removed)
-    assert sorted(p for batch in storage.removed for p in batch) == sorted(mine)
-
-
-async def test_delete_prefix_with_nothing_there_removes_nothing(fake_storage):
-    storage = fake_storage(["u1/s2/m1/0.jpg"])
-    assert await SupabaseBucketManager().delete_prefix("media", "u1/s1/") == 0
-    assert storage.removed == []
-
-
-async def test_upload_file_sends_content_type(fake_storage, tmp_path):
-    storage = fake_storage()
-    src = tmp_path / "x.jpg"
-    src.write_bytes(b"jpeg")
-    await SupabaseBucketManager().upload_file("media", str(src), "u1/s1/m1/0.jpg", content_type="image/jpeg")
-    assert storage.uploaded == [("media", "u1/s1/m1/0.jpg", b"jpeg", {"content-type": "image/jpeg"})]

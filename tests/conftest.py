@@ -368,31 +368,6 @@ class FakeSessionStore:
         return gone
 
 
-class FakeBucket:
-    """Stand-in for SupabaseBucketManager: objects keyed by (bucket, path); `error` makes every call fail."""
-
-    def __init__(self):
-        self.objects: dict[tuple[str, str], bytes] = {}
-        self.uploads: list[tuple[str, str, str | None]] = []
-        self.prefix_deletes: list[tuple[str, str]] = []
-        self.error: Exception | None = None
-
-    async def upload_file(self, bucket_name: str, file_path: str, dest_path: str, content_type: str | None = None):
-        if self.error is not None:
-            raise self.error
-        self.uploads.append((bucket_name, dest_path, content_type))
-        self.objects[(bucket_name, dest_path)] = await asyncio.to_thread(Path(file_path).read_bytes)
-
-    async def delete_prefix(self, bucket_name: str, prefix: str) -> int:
-        self.prefix_deletes.append((bucket_name, prefix))
-        if self.error is not None:
-            raise self.error
-        gone = [k for k in self.objects if k[0] == bucket_name and k[1].startswith(prefix.rstrip("/") + "/")]
-        for k in gone:
-            del self.objects[k]
-        return len(gone)
-
-
 class FakeKB:
     def __init__(self):
         self.passages: list[dict] = []
@@ -464,12 +439,14 @@ def fake_store(monkeypatch):
 
 
 @pytest.fixture
-def fake_bucket(monkeypatch):
+def media_root(monkeypatch, tmp_path):
+    """A real MediaStore rooted in tmp_path, swapped in for the one diagnosis uses."""
     from app.services import diagnosis
+    from app.services.media_store import MediaStore
 
-    bucket = FakeBucket()
-    monkeypatch.setattr(diagnosis, "bucket", bucket)
-    return bucket
+    root = tmp_path / "media-root"
+    monkeypatch.setattr(diagnosis, "media_store", MediaStore(root))
+    return root
 
 
 @pytest.fixture
@@ -499,7 +476,7 @@ def slow_llm(fake_llm):
 
 
 @pytest.fixture
-def session(fake_store, fake_bucket, car):
+def session(fake_store, media_root, car):
     return fake_store.add(USER_ID, car["id"])
 
 

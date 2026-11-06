@@ -88,9 +88,12 @@ class MemorySessions:
         self.row["state"], self.row["title"] = state, title
 
 
-class NoBucket:
-    async def upload_file(self, bucket_name: str, file_path: str, dest_path: str, content_type: str | None = None):
-        return None
+class NoStore:
+    async def upload(self, user_id, session_id, message_id, n, kind, ext, src):
+        return {"kind": kind, "path": f"{user_id}/{session_id}/{message_id}/{n}{ext}"}
+
+    async def delete_prefix(self, *args, **kwargs):
+        return 0
 
 
 async def run_case(case: dict) -> tuple[str, dict | None, str | None]:
@@ -101,7 +104,7 @@ async def run_case(case: dict) -> tuple[str, dict | None, str | None]:
     from app.services.media import validate_uploads
 
     row = {"id": str(uuid4()), "user_id": "cases", "title": "", "messages": [], "state": {}}
-    diagnosis.sessions, diagnosis.bucket = MemorySessions(row), NoBucket()
+    diagnosis.sessions, diagnosis.media_store = MemorySessions(row), NoStore()
     car = CARS.get(case["car_id"], {"id": case["car_id"]})
     tokens: list[str] = []
     state = error = None

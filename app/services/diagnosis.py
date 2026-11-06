@@ -7,21 +7,21 @@ from uuid import uuid4
 
 from app.core.config import get_settings
 from app.CRUD.chat_session_crud import ChatSessionCRUD
-from app.db.bucket_operations import SupabaseBucketManager
 from app.schemas.session import DiagnosisState, MediaRef, Message, Observations
 from app.services import hearing, kb, llm, media
 from app.services.media import MediaError, Upload
+from app.services.media_store import MediaStore
 from app.services.prompts import build_messages, prompt_content
 from app.utils.logger import get_logger_instance
 
 logger = get_logger_instance("diagnosis")
 sessions = ChatSessionCRUD()
-bucket = SupabaseBucketManager()
+media_store = MediaStore()
 
 LLM_ERROR = "The diagnosis service failed, please retry."
 MEDIA_ERROR = "Could not process the attached media."
 
-# Storage object names. Images are stored as the re-encoded JPEG the model saw; audio and video
+# Stored file names. Images are stored as the re-encoded JPEG the model saw; audio and video
 # are the original upload bytes, whose real container is unknown (server-side names are .bin),
 # so for those the extension is only a label.
 _STORED_EXT = {"image": ".jpg", "video": ".mp4", "audio": ".m4a"}
@@ -42,18 +42,17 @@ def _message(role: str, content: str) -> dict:
 
 
 async def _store_originals(session: dict, message_id: str, uploads: list[Upload]) -> list[dict]:
-    """Upload each original to Storage. Never raises: a failed file is just left out of the refs."""
-    bucket_name = get_settings().MEDIA_BUCKET
+    """Copy each original into the media store. Never raises: a failed file is just left out of the refs."""
 
     async def one(n: int, u: Upload) -> dict | None:
-        path = f"{session['user_id']}/{session['id']}/{message_id}/{n}{_STORED_EXT[u.kind]}"
-        content_type = "image/jpeg" if u.kind == "image" else "application/octet-stream"
         try:
-            await bucket.upload_file(bucket_name, str(u.path), path, content_type)
+            ref = await media_store.upload(
+                session["user_id"], session["id"], message_id, n, u.kind, _STORED_EXT[u.kind], u.path
+            )
         except Exception as exc:
-            await logger.warning(f"media upload to storage failed: {type(exc).__name__}")
+            await logger.warning(f"media store write failed: {type(exc).__name__}")
             return None
-        return MediaRef(kind=u.kind, path=path).model_dump()
+        return MediaRef(**ref).model_dump()
 
     refs = await asyncio.gather(*(one(n, u) for n, u in enumerate(uploads)))
     return [r for r in refs if r is not None]

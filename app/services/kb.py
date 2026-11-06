@@ -70,6 +70,11 @@ async def ingest_pdf(
         return 0
     # Replace the document atomically: a failed batch rolls the delete back too.
     async with pool.transaction() as tx:
+        # Overlapping ingests of one document queue up instead of both inserting (the lock is released at commit).
+        await tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1::text || '|' || $2::text || '|' || coalesce($3::text, ''), 0))",
+            source_type, title, car_id,
+        )
         await tx.execute(
             "DELETE FROM kb_passages WHERE source_type = $1 AND title = $2 AND car_id IS NOT DISTINCT FROM $3",
             source_type, title, car_id,

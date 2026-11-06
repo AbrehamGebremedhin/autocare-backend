@@ -128,7 +128,7 @@ async def send_message(
     files: list[UploadFile] = File([]),
     current_user: dict = Depends(get_current_user),
 ):
-    text = (text or "").strip() or None
+    text = (text or "").replace(chr(0), "").strip() or None
     if not text and not files:
         raise BusinessLogicException("A message needs text or at least one file.")
     session = await _owned_session(session_id, current_user["id"])

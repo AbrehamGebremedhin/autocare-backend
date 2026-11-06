@@ -75,7 +75,9 @@ async def test_ingest_pdf_deletes_then_inserts_in_batches_in_one_transaction(moc
     _fake_reader(mocker, [f"page text {i}" for i in range(1100)])
     n = await ingest_pdf(tmp_path / "m.pdf", source_type="manual", title="Echo", car_id="toyota-echo-2001")
     assert n == 1100
-    delete, *inserts = fake_pool.calls
+    lock, delete, *inserts = fake_pool.calls
+    assert lock[0] == "execute" and "pg_advisory_xact_lock(hashtextextended(" in lock[1]
+    assert lock[2] == ("manual", "Echo", "toyota-echo-2001")
     assert delete[0] == "execute" and delete[1].startswith("DELETE FROM kb_passages WHERE source_type = $1")
     assert "car_id IS NOT DISTINCT FROM $3" in delete[1]
     assert delete[2] == ("manual", "Echo", "toyota-echo-2001")
@@ -90,7 +92,7 @@ async def test_ingest_pdf_row_shape(mocker, tmp_path, fake_pool):
     [(_, sql, rows)] = _batches(fake_pool)
     assert sql == "INSERT INTO kb_passages (source_type, car_id, title, page, content) VALUES ($1, $2, $3, $4, $5)"
     assert rows == (("book", None, "Book", 1, "hello"),)
-    assert fake_pool.calls[0][2] == ("book", "Book", None)
+    assert fake_pool.calls[1][2] == ("book", "Book", None)  # after the advisory lock
 
 
 async def test_ingest_pdf_returns_zero_for_textless_pdf(mocker, tmp_path, fake_pool):

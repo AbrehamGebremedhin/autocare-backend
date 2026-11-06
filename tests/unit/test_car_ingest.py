@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+import asyncpg
 import pytest
 
 from app.CRUD.car_crud import ingest_car_manual
@@ -118,13 +119,20 @@ def test_add_car_database_error_is_generic_500(client, auth_headers, mocker):
     ingest.assert_not_called()
 
 
-def test_add_car_fails_when_profile_update_fails(client, auth_headers, mocker, fake_pool):
+def test_add_car_fails_when_the_array_append_fails(client, auth_headers, mocker, fake_pool):
     ingest = mocker.patch("app.api.v1.car_route.ingest_car_manual")
     mocker.patch(
         "app.api.v1.car_route.user_profile_service.car_crud.create_or_get_car",
         return_value=[{**CAR, "kb_status": "pending"}],
     )
-    fake_pool.error = RuntimeError("down")
+    real_execute = fake_pool.execute
+
+    async def execute(sql, *args):
+        if "array_append" in sql:
+            raise RuntimeError("down")
+        return await real_execute(sql, *args)
+
+    fake_pool.execute = execute
     r = client.post("/api/v1/cars", json=NEW_CAR, headers=auth_headers)
     assert r.status_code == 500
     ingest.assert_not_called()
@@ -163,6 +171,15 @@ async def test_concurrent_adds_of_the_same_new_car_do_not_raise(fake_pool):
         return await original(sql, *args)
 
     fake_pool.fetch = fetch
+    real_execute = fake_pool.execute
+
+    async def execute(sql, *args):
+        # What the real table does: a plain INSERT that finds the row already there raises.
+        if "ON CONFLICT" not in sql and sql.startswith("INSERT") and fake_pool.rows:
+            raise asyncpg.UniqueViolationError("duplicate key")
+        return await real_execute(sql, *args)
+
+    fake_pool.execute = execute
     first, second = await asyncio.gather(CarCRUD().create_or_get_car(dict(NEW_CAR)), CarCRUD().create_or_get_car(dict(NEW_CAR)))
     assert first == second == [row]
 
@@ -175,6 +192,6 @@ def test_delete_car_database_error_is_500_not_404(client, auth_headers, fake_poo
 
 
 def test_delete_car_not_in_garage_is_404(client, auth_headers, fake_pool):
-    fake_pool.rows = [{"user_id": "u", "cars": ["other-car"]}]
+    fake_pool.status = "UPDATE 0"
     r = client.delete(f"/api/v1/cars/{CAR['id']}", headers=auth_headers)
     assert r.status_code == 404

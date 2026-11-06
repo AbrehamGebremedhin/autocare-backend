@@ -147,6 +147,12 @@ async def test_send_while_delete_is_running_is_409(auth_headers, existing_sessio
 
 # --- send ---------------------------------------------------------------------
 
+def test_send_strips_nul_characters_from_the_text(client, auth_headers, existing_session, fake_llm, fake_store):
+    r = client.post(_url(existing_session["id"]), data={"text": "fan" + chr(0) + " clicks"}, headers=auth_headers)
+    assert r.status_code == 200
+    assert fake_store.messages(existing_session["id"])[0]["content"] == "fan clicks"
+
+
 def test_send_streams_sse(client, auth_headers, existing_session, fake_llm, fake_store):
     r = client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
     assert r.status_code == 200

@@ -79,8 +79,10 @@ class MemorySessions:
     async def append_messages(self, session_id: str, messages: list[dict]) -> None:
         self.row["messages"] = [*self.row["messages"], *messages]
 
-    async def update_message(self, session_id: str, message_id: str, patch: dict) -> None:
+    async def update_message(self, session_id: str, message_id: str, patch: dict) -> bool:
+        found = any(m["id"] == message_id for m in self.row["messages"])
         self.row["messages"] = [{**m, **patch} if m["id"] == message_id else m for m in self.row["messages"]]
+        return found
 
     async def save_state(self, session_id: str, state: dict, title: str) -> None:
         self.row["state"], self.row["title"] = state, title

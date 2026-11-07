@@ -36,6 +36,15 @@ class UserCRUD:
             float(issued_at),
         ))
 
+    async def revoke_tokens(self, user_id: str, cutoff: float) -> None:
+        """Reject every token of this user issued before `cutoff` (epoch seconds), access and refresh alike.
+        The cutoff never moves back, so an earlier, later-dated revocation (a Google link) stays in force."""
+        await pool.execute(
+            "UPDATE users SET tokens_valid_after = greatest(tokens_valid_after, to_timestamp($2)) WHERE id = $1",
+            user_id,
+            float(cutoff),
+        )
+
     async def create_password_user(self, email: str, password_hash: str) -> dict:
         return await pool.fetchrow(
             "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email", email, password_hash

@@ -172,6 +172,11 @@ class FakeUserStore:
         row = self.rows.get(user_id)
         return row is not None and row["tokens_valid_after"] <= issued_at
 
+    async def revoke_tokens(self, user_id: str, cutoff: float) -> None:
+        row = self.rows.get(user_id)
+        if row is not None:
+            row["tokens_valid_after"] = max(row["tokens_valid_after"], cutoff)
+
     async def create_password_user(self, email: str, password_hash: str) -> dict:
         return self._public(self.add(email, password_hash=password_hash))
 

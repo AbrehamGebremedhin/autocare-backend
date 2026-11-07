@@ -5,6 +5,7 @@ CPU-bound or blocking, so they run in a worker thread. Nothing here logs a passw
 an ID token, or the message of an argon2/Google exception (class names only).
 """
 import asyncio
+import time
 
 import asyncpg
 from argon2 import PasswordHasher
@@ -82,6 +83,18 @@ async def authenticate(email: str, password: str) -> dict | None:
 async def user_exists(user_id: str, issued_at: float) -> bool:
     """The user exists and a token of theirs issued at `issued_at` has not been revoked."""
     return await users.exists(user_id, issued_at)
+
+
+async def log_out_everywhere(user_id: str, token_issued_at: float) -> None:
+    """Revoke every token of the user issued so far, on every device; the next sign-in works as usual.
+
+    The cutoff comes from the app's clock, the one that stamps iat, so 'earlier token < cutoff <= next
+    sign-in's token' holds whatever the database clock says (Python 3.12 on Windows ticks in ms, Postgres
+    in µs). It is at least 10 µs past the calling token's iat (more than the float and µs rounding of
+    to_timestamp), so that token dies even when the clock has not ticked since it was minted. A token
+    minted in the same instant as the cutoff stays valid (tokens_valid_after <= iat).
+    """
+    await users.revoke_tokens(user_id, max(time.time(), token_issued_at + 1e-5))
 
 
 def _verify_google_token(token: str) -> dict:

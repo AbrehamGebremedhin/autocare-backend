@@ -55,6 +55,19 @@ def _login(client, email="driver@example.com", password="s3cret-pass"):
     return client.post("/api/v1/auth/login", json={"email": email, "password": password})
 
 
+def _logout(client, token):
+    return client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {token}"})
+
+
+def _probe(client, token):
+    """A protected read that changes nothing: 200 while the token is valid, 401 once it is revoked."""
+    return client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
+
+
+def _refresh(client, token):
+    return client.post("/api/v1/auth/refresh", json={"refresh_token": token})
+
+
 # --- register / login ---------------------------------------------------------
 
 def test_register_returns_the_login_token_response(client, fake_users):
@@ -134,7 +147,7 @@ def test_logout_requires_bearer_header_not_query(client):
     assert r.status_code == 401
 
 
-def test_logout_validates_token_and_tells_the_client_to_discard_it(client, auth_headers, caplog):
+def test_logout_validates_token_and_revokes_the_users_tokens(client, auth_headers, fake_pool, user_id, caplog):
     from app.utils import auth_middleware
 
     token = auth_headers["Authorization"].split(" ", 1)[1]
@@ -143,8 +156,68 @@ def test_logout_validates_token_and_tells_the_client_to_discard_it(client, auth_
     assert r.status_code == 200
     assert r.json() == {"message": "Logged out successfully."}
     auth_middleware.validate_user.assert_awaited_once()
+    [(method, sql, args)] = fake_pool.calls
+    assert method == "execute" and "SET tokens_valid_after = greatest(tokens_valid_after, to_timestamp($2))" in sql
+    assert "WHERE id = $1" in sql and args[0] == user_id and args[1] > _claims_of(token)["iat"]
     assert token not in caplog.text
     assert "Logout successful" in caplog.text
+
+
+def test_logout_signs_out_every_device_and_a_new_login_works(client, fake_users):
+    phone = _register(client).json()
+    laptop = _login(client).json()
+    assert _logout(client, laptop["access_token"]).status_code == 200
+    for old in (phone, laptop):
+        assert _probe(client, old["access_token"]).status_code == 401
+        assert _refresh(client, old["refresh_token"]).status_code == 401
+        assert _logout(client, old["access_token"]).status_code == 401
+    fresh = _login(client)
+    assert fresh.status_code == 200
+    assert _probe(client, fresh.json()["access_token"]).status_code == 200
+    assert _refresh(client, fresh.json()["refresh_token"]).status_code == 200
+
+
+def test_logout_leaves_other_users_signed_in(client, fake_users):
+    me = _register(client).json()
+    other = _register(client, email="other@example.com").json()
+    assert _logout(client, me["access_token"]).status_code == 200
+    assert _probe(client, other["access_token"]).status_code == 200
+
+
+def test_a_token_minted_in_the_same_instant_as_the_logout_cutoff_is_valid(client, fake_users, monkeypatch):
+    import time
+
+    old = _register(client).json()
+    cutoff = max(time.time(), _claims(old)["iat"] + 1e-5)  # not in the future: PyJWT rejects a future iat
+    monkeypatch.setattr(time, "time", lambda: cutoff)  # logout and the next login read the same clock value
+    assert _logout(client, old["access_token"]).status_code == 200
+    assert next(iter(fake_users.rows.values()))["tokens_valid_after"] == cutoff
+    fresh = _login(client).json()
+    assert _claims(fresh)["iat"] == cutoff
+    assert _probe(client, fresh["access_token"]).status_code == 200
+    assert _probe(client, old["access_token"]).status_code == 401
+
+
+def test_logout_revokes_its_own_token_even_if_the_clock_has_not_ticked(client, fake_users, monkeypatch):
+    import time
+
+    frozen = time.time()
+    monkeypatch.setattr(time, "time", lambda: frozen)  # coarse clock: login and logout get the same reading
+    token = _register(client).json()["access_token"]
+    assert _logout(client, token).status_code == 200
+    assert _probe(client, token).status_code == 401
+
+
+def test_logout_during_a_database_outage_is_503(client, fake_users, monkeypatch):
+    token = _register(client).json()["access_token"]
+
+    async def down(*args):
+        raise ConnectionError("db down")
+
+    monkeypatch.setattr(fake_users, "revoke_tokens", down)
+    r = _logout(client, token)
+    assert r.status_code == 503 and r.json()["error_code"] == "SYS_002"
+    assert _probe(client, token).status_code == 200  # nothing was revoked
 
 
 def test_logout_with_invalid_token_is_401(client):
@@ -209,8 +282,6 @@ def test_google_sign_in_returns_the_login_token_response(client, fake_users, goo
     assert len(fake_users.rows) == 1
 
 
-def _logout(client, token):
-    return client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {token}"})
 
 
 def test_google_takeover_of_a_preregistered_email_locks_out_the_password(client, fake_users, google):
@@ -225,12 +296,12 @@ def test_google_link_revokes_tokens_issued_before_it(client, fake_users, google)
     from app.services import auth_service
 
     squatter = _register(client, email="driver@gmail.com", password="attacker-pass").json()
-    assert _logout(client, squatter["access_token"]).status_code == 200  # valid until the link
+    assert _probe(client, squatter["access_token"]).status_code == 200  # valid until the link
 
     victim = _google(client).json()
     assert victim["user_id"] == squatter["user_id"]
-    assert _logout(client, squatter["access_token"]).status_code == 401
-    assert _logout(client, victim["access_token"]).status_code == 200
+    assert _probe(client, squatter["access_token"]).status_code == 401
+    assert _probe(client, victim["access_token"]).status_code == 200
 
     # Refresh tokens carry iat too, so the refresh route rejects the squatter's and accepts the victim's.
     old_refresh, new_refresh = _claims_of(squatter["refresh_token"]), _claims_of(victim["refresh_token"])
@@ -253,7 +324,7 @@ def test_password_login_racing_a_google_link_gets_a_revoked_token(client, fake_u
     monkeypatch.setattr(fake_users, "get_by_email", read_then_link)
     r = _login(client, email="driver@gmail.com", password="attacker-pass")
     assert r.status_code == 200
-    assert _logout(client, r.json()["access_token"]).status_code == 401
+    assert _probe(client, r.json()["access_token"]).status_code == 401
 
 
 def test_google_will_not_link_a_non_google_address(client, fake_users, google):
@@ -262,7 +333,7 @@ def test_google_will_not_link_a_non_google_address(client, fake_users, google):
     r = _google(client)
     assert r.status_code == 401 and r.json()["message"] == "Google sign-in failed"
     assert _login(client, email="alice@company.com", password="alice-pass").json()["user_id"] == owner["user_id"]
-    assert _logout(client, owner["access_token"]).status_code == 200
+    assert _probe(client, owner["access_token"]).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -318,10 +389,6 @@ def test_google_cannot_reach_an_account_linked_to_another_google_user(client, fa
 REFRESH_401 = {"error_code": "AUTH_001", "message": "Invalid refresh token"}
 
 
-def _refresh(client, token):
-    return client.post("/api/v1/auth/refresh", json={"refresh_token": token})
-
-
 def _strip(r) -> dict:
     return {k: v for k, v in r.json().items() if k not in ("correlation_id", "timestamp")}
 
@@ -334,7 +401,7 @@ def test_refresh_returns_a_new_working_token_pair(client, fake_users):
     assert set(body) == TOKEN_KEYS and body["user_id"] == first["user_id"] and body["expires_in"] == 1800
     assert _claims_of(body["access_token"])["type"] == "access"
     assert _claims_of(body["refresh_token"])["type"] == "refresh"
-    assert _logout(client, body["access_token"]).status_code == 200
+    assert _probe(client, body["access_token"]).status_code == 200
     assert _refresh(client, body["refresh_token"]).status_code == 200
 
 

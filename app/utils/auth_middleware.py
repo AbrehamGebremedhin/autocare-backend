@@ -112,9 +112,10 @@ async def get_current_user(
             "id": user_id,
             "email": payload.get("email"),
             "role": payload.get("role", "user"),
-            "permissions": payload.get("permissions", [])
+            "permissions": payload.get("permissions", []),
+            "issued_at": issued_at,  # the token's iat; logout revokes from just after it
         }
-        
+
         return request.state.current_user
     
     except AuthenticationError:

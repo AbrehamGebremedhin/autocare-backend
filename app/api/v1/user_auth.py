@@ -177,8 +177,14 @@ async def refresh_tokens(body: RefreshRequest, request: Request):
     return _tokens({"id": user_id, "email": email}, issued_at)
 
 @router.post('/auth/logout')
-async def logout_user(current_user: dict = Depends(get_current_user)):
-    # The bearer token (header only, never the URL) is validated like any protected route. App tokens are
-    # stateless, so there is nothing to revoke: the client discards them.
+async def logout_user(request: Request, current_user: dict = Depends(get_current_user)):
+    # The bearer token (header only, never the URL) is validated like any protected route. Logout signs the
+    # account out on every device: all its access and refresh tokens issued so far stop working.
+    correlation_id = getattr(request.state, 'correlation_id', 'unknown')
+    try:
+        await auth_service.log_out_everywhere(current_user["id"], current_user["issued_at"])
+    except Exception as e:
+        await logger.error(f"Logout error - {type(e).__name__} [ID: {correlation_id}]")
+        raise ServiceUnavailableException() from None
     await logger.info("Logout successful")
     return {"message": "Logged out successfully."}

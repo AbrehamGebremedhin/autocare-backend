@@ -265,3 +265,50 @@ async def test_deleting_a_user_cascades_to_sessions_and_profile(real_pool):
     await pool.execute("delete from users where id = $1", user_id)
     assert await pool.fetchval('select count(*) from "Chatsession" where id = $1', sid) == 0
     assert await pool.fetchval("select count(*) from user_profiles where user_id = $1", user_id) == 0
+
+
+async def test_revoke_tokens_cutoff_is_inclusive_and_never_moves_back(real_pool):
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    users = UserCRUD()
+    user_id = await _make_user(uuid4().hex[:8])
+    try:
+        cutoff = await pool.fetchval("select extract(epoch from now())::float8") + 60
+        await users.revoke_tokens(user_id, cutoff)
+        assert await users.exists(user_id, cutoff) is True  # minted in the same instant: valid
+        assert await users.exists(user_id, cutoff - 0.00001) is False
+        await users.revoke_tokens(user_id, cutoff - 30)  # an older cutoff does not reopen anything
+        assert await users.exists(user_id, cutoff - 0.00001) is False
+    finally:
+        await pool.execute("delete from users where id = $1", user_id)
+
+
+async def test_logout_revokes_access_and_refresh_tokens_and_a_new_login_works(real_pool):
+    import httpx
+
+    import main
+
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    email = f"logout-{uuid4().hex[:8]}@example.com"
+    creds = {"email": email, "password": "s3cret-pass"}
+
+    def bearer(tokens):
+        return {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as ac:
+            assert (await ac.post("/api/v1/auth/register", json=creds)).status_code == 200
+            old = (await ac.post("/api/v1/auth/login", json=creds)).json()
+            assert (await ac.get("/api/v1/cars", headers=bearer(old))).status_code == 200
+            assert (await ac.post("/api/v1/auth/logout", headers=bearer(old))).status_code == 200
+
+            assert (await ac.get("/api/v1/cars", headers=bearer(old))).status_code == 401
+            refresh = await ac.post("/api/v1/auth/refresh", json={"refresh_token": old["refresh_token"]})
+            assert refresh.status_code == 401
+
+            fresh = await ac.post("/api/v1/auth/login", json=creds)
+            assert fresh.status_code == 200
+            assert (await ac.get("/api/v1/cars", headers=bearer(fresh.json()))).status_code == 200
+            renewed = await ac.post("/api/v1/auth/refresh", json={"refresh_token": fresh.json()["refresh_token"]})
+            assert renewed.status_code == 200
+    finally:
+        await pool.execute("delete from users where lower(email) = $1", email)

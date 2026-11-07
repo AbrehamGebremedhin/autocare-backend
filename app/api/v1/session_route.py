@@ -201,7 +201,6 @@ async def send_message(
         take_media_slot(media_user)
     sid = session["id"]
     try:
-        count_daily_message(current_user["id"])
         lease = await _claim(sid, current_user["id"])
     except BaseException:
         if media_user is not None:
@@ -218,6 +217,9 @@ async def send_message(
         if files:
             tmpdir = tempfile.mkdtemp(prefix="autocare-turn-")
             uploads = await validate_uploads(files, Path(tmpdir))
+        # Last check before the model: only a request that got this far uses up the day's count. A 429 here
+        # releases the lease and the slot like any other error.
+        count_daily_message(current_user["id"])
         body, release = _events(lease, session, car, text, uploads, tmpdir, media_user)
         return StreamingResponse(
             body,

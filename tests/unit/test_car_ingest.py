@@ -191,6 +191,54 @@ def test_delete_car_database_error_is_500_not_404(client, auth_headers, fake_poo
     assert "connection reset" not in r.text and r.json()["message"] == "Could not remove car"
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {**NEW_CAR, "year": 99999999999},
+        {**NEW_CAR, "year": 1899},
+        {**NEW_CAR, "year": __import__("datetime").date.today().year + 2},
+        {**NEW_CAR, "make": "Toy\x00ota"},
+        {**NEW_CAR, "model": "Ec\x00ho"},
+        {**NEW_CAR, "make": ""},
+        {**NEW_CAR, "model": "x" * 65},
+    ],
+)
+def test_add_car_rejects_bad_input_with_422_before_the_database(client, auth_headers, mocker, body):
+    add = mocker.patch("app.api.v1.car_route.user_profile_service.add_car_to_user")
+    r = client.post("/api/v1/cars", json=body, headers=auth_headers)
+    assert r.status_code == 422
+    add.assert_not_called()
+
+
+def test_add_car_accepts_next_years_model(client, auth_headers, mocker):
+    import datetime
+
+    mocker.patch("app.api.v1.car_route.ingest_car_manual")
+    _stub_add_car(mocker, CAR)
+    body = {**NEW_CAR, "year": datetime.date.today().year + 1}
+    assert client.post("/api/v1/cars", json=body, headers=auth_headers).status_code == 200
+
+
+@pytest.mark.parametrize("car_id", ["toyota%00echo", "x" * 201])  # %00 arrives as NUL
+def test_delete_car_rejects_bad_ids_with_422(client, auth_headers, mocker, car_id):
+    remove = mocker.patch("app.api.v1.car_route.user_profile_service.remove_car_from_user")
+    r = client.delete(f"/api/v1/cars/{car_id}", headers=auth_headers)
+    assert r.status_code == 422
+    remove.assert_not_called()
+
+
+async def test_car_lookup_logs_at_most_64_chars_of_the_id(fake_pool, caplog):
+    import logging
+
+    from app.CRUD.car_crud import CarCRUD
+
+    long_id = "y" * 9990 + "-toyota-2001"  # make/model swapped, so both lookups are logged
+    with caplog.at_level(logging.DEBUG):
+        assert await CarCRUD().get_car_by_id(long_id) is None
+    assert "y" * 65 not in caplog.text
+    assert "y" * 50 in caplog.text  # still recognisable
+
+
 def test_delete_car_not_in_garage_is_404(client, auth_headers, fake_pool):
     fake_pool.status = "UPDATE 0"
     r = client.delete(f"/api/v1/cars/{CAR['id']}", headers=auth_headers)

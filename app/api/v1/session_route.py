@@ -7,8 +7,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.schemas.Car import MAX_CAR_ID_CHARS, NO_NUL
 from app.services import diagnosis
 from app.services.diagnosis import run_turn, sse
 from app.services.media import Upload, validate_uploads
@@ -36,7 +37,7 @@ _deleting: set[str] = set()  # sessions a DELETE is removing; no turn may start 
 
 
 class SessionCreate(BaseModel):
-    car_id: str
+    car_id: str = Field(min_length=1, max_length=MAX_CAR_ID_CHARS, pattern=NO_NUL)
 
 
 async def _owned_session(session_id: str, user_id: str) -> dict:

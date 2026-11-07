@@ -1,6 +1,12 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
+# Request limits for car input. Postgres text cannot hold NUL, so it is refused up front (422, not a 500).
+NO_NUL = r"^[^\x00]*$"
+MAX_CAR_NAME_CHARS = 64  # make and model
+MAX_CAR_ID_CHARS = 200  # ids are "<make>-<model>-<year>"
+MIN_CAR_YEAR = 1900
+
 class CarGuideLink(BaseModel):
     link: str
     summary: Optional[str] = None

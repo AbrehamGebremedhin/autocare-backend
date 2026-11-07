@@ -120,7 +120,7 @@ Interactive reference: `http://localhost:8000/docs`. `/docs`, `/redoc` and `/ope
 | Sessions | `POST /api/v1/sessions` (`{"car_id"}`), `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
 | Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE) |
 
-Adding a car starts a background ingest of its manual; the car's `kb_status` (`pending`, `ready`, `failed`, `no_manual`) tracks progress. Deleting a session deletes its media.
+Car `make` and `model` must be 1 to 64 characters and `year` between 1900 and next year; car ids are at most 200 characters; NUL characters are refused. Such input gets `422`. Adding a car starts a background ingest of its manual; the car's `kb_status` (`pending`, `ready`, `failed`, `no_manual`) tracks progress. Deleting a session deletes its media.
 
 ### SSE events
 

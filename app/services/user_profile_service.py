@@ -1,5 +1,5 @@
 from app.services.base_service import BaseService
-from app.CRUD.car_crud import CarCRUD
+from app.CRUD.car_crud import CarCRUD, log_id
 from app.db import pool
 from app.db.crud import BaseCRUD
 from app.utils.exceptions import DatabaseException
@@ -64,7 +64,7 @@ class UserProfileService(BaseService):
             car = cars[0]
             car_id = car['id']
             
-            await self.logger.info(f"Car {car_id} ready for user {user_id}")
+            await self.logger.info(f"Car {log_id(car_id)} ready for user {user_id}")
             
             await self._get_or_create_user_profile(user_id)
             
@@ -75,9 +75,9 @@ class UserProfileService(BaseService):
                 user_id, car_id,
             )
             if status == "UPDATE 1":
-                await self.logger.info(f"Added car {car_id} to user {user_id}'s profile")
+                await self.logger.info(f"Added car {log_id(car_id)} to user {user_id}'s profile")
             else:
-                await self.logger.info(f"Car {car_id} already in user {user_id}'s profile")
+                await self.logger.info(f"Car {log_id(car_id)} already in user {user_id}'s profile")
             
             return {
                 "success": True, 
@@ -126,7 +126,7 @@ class UserProfileService(BaseService):
                 user_id, car_id,
             )
             if status == "UPDATE 1":
-                await self.logger.info(f"Removed car {car_id} from user {user_id}'s profile")
+                await self.logger.info(f"Removed car {log_id(car_id)} from user {user_id}'s profile")
                 return {"success": True, "message": "Car removed from your garage"}
             else:
                 return {"success": False, "error": "Car not found in your garage"}

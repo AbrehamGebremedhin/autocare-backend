@@ -54,6 +54,13 @@ def test_create_session_for_car_in_profile(client, auth_headers, fake_store, fak
     assert fake_store.rows[body["id"]]["user_id"] == user_id
 
 
+@pytest.mark.parametrize("car_id", ["toyota\x00echo", "x" * 201, ""])
+def test_create_session_rejects_bad_car_ids_with_422(client, auth_headers, fake_store, fake_garage, car_id):
+    r = client.post("/api/v1/sessions", json={"car_id": car_id}, headers=auth_headers)
+    assert r.status_code == 422
+    assert fake_store.rows == {}
+
+
 def test_create_session_with_car_not_in_profile_is_404(client, auth_headers_other_user, fake_store, fake_garage, car):
     r = client.post("/api/v1/sessions", json={"car_id": car["id"]}, headers=auth_headers_other_user)
     assert r.status_code == 404

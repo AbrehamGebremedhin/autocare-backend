@@ -12,6 +12,14 @@ from app.services import kb
 from app.services.fetch_car_data_service import FetchCarDataService
 from app.utils.logger import get_logger_instance
 
+MAX_LOGGED_ID_CHARS = 64
+
+
+def log_id(car_id: str) -> str:
+    """A car id as it may appear in a log line: client-supplied ids can be arbitrarily long."""
+    return car_id[:MAX_LOGGED_ID_CHARS]
+
+
 class CarCRUD(BaseCRUD):
     def __init__(self):
         super().__init__('Car')
@@ -73,7 +81,7 @@ class CarCRUD(BaseCRUD):
         existing = await self.read({'id': car_id})
         if existing and isinstance(existing, list) and existing:
             existing_car = existing[0]
-            await self.logger.info(f"Car {car_id} already exists, returning existing car")
+            await self.logger.info(f"Car {log_id(car_id)} already exists, returning existing car")
             return [existing_car]
         
         # Initialize required fields
@@ -121,9 +129,13 @@ class CarCRUD(BaseCRUD):
                 
                 # Log attempt with normalized ID
                 if cars and isinstance(cars, list) and cars:
-                    await self.logger.info(f"Found car with normalized ID: {normalized_id} (original: {car_id})")
+                    await self.logger.info(
+                        f"Found car with normalized ID: {log_id(normalized_id)} (original: {log_id(car_id)})"
+                    )
                 else:
-                    await self.logger.warning(f"Car not found with original ID '{car_id}' or normalized ID '{normalized_id}'")
+                    await self.logger.warning(
+                        f"Car not found with original ID '{log_id(car_id)}' or normalized ID '{log_id(normalized_id)}'"
+                    )
         
         if cars and isinstance(cars, list) and cars:
             return cars[0]
@@ -163,7 +175,7 @@ async def _set_kb_status(car_id: str, status: str, count: int = 0) -> None:
     try:
         await CarCRUD().update({"id": car_id}, {"kb_status": status, "kb_passage_count": count})
     except Exception as e:
-        await _logger.error(f"Could not set kb_status={status} for {car_id}: {type(e).__name__}")
+        await _logger.error(f"Could not set kb_status={status} for {log_id(car_id)}: {type(e).__name__}")
 
 
 async def ingest_car_manual(car: dict) -> None:
@@ -188,7 +200,7 @@ async def ingest_car_manual(car: dict) -> None:
         )
         await _set_kb_status(car_id, "ready" if count > 0 else "no_manual", count)
     except Exception as e:
-        await _logger.error(f"Manual ingest failed for {car_id}: {type(e).__name__}")
+        await _logger.error(f"Manual ingest failed for {log_id(car_id)}: {type(e).__name__}")
         await _set_kb_status(car_id, "failed")
     finally:
         await fetcher.cleanup()

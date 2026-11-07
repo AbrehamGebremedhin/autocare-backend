@@ -217,6 +217,15 @@ class SystemException(BaseAPIException):
             details=details
         )
 
+class ServiceUnavailableException(BaseAPIException):
+    def __init__(self, message: str = "Service temporarily unavailable", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            error_code=ErrorCode.SERVICE_UNAVAILABLE,
+            message=message,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            details=details
+        )
+
 class ConfigurationException(BaseAPIException):
     def __init__(self, message: str = "System configuration error", details: Optional[Dict[str, Any]] = None):
         super().__init__(

@@ -411,12 +411,15 @@ class TestValidateUser:
         assert fake_pool.calls == []
 
     @pytest.mark.asyncio
-    async def test_database_failure_is_401(self, fake_pool):
+    async def test_database_failure_is_503_not_401(self, fake_pool):
+        # A 401 would make clients throw their tokens away during a database outage.
         from app.utils.auth_middleware import validate_user
+        from app.utils.exceptions import ServiceUnavailableException
 
         fake_pool.error = ConnectionError("db down")
-        with pytest.raises(AuthenticationError):
+        with pytest.raises(ServiceUnavailableException) as exc:
             await validate_user(self.USER, 1.0)
+        assert exc.value.status_code == 503
 
 
 class TestProtectedRoutesWithRealValidator:
@@ -442,6 +445,17 @@ class TestProtectedRoutesWithRealValidator:
         r = client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 401
 
+    def test_database_outage_gets_generic_503_on_protected_route(self, client, fake_pool):
+        from app.utils.auth_middleware import jwt_handler
+
+        token = jwt_handler.create_access_token({"sub": "11111111-1111-4111-8111-111111111111"})
+        fake_pool.error = ConnectionError("connection refused to 10.0.0.5")
+        r = client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 503
+        body = r.json()
+        assert body["error_code"] == "SYS_002" and body["message"] == "Service temporarily unavailable"
+        assert "10.0.0.5" not in r.text and "WWW-Authenticate" not in r.headers
+
 
 class TestErrorLogsHideDetails:
     """Error logs carry only the exception class, never its message."""
@@ -451,9 +465,11 @@ class TestErrorLogsHideDetails:
         import logging
         from app.utils.auth_middleware import validate_user
 
+        from app.utils.exceptions import ServiceUnavailableException
+
         fake_pool.error = RuntimeError("leaked eyJ-token-body")
 
-        with caplog.at_level(logging.DEBUG), pytest.raises(AuthenticationError):
+        with caplog.at_level(logging.DEBUG), pytest.raises(ServiceUnavailableException):
             await validate_user("11111111-1111-4111-8111-111111111111", 1.0)
         assert "RuntimeError" in caplog.text
         assert "eyJ-token-body" not in caplog.text

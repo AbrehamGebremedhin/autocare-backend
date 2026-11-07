@@ -25,18 +25,22 @@ def _health(mocker):
 
     mocker.patch("main.llm.ping", return_value=True)
     with TestClient(main.app) as c:
-        return c.get("/health").json()
+        return c.get("/health")
 
 
 def test_health_pings_database_with_select_1(mocker, fake_pool):
     fake_pool.value = 1
-    assert _health(mocker) == {"status": "ok", "database": True, "deepseek": True}
+    r = _health(mocker)
+    assert r.status_code == 200 and r.json() == {"status": "ok", "database": True, "deepseek": True}
     assert ("fetchval", "select 1", ()) in fake_pool.calls
 
 
-def test_health_database_down_keeps_status_ok(mocker, fake_pool):
+def test_health_database_down_is_503(mocker, fake_pool):
+    # The compose healthcheck then marks the api unhealthy; a DeepSeek outage alone keeps 200.
     fake_pool.error = OSError("connection refused")
-    assert _health(mocker) == {"status": "ok", "database": False, "deepseek": True}
+    r = _health(mocker)
+    assert r.status_code == 503
+    assert r.json() == {"status": "unavailable", "database": False, "deepseek": True}
 
 
 def test_lifespan_opens_and_closes_the_pool(mocker, fake_pool):

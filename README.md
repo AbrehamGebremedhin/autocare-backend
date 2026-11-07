@@ -28,7 +28,7 @@ docker compose up -d --build
 curl http://localhost:8000/health # {"status":"ok","database":true,"deepseek":true}
 ```
 
-The first build bakes the Whisper and CLAP models into the image, so it takes a while; the api health check allows 90 s to start. `/health` is public and not rate limited.
+The first build bakes the Whisper and CLAP models into the image, so it takes a while; the api health check allows 90 s to start. `/health` is public and not rate limited. It answers `503` with `"status":"unavailable","database":false` while Postgres is unreachable, so `docker compose ps` shows the api as unhealthy; a DeepSeek outage alone keeps `200` with `"deepseek":false`.
 
 First-run knowledge base: put the PDFs in `car_data/` on the host (`<car_id>_manual.pdf` is that car's manual, any other PDF is a book) and run:
 
@@ -103,6 +103,7 @@ docker compose start api
 - **Google**: in Google Cloud Console create OAuth client ids for each client you ship (Web, Android, iOS) and put them comma-separated in `GOOGLE_CLIENT_IDS`. The client signs in with Google, gets an **ID token** and sends `{"id_token": "..."}` to `POST /api/v1/auth/google`; the server checks signature, audience, issuer, expiry and `email_verified` and returns the app's tokens. With `GOOGLE_CLIENT_IDS` empty the route returns `404`.
 - **Linking**: when the email already has a password account, Google sign-in links to it only if Google is authoritative for the address (`@gmail.com`, `@googlemail.com`, or a Workspace token with an `hd` claim). Linking removes the password and invalidates every token issued before it, so someone who pre-registered the address loses access; the Google user inherits the account's cars and sessions. For any other address Google sign-in returns `401` instead of linking. New accounts are created for any verified Google email.
 - **Tokens and logout**: every sign-in returns `access_token` (30 minutes) and `refresh_token` (7 days), stateless HS256 JWTs. `POST /api/v1/auth/logout` only checks the bearer token; nothing is revoked, so clients must discard both tokens.
+- **Database outages**: while Postgres is unreachable, routes that check a token answer `503` (`{"error_code": "SYS_002", "message": "Service temporarily unavailable", ...}`), not `401`. Clients should keep their tokens and retry; only a `401` means sign in again.
 - Register, login and Google sign-in are limited to 10 requests per minute per client address, chat messages to 20.
 
 Accounts have no delete route. Deleting one by hand (`delete from users where id = '...'`) cascades to the profile and sessions, but leaves the user's uploaded media in `MEDIA_DIR/{user_id}`; remove it with `docker compose exec api rm -rf /data/media/<user_id>`.

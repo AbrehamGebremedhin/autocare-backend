@@ -7,6 +7,7 @@ import time
 from app.core.config import get_settings
 from app.utils.logger import get_logger_instance
 from app.utils.audit_logging import audit_logger, AuditEventType
+from app.utils.exceptions import ServiceUnavailableException
 from app.services import auth_service
 
 # Security scheme
@@ -127,17 +128,20 @@ async def get_current_user(
             details={"reason": "invalid_token"}
         )
         raise
+    except ServiceUnavailableException:
+        raise
     except Exception as e:
         await logger.error(f"Authentication error: {type(e).__name__}")
         raise AuthenticationError("Authentication failed")
 
 async def validate_user(user_id: str, issued_at: float) -> bool:
-    """Check that the token's user still exists and accepts tokens issued at `issued_at` (else 401)."""
+    """Check that the token's user still exists and accepts tokens issued at `issued_at` (else 401).
+    If the lookup itself fails (database down) the answer is 503, so clients keep their tokens."""
     try:
         exists = await auth_service.user_exists(user_id, issued_at)
     except Exception as e:
         await logger.error(f"User validation error: {type(e).__name__}")
-        raise AuthenticationError("Token validation failed")
+        raise ServiceUnavailableException() from None
     if not exists:
         raise AuthenticationError("Token validation failed")
     return True

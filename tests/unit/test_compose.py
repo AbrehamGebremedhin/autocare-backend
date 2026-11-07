@@ -93,6 +93,34 @@ def test_api_healthcheck_unchanged(compose):
     assert hc["start_period"] == "90s"
 
 
+@pytest.mark.parametrize("status, healthy", [(200, True), (503, False)])
+def test_api_healthcheck_fails_on_non_2xx(compose, status, healthy):
+    """Run the healthcheck's python one-liner against a local server answering `status`."""
+    import subprocess
+    import sys
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Health(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(status)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Health)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        test = compose["services"]["api"]["healthcheck"]["test"]
+        assert test[:3] == ["CMD", "python", "-c"]
+        code = test[3].replace("http://localhost:8000", f"http://127.0.0.1:{server.server_port}")
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=20)
+    finally:
+        server.shutdown()
+    assert (result.returncode == 0) is healthy
+
+
 def _dockerfile() -> list[str]:
     return (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
 

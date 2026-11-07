@@ -96,4 +96,8 @@ async def check_database() -> bool:
 @app.get("/health")
 async def health():
     database, deepseek = await asyncio.gather(check_database(), llm.ping())
-    return {"status": "ok", "database": database, "deepseek": deepseek}
+    # 503 without the database, so the compose healthcheck reports it; DeepSeek being down alone keeps 200.
+    return JSONResponse(
+        status_code=200 if database else 503,
+        content={"status": "ok" if database else "unavailable", "database": database, "deepseek": deepseek},
+    )

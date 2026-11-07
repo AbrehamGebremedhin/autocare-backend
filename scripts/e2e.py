@@ -136,7 +136,9 @@ def run(base: str, email: str, password: str, media_dir: Path, allow_skip: bool,
     with httpx.Client(base_url=base, timeout=httpx.Timeout(120.0, connect=10.0)) as client:
         try:
             resp = client.get("/health")
-            problems = health_problems(resp.json()) if resp.status_code == 200 else [f"HTTP {resp.status_code}"]
+            problems = health_problems(resp.json())
+            if resp.status_code != 200:
+                problems = problems or [f"HTTP {resp.status_code}"]
         except (httpx.HTTPError, ValueError) as exc:
             problems = [type(exc).__name__]
         if problems:

@@ -10,7 +10,7 @@ Settings come from `.env` (`.env.example` lists every name with its default; `ap
 
 Required: `JWT_SECRET_KEY` (32+ chars), `POSTGRES_PASSWORD`, `DATABASE_URL`, `DEEPSEEK_API_KEY`.
 
-Optional: `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`.
+Optional: `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`, `MEDIA_USER_QUOTA_MB`.
 
 - `POSTGRES_PASSWORD` is also pasted into the api's `DATABASE_URL`, so it must be URL-safe (letters, digits, `-_.~`). Generate it with `openssl rand -hex 24`.
 - Inside compose, the api's `DATABASE_URL` is set by `docker-compose.yml` (host `db`) and overrides `.env`. The `.env` value is only for running the app or scripts outside compose, e.g. `postgresql://autocare:<password>@localhost:5432/autocare`.
@@ -164,7 +164,24 @@ data: {"message_id": "..."}
 
 A message needs text (up to 5000 chars) or at least one file: up to 4 images of at most 10 MB each, or one audio/video file of at most 60 s and 100 MB (`MAX_IMAGES`, `MAX_IMAGE_MB`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`). Bodies are capped before they are read and before auth: the chat route takes up to `max(MAX_IMAGES * MAX_IMAGE_MB, MAX_MEDIA_MB) + 1` MB, every other route 1 MB; larger gets `413` (`VAL_005`).
 
-Originals are kept in `MEDIA_DIR/{user_id}/{session_id}/{message_id}/` (default `/data/media`, the `media` volume) until the session is deleted, so the volume grows with use; watch its disk and include it in backups. When the volume has less than `MEDIA_MIN_FREE_MB` free (default 2048), new originals are not stored (the turn still runs and a warning is logged). At startup the api logs a warning if `MEDIA_DIR` is not writable.
+Originals are kept in `MEDIA_DIR/{user_id}/{session_id}/{message_id}/` (default `/data/media`, the `media` volume) until the session is deleted or `scripts/prune_media.py` removes them, so the volume grows with use; nothing deletes media on its own, so watch the disk, schedule the prune below and include the volume in backups. Two limits keep it in check; when either refuses a file, that original is not stored, the turn still runs and a warning is logged (class name only). When the volume has less than `MEDIA_MIN_FREE_MB` free (default 2048) new originals are not stored. At startup the api logs a warning if `MEDIA_DIR` is not writable.
+
+### Per-user quota
+
+`MEDIA_USER_QUOTA_MB` (default 500, `0` turns the cap off) limits what one user may keep in `MEDIA_DIR/{user_id}`. An upload that would push the user past it is refused like a low-disk one: the file is left out of the message's `media`. The check sums the user's regular files (symlinks are not followed) just before each write, so uploads racing each other can overshoot by a file or two.
+
+### Pruning old media
+
+```bash
+uv run python scripts/prune_media.py --days 90 --dry-run   # print what would go
+uv run python scripts/prune_media.py --days 90             # default is 90
+```
+
+It deletes files under `MEDIA_DIR` whose modification time is older than `--days` days (only paths shaped `{user_id}/{session_id}/{message_id}/{n}.jpg|mp4|m4a`; symlinks are never followed), removes their refs from the `media` arrays of the affected messages (one update per session, message order and other fields kept; `updated_at` is not changed), then removes emptied folders. It prints one summary line (files, bytes, messages updated) and never logs content. Running it again is harmless. `--dry-run` only counts files and bytes and does not touch the database. Pruned originals are gone for good, so keep the backups. The api image includes `scripts/`, and `docker compose run` reuses the `api` service's `media:/data/media` mount, so a daily cron entry on the host is:
+
+```
+0 3 * * * cd /path/to/autocare-backend && docker compose run --rm api uv run --no-sync python scripts/prune_media.py --days 90
+```
 
 ## Development and tests
 
@@ -185,6 +202,7 @@ docker stop autocare-testdb
 ## Scripts
 
 - `scripts/ingest_kb.py [--dir car_data]`: load PDFs into the knowledge base (see VPS setup for the compose command).
+- `scripts/prune_media.py [--days 90] [--dry-run]`: deletes media originals older than N days and strips their refs from messages (see Media).
 - `scripts/e2e.py --base https://api.example.com --email you@example.com --password ... [--register] [--media-dir DIR] [--allow-skip]`: checks `/health` (`database` and `deepseek` must be true), signs in (`--register` creates the account when login answers `401`), adds a car, sends a text, photo, audio and video turn, and deletes the session. Sample media is read from `tests/fixtures/e2e/` (git-ignored); a missing file fails the run unless `--allow-skip`.
 - `scripts/run_cases.py [--only id,id] [--out path]`: diagnosis quality cases against the real DeepSeek and knowledge base, written as a Markdown report to `reports/`. It needs the dev dependencies (`uv sync`) and a `DATABASE_URL` that reaches the database, which is not published; on the VPS host use the db container's address, e.g. `$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker compose ps -q db))`.
 - `scripts/backup.sh`: see Backup and restore.

@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 import time
 
@@ -83,6 +84,10 @@ async def _audit(request: Request, event_type: AuditEventType, risk_level: str, 
         details=details
     )
 
+def _digest(code: str) -> bytes:
+    return hashlib.sha256(code.strip().encode()).digest()
+
+
 def _invitation_required() -> InsufficientPermissionsException:
     # One answer for a missing and a wrong code (and for Google sign-up): no hint which.
     return InsufficientPermissionsException("Registration is by invitation.")
@@ -93,9 +98,9 @@ def _invitation_required() -> InsufficientPermissionsException:
 async def register_user(user: UserCreate, request: Request):
     correlation_id = getattr(request.state, 'correlation_id', 'unknown')
     await logger.info(f"Register attempt [ID: {correlation_id}]")
-    code = get_settings().REGISTRATION_CODE
-    # Before any hashing or database work; never logged.
-    if code and not hmac.compare_digest((user.invite_code or "").encode(), code.encode()):
+    code = get_settings().REGISTRATION_CODE.strip()  # blank: registration is open
+    # Before any hashing or database work; never logged. Digests, so the length of the code does not leak.
+    if code and not hmac.compare_digest(_digest(user.invite_code or ""), _digest(code)):
         await _audit(request, AuditEventType.AUTHENTICATION_FAILED, "medium", reason="registration_code_rejected")
         raise _invitation_required()
     if not MIN_PASSWORD_CHARS <= len(user.password) <= MAX_PASSWORD_CHARS:

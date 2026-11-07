@@ -214,12 +214,31 @@ def test_logout_during_a_database_outage_is_503(client, fake_users, monkeypatch)
     token = _register(client).json()["access_token"]
 
     async def down(*args):
-        raise ConnectionError("db down")
+        from app.db.pool import DatabaseUnavailable
+
+        raise DatabaseUnavailable("ConnectionRefusedError")
 
     monkeypatch.setattr(fake_users, "revoke_tokens", down)
     r = _logout(client, token)
     assert r.status_code == 503 and r.json()["error_code"] == "SYS_002"
     assert _probe(client, token).status_code == 200  # nothing was revoked
+
+
+def test_a_bug_in_logout_or_refresh_is_a_500_not_retry_later(fake_users, monkeypatch):
+    import main
+    from fastapi.testclient import TestClient
+
+    async def bug(*args):
+        raise KeyError("issued_at")
+
+    with TestClient(main.app, raise_server_exceptions=False) as c:
+        tokens = _register(c).json()
+        monkeypatch.setattr(fake_users, "revoke_tokens", bug)
+        r = _logout(c, tokens["access_token"])
+        assert r.status_code == 500 and r.json()["error_code"] == "SYS_001"
+        monkeypatch.setattr(fake_users, "exists", bug)
+        r = _refresh(c, tokens["refresh_token"])
+        assert r.status_code == 500 and r.json()["error_code"] == "SYS_001"
 
 
 def test_logout_with_invalid_token_is_401(client):

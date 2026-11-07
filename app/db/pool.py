@@ -70,6 +70,7 @@ _UNAVAILABLE = (
     asyncpg.AdminShutdownError,
     asyncpg.CrashShutdownError,
     asyncpg.TooManyConnectionsError,
+    asyncpg.InternalClientError,  # the pool's own state errors, seen live when its connections die
 )
 
 

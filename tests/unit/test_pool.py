@@ -149,6 +149,7 @@ async def test_close_pool_closes_and_forgets_the_pool(fake_pool):
         asyncpg.CannotConnectNowError("the database system is starting up"),
         asyncpg.AdminShutdownError("terminating connection due to administrator command"),
         asyncpg.TooManyConnectionsError("too many clients already"),
+        asyncpg.InternalClientError("PoolConnectionHolder.connect() called while another connection already exists"),
     ],
 )
 async def test_connectivity_failures_become_database_unavailable(fake_pool, error):

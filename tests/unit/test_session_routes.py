@@ -1,7 +1,7 @@
 import asyncio
 import gc
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import httpx
@@ -279,6 +279,92 @@ def test_turn_uses_the_session_as_read_after_taking_the_lock(client, auth_header
 def test_send_is_rate_limited(client, auth_headers, fake_store):
     codes = [client.post(_url("nope"), data={"text": "hi"}, headers=auth_headers).status_code for _ in range(21)]
     assert codes[:20] == [404] * 20 and codes[20] == 429
+
+
+# --- daily message cap ----------------------------------------------------------
+
+@pytest.fixture
+def daily_cap(monkeypatch):
+    """A cap of 2 messages a day, on a clock the test moves: the clock's value is a one-item list."""
+    from app.core.config import get_settings
+    from app.services import usage_limits
+
+    monkeypatch.setattr(get_settings(), "DAILY_MESSAGE_LIMIT", 2)
+    now = [datetime(2026, 3, 1, 23, 0, 0, tzinfo=timezone.utc)]
+    monkeypatch.setattr(usage_limits, "_utc_now", lambda: now[0])
+    return now
+
+
+def _send(client, headers, sid, text="fan clicks"):
+    return client.post(_url(sid), data={"text": text}, headers=headers)
+
+
+def test_messages_over_the_daily_cap_are_429_with_retry_after(client, auth_headers, existing_session, fake_llm, daily_cap):
+    sid = existing_session["id"]
+    assert [_send(client, auth_headers, sid).status_code for _ in range(2)] == [200, 200]
+    calls = fake_llm.calls
+    r = _send(client, auth_headers, sid)
+    assert r.status_code == 429
+    assert r.headers["retry-after"] == "3600"  # 23:00 UTC -> midnight
+    body = r.json()
+    assert body["error_code"] == "EXT_003" and "daily message limit" in body["message"].lower()
+    assert fake_llm.calls == calls
+
+
+def test_a_new_utc_day_starts_a_fresh_count(client, auth_headers, existing_session, fake_llm, daily_cap):
+    sid = existing_session["id"]
+    for _ in range(2):
+        _send(client, auth_headers, sid)
+    assert _send(client, auth_headers, sid).status_code == 429
+    daily_cap[0] += timedelta(hours=1)
+    assert _send(client, auth_headers, sid).status_code == 200
+
+
+def test_the_cap_is_per_account(client, auth_headers, auth_headers_other_user, existing_session, fake_store, fake_llm, daily_cap, other_user_id):
+    theirs = fake_store.add(other_user_id, existing_session["car_id"])
+    for _ in range(2):
+        _send(client, auth_headers, existing_session["id"])
+    assert _send(client, auth_headers, existing_session["id"]).status_code == 429
+    assert _send(client, auth_headers_other_user, theirs["id"]).status_code == 200
+
+
+def test_old_days_are_pruned(client, auth_headers, existing_session, fake_llm, daily_cap, user_id):
+    from app.services import usage_limits
+
+    _send(client, auth_headers, existing_session["id"])
+    daily_cap[0] += timedelta(days=2)
+    _send(client, auth_headers, existing_session["id"])
+    assert list(usage_limits._counts) == [(user_id, daily_cap[0].date())]
+
+
+def test_a_cap_of_zero_is_no_cap(client, auth_headers, existing_session, fake_llm, daily_cap, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "DAILY_MESSAGE_LIMIT", 0)
+    assert [_send(client, auth_headers, existing_session["id"]).status_code for _ in range(5)] == [200] * 5
+
+
+def test_refused_requests_do_not_use_up_the_cap(client, auth_headers, auth_headers_other_user, existing_session, fake_store, fake_llm, daily_cap):
+    sid = existing_session["id"]
+    assert _send(client, auth_headers_other_user, sid).status_code == 404  # not their session
+    assert _send(client, auth_headers, "nope").status_code == 404
+    assert client.post(_url(sid), data={"text": "  "}, headers=auth_headers).status_code == 422
+    assert [_send(client, auth_headers, sid).status_code for _ in range(2)] == [200, 200]
+
+
+def test_the_cap_is_checked_before_the_lease_is_claimed(client, auth_headers, existing_session, fake_store, fake_llm, daily_cap):
+    sid = existing_session["id"]
+    for _ in range(2):
+        _send(client, auth_headers, sid)
+    claims = []
+    real = fake_store.claim
+
+    async def spy(*args):
+        claims.append(args)
+        return await real(*args)
+
+    fake_store.claim = spy
+    assert _send(client, auth_headers, sid).status_code == 429 and claims == []
 
 
 # --- session lease ----------------------------------------------------------------

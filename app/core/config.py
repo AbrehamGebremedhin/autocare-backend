@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     REGISTRATION_CODE: str = ""
 
     ENABLE_DOCS: bool = False  # serves /docs, /redoc and /openapi.json; off for a public deployment
+    DAILY_MESSAGE_LIMIT: int = 200  # messages per account per UTC day, counted in memory per process; 0 turns the cap off
 
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
     GOOGLE_CLIENT_IDS: str = ""

@@ -14,6 +14,7 @@ from app.schemas.Car import MAX_CAR_ID_CHARS, NO_NUL
 from app.services import diagnosis
 from app.services.diagnosis import Lease, run_turn, sse
 from app.services.media import Upload, validate_uploads
+from app.services.usage_limits import count_daily_message
 from app.services.user_profile_service import UserProfileService
 from app.utils.auth_middleware import get_current_user
 from app.utils.exceptions import (
@@ -182,6 +183,7 @@ async def send_message(
     if car is None:
         raise RecordNotFoundException("Car")
 
+    count_daily_message(current_user["id"])  # a 429 here has claimed and stored nothing
     sid = session["id"]
     lease = await _claim(sid, current_user["id"])
     # From here every exit releases: the stream's own release once it exists, else _release.

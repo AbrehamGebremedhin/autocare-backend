@@ -130,10 +130,12 @@ def _no_google_network(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limits():
-    """The limiter keeps its counters in memory for the whole run; every test starts from zero."""
+    """The limiter and the daily message counts live in memory for the whole run; every test starts from zero."""
+    from app.services import usage_limits
     from app.utils.limiter import limiter
 
     limiter.reset()
+    usage_limits._counts.clear()
 
 
 class FakeUserStore:

@@ -389,6 +389,28 @@ async def test_a_failed_renew_is_retried_not_treated_as_lost(existing_session, c
     assert "session lease renew failed: ConnectionError" in caplog.text
 
 
+async def test_renewals_that_keep_failing_end_the_turn_before_the_lease_can_expire(
+    existing_session, car, slow_llm, fake_store, monkeypatch
+):
+    monkeypatch.setattr(diagnosis, "LEASE_SECONDS", 0.05)  # a 300 s lease, scaled down
+    monkeypatch.setattr(diagnosis, "RENEW_EVERY_SECONDS", 0.01)
+
+    async def down(*args):
+        raise ConnectionError("db down")
+
+    sid = existing_session["id"]
+    lease = await _claim(fake_store, existing_session)
+    monkeypatch.setattr(fake_store, "renew", down)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
+    assert (await anext(stream)).startswith("event: stage")
+    rest = asyncio.ensure_future(_drain(stream))
+    await asyncio.wait_for(_until(lambda: lease.lost), 2)  # after about LEASE_SECONDS - RENEW_EVERY_SECONDS
+    slow_llm.gate.set()
+    events = await asyncio.wait_for(rest, 2)
+    assert events == [("error", {"message": diagnosis.LEASE_LOST})]
+    assert [m["role"] for m in fake_store.messages(sid)] == ["user"] and fake_store.rows[sid]["state"] == {}
+
+
 async def test_heartbeat_stops_with_the_turn(existing_session, car, fake_llm, fake_store, monkeypatch):
     monkeypatch.setattr(diagnosis, "RENEW_EVERY_SECONDS", 0.01)
     lease = await _claim(fake_store, existing_session)

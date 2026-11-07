@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -124,19 +125,24 @@ async def _observe(uploads: list[Upload]) -> tuple[list[bytes], Observations | N
 
 async def _heartbeat(lease: Lease) -> None:
     """Renew the lease every RENEW_EVERY_SECONDS, however long a stage takes (a model call can wait minutes).
-    A renew that fails (database hiccup) is retried at the next beat; one that finds the lease held by someone
-    else, or the session gone, marks it lost and stops."""
+    A renew that fails (database hiccup) is retried at the next beat, until the last good renewal is so old
+    that the lease may run out before the next beat: then it counts as lost. One that finds the lease held by
+    someone else, or the session gone, marks it lost too. Either way the heartbeat stops."""
+    last_renewed = time.monotonic()
     while True:
         await asyncio.sleep(RENEW_EVERY_SECONDS)
         try:
             held = await sessions.renew(lease.session_id, lease.holder, LEASE_SECONDS)
         except Exception as exc:
             await logger.warning(f"session lease renew failed: {type(exc).__name__}")
-            continue
+            if time.monotonic() - last_renewed < LEASE_SECONDS - RENEW_EVERY_SECONDS:
+                continue
+            held = False
         if not held:
             lease.lost = True
             await logger.error("session lease lost mid-turn; the turn stops without saving more")
             return
+        last_renewed = time.monotonic()
 
 
 async def run_turn(

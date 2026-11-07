@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     MEDIA_MIN_FREE_MB: int = 2048  # uploads are refused when the media volume has less free space
     MEDIA_USER_QUOTA_MB: int = 500  # per-user cap on stored originals; 0 turns the cap off
 
+    # When set, sign-up needs this code (register's invite_code) and Google sign-in no longer creates accounts.
+    # Empty leaves registration open; a public deployment should set it.
+    REGISTRATION_CODE: str = ""
+
+    ENABLE_DOCS: bool = False  # serves /docs, /redoc and /openapi.json; off for a public deployment
+    DAILY_MESSAGE_LIMIT: int = 200  # messages per account per UTC day, counted in memory per process; 0 turns the cap off
+    MAX_CONCURRENT_MEDIA_TURNS: int = 2  # turns with attachments running at once in this process; 0 turns the ceiling off
+
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
     GOOGLE_CLIENT_IDS: str = ""
 

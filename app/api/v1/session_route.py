@@ -14,6 +14,7 @@ from app.schemas.Car import MAX_CAR_ID_CHARS, NO_NUL
 from app.services import diagnosis
 from app.services.diagnosis import Lease, run_turn, sse
 from app.services.media import Upload, validate_uploads
+from app.services.usage_limits import count_daily_message, free_media_slot, take_media_slot
 from app.services.user_profile_service import UserProfileService
 from app.utils.auth_middleware import get_current_user
 from app.utils.exceptions import (
@@ -63,15 +64,20 @@ async def _free_lease(lease: Lease) -> None:
         await logger.warning(f"session lease release failed, it will expire: {type(exc).__name__}")
 
 
-def _spawn_release(lease: Lease) -> asyncio.Task:
+def _spawn_release(lease: Lease, media_slot: bool = False) -> asyncio.Task:
+    if media_slot:
+        free_media_slot()  # here, on the loop: the slot counter is not thread-safe
     task = asyncio.get_running_loop().create_task(_free_lease(lease))
     _releasing.add(task)
     task.add_done_callback(_releasing.discard)
     return task
 
 
-def _release(loop: asyncio.AbstractEventLoop, lease: Lease, tmpdir: str | None) -> asyncio.Task | None:
-    """End of a turn: delete the turn's upload dir and free the session's lease.
+def _release(
+    loop: asyncio.AbstractEventLoop, lease: Lease, tmpdir: str | None, media_slot: bool = False
+) -> asyncio.Task | None:
+    """End of a turn: delete the turn's upload dir, give back its media slot (if it holds one) and free the
+    session's lease.
 
     It never awaits, because it also runs as a finalizer and inside streams that are being cancelled (where an
     await would be cancelled too): the lease is freed by a task of its own on `loop`, returned when called on
@@ -85,20 +91,27 @@ def _release(loop: asyncio.AbstractEventLoop, lease: Lease, tmpdir: str | None) 
     except RuntimeError:
         on_loop = False
     if on_loop:
-        return _spawn_release(lease)
+        return _spawn_release(lease, media_slot)
     try:
-        loop.call_soon_threadsafe(_spawn_release, lease)
+        loop.call_soon_threadsafe(_spawn_release, lease, media_slot)
     except RuntimeError:
         pass  # the loop is closed
     return None
 
 
 def _events(
-    lease: Lease, session: dict, car: dict, text: str | None, uploads: Sequence[Upload] = (), tmpdir: str | None = None
+    lease: Lease,
+    session: dict,
+    car: dict,
+    text: str | None,
+    uploads: Sequence[Upload] = (),
+    tmpdir: str | None = None,
+    media_slot: bool = False,
 ) -> tuple[AsyncIterator[str], weakref.finalize]:
-    """SSE body for one turn, plus the release for the session lease the caller already holds.
+    """SSE body for one turn, plus the release for the session lease (and, if `media_slot`, the media slot) the
+    caller already holds.
 
-    Release frees the lease and removes `tmpdir` (where `uploads` live, so it must outlive the
+    Release frees the lease and the slot and removes `tmpdir` (where `uploads` live, so it must outlive the
     response). The body releases when it completes, fails or is closed by a client disconnect;
     the finalizer also releases if the body is dropped without ever being iterated. Calling
     `release` runs it once and detaches it, so a stale body can never free a later turn's lease.
@@ -127,7 +140,7 @@ def _events(
             release()  # backstop (disconnect, cancellation): starts the release, never awaits it
 
     body = stream()
-    release = weakref.finalize(body, _release, asyncio.get_running_loop(), lease, tmpdir)
+    release = weakref.finalize(body, _release, asyncio.get_running_loop(), lease, tmpdir, media_slot)
     return body, release
 
 
@@ -182,8 +195,19 @@ async def send_message(
     if car is None:
         raise RecordNotFoundException("Car")
 
+    # A 429 from either limit has claimed and stored nothing. The media slot comes first so that a refused
+    # media turn does not use up the daily count.
+    media_slot = bool(files)
+    if media_slot:
+        take_media_slot()
     sid = session["id"]
-    lease = await _claim(sid, current_user["id"])
+    try:
+        count_daily_message(current_user["id"])
+        lease = await _claim(sid, current_user["id"])
+    except BaseException:
+        if media_slot:
+            free_media_slot()
+        raise
     # From here every exit releases: the stream's own release once it exists, else _release.
     # Uploads are validated before the response starts, so their errors are plain JSON 4xx.
     tmpdir: str | None = None
@@ -195,14 +219,14 @@ async def send_message(
         if files:
             tmpdir = tempfile.mkdtemp(prefix="autocare-turn-")
             uploads = await validate_uploads(files, Path(tmpdir))
-        body, release = _events(lease, session, car, text, uploads, tmpdir)
+        body, release = _events(lease, session, car, text, uploads, tmpdir, media_slot)
         return StreamingResponse(
             body,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
         )
     except BaseException as exc:
-        pending = release() if release is not None else _release(asyncio.get_running_loop(), lease, tmpdir)
+        pending = release() if release is not None else _release(asyncio.get_running_loop(), lease, tmpdir, media_slot)
         if pending is not None and isinstance(exc, Exception):
             await asyncio.shield(pending)  # a plain error (say a 415): answer once the lease is free
         raise

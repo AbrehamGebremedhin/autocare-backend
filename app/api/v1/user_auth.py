@@ -1,3 +1,4 @@
+import hmac
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -5,11 +6,12 @@ from pydantic import BaseModel, EmailStr
 from app.core.config import get_settings
 from app.db.pool import DatabaseUnavailable
 from app.services import auth_service
-from app.services.auth_service import EmailTaken, GoogleAuthError
+from app.services.auth_service import EmailTaken, GoogleAuthError, SignupClosed
 from app.utils.limiter import limiter
 from app.utils.logger import get_logger_instance
 from app.utils.exceptions import (
     AuthenticationException,
+    InsufficientPermissionsException,
     ValidationException,
     DatabaseException,
     DuplicateRecordException,
@@ -33,6 +35,7 @@ MAX_ID_TOKEN_CHARS = 4096  # Google ID tokens are about 1 KB
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
+    invite_code: str | None = None  # required while REGISTRATION_CODE is set
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -80,11 +83,21 @@ async def _audit(request: Request, event_type: AuditEventType, risk_level: str, 
         details=details
     )
 
+def _invitation_required() -> InsufficientPermissionsException:
+    # One answer for a missing and a wrong code (and for Google sign-up): no hint which.
+    return InsufficientPermissionsException("Registration is by invitation.")
+
+
 @router.post('/auth/register', response_model=LoginResponse)
 @limiter.limit(AUTH_RATE_LIMIT)
 async def register_user(user: UserCreate, request: Request):
     correlation_id = getattr(request.state, 'correlation_id', 'unknown')
     await logger.info(f"Register attempt [ID: {correlation_id}]")
+    code = get_settings().REGISTRATION_CODE
+    # Before any hashing or database work; never logged.
+    if code and not hmac.compare_digest((user.invite_code or "").encode(), code.encode()):
+        await _audit(request, AuditEventType.AUTHENTICATION_FAILED, "medium", reason="registration_code_rejected")
+        raise _invitation_required()
     if not MIN_PASSWORD_CHARS <= len(user.password) <= MAX_PASSWORD_CHARS:
         raise ValidationException("Password does not meet security requirements")
 
@@ -139,7 +152,12 @@ async def login_with_google(body: GoogleLogin, request: Request):
     try:
         if len(body.id_token) > MAX_ID_TOKEN_CHARS:
             raise GoogleAuthError()
-        account = await auth_service.login_with_google(body.id_token)
+        account = await auth_service.login_with_google(
+            body.id_token, allow_signup=not get_settings().REGISTRATION_CODE
+        )
+    except SignupClosed:
+        await _audit(request, AuditEventType.AUTHENTICATION_FAILED, "medium", reason="google_signup_closed")
+        raise _invitation_required() from None
     except GoogleAuthError:
         await _audit(request, AuditEventType.AUTHENTICATION_FAILED, "medium", reason="google_token_rejected")
         raise AuthenticationException("Google sign-in failed") from None

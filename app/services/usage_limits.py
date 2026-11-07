@@ -35,22 +35,19 @@ def count_daily_message(user_id: str) -> None:
         )
     _counts[key] = _counts.get(key, 0) + 1
 
-_media_turns = 0  # turns with attachments running now
+_media_users: set[str] = set()  # accounts with a media turn running now: one each, so len() is the process total
 
 
-def take_media_slot() -> None:
-    """Take one of MAX_CONCURRENT_MEDIA_TURNS slots without waiting, or raise a 429 right away (0 turns the
-    ceiling off). The caller gives it back with free_media_slot() exactly once."""
-    global _media_turns
-    limit = get_settings().MAX_CONCURRENT_MEDIA_TURNS
-    if limit <= 0:
+def take_media_slot(user_id: str) -> None:
+    """Take the account's media slot without waiting, or raise a 429 right away: when it already has a media turn
+    running, or when MAX_CONCURRENT_MEDIA_TURNS accounts do (0 turns both off). The caller gives it back with
+    free_media_slot() once."""
+    if get_settings().MAX_CONCURRENT_MEDIA_TURNS <= 0:
         return
-    if _media_turns >= limit:
+    if user_id in _media_users or len(_media_users) >= get_settings().MAX_CONCURRENT_MEDIA_TURNS:
         raise RateLimitExceededException("The server is busy processing other media. Try again shortly.", retry_after=15)
-    _media_turns += 1
+    _media_users.add(user_id)
 
 
-def free_media_slot() -> None:
-    global _media_turns
-    if get_settings().MAX_CONCURRENT_MEDIA_TURNS > 0:
-        _media_turns = max(0, _media_turns - 1)
+def free_media_slot(user_id: str) -> None:
+    _media_users.discard(user_id)

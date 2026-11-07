@@ -9,6 +9,8 @@ import pytest
 
 from app.api.v1 import session_route
 from app.CRUD.chat_session_crud import ChatSessionCRUD
+from app.services import diagnosis
+from app.services.diagnosis import Lease
 from app.utils.limiter import limiter
 
 BUSY = "This session is busy: a reply is still being generated, or it is being deleted."
@@ -273,10 +275,92 @@ def test_send_takes_over_an_expired_lease(client, auth_headers, existing_session
     assert not fake_store.busy(sid)
 
 
-def test_turn_renews_the_lease_before_each_long_stage(client, auth_headers, existing_session, fake_store, fake_llm):
-    r = client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
-    assert _parse(r.text)[-1][0] == "done"
-    assert fake_store.renewals == 2  # before the search + reply, and before the state update
+async def _claim(store, session) -> Lease:
+    holder = await store.claim(session["id"], session["user_id"])
+    assert holder is not None
+    return Lease(session["id"], holder)
+
+
+async def test_heartbeat_keeps_a_turn_longer_than_the_lease_alive(existing_session, car, slow_llm, fake_store, monkeypatch):
+    monkeypatch.setattr(diagnosis, "LEASE_SECONDS", 0.05)  # a 300 s lease, scaled down
+    monkeypatch.setattr(diagnosis, "RENEW_EVERY_SECONDS", 0.01)
+    sid = existing_session["id"]
+    lease = await _claim(fake_store, existing_session)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
+    assert (await anext(stream)).startswith("event: stage")
+    rest = asyncio.ensure_future(_drain(stream))  # the model keeps it waiting for 6 lease lengths
+    for _ in range(6):
+        await asyncio.sleep(0.05)
+        assert fake_store.busy(sid) and await fake_store.claim(sid, existing_session["user_id"]) is None
+    slow_llm.gate.set()
+    events = await asyncio.wait_for(rest, 2)
+    assert events[-1][0] == "done" and fake_store.renewals >= 5
+    assert [m["role"] for m in fake_store.messages(sid)] == ["user", "assistant"]
+    assert not fake_store.busy(sid)
+
+
+async def test_a_turn_that_lost_its_lease_stops_and_saves_nothing_more(existing_session, car, slow_llm, fake_store, monkeypatch):
+    monkeypatch.setattr(diagnosis, "RENEW_EVERY_SECONDS", 0.01)
+    sid = existing_session["id"]
+    lease = await _claim(fake_store, existing_session)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
+    assert (await anext(stream)).startswith("event: stage")
+    rest = asyncio.ensure_future(_drain(stream))
+    await asyncio.wait_for(_until(lambda: slow_llm.calls == 1), 2)
+    newcomer = fake_store.hold(sid)  # A's lease expired meanwhile and B claimed the session
+    await asyncio.wait_for(_until(lambda: lease.lost), 2)
+    slow_llm.gate.set()
+    events = await asyncio.wait_for(rest, 2)
+    assert events == [("error", {"message": diagnosis.LEASE_LOST})]  # not even the first token
+    assert [m["role"] for m in fake_store.messages(sid)] == ["user"] and fake_store.rows[sid]["state"] == {}
+    assert fake_store.holder(sid) == newcomer  # B's lease is untouched by A's release
+
+
+async def test_lease_lost_during_the_state_update_saves_no_reply(existing_session, car, fake_llm, fake_store, monkeypatch):
+    sid = existing_session["id"]
+    lease = await _claim(fake_store, existing_session)
+    real = fake_llm.extract_state
+
+    async def slow_state(conversation, previous):
+        lease.lost = True  # what the heartbeat does when a renew finds someone else's lease
+        return await real(conversation, previous)
+
+    monkeypatch.setattr(diagnosis.llm, "extract_state", slow_state)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
+    events = await _drain(stream)
+    assert events[-1] == ("error", {"message": diagnosis.LEASE_LOST})
+    assert [m["role"] for m in fake_store.messages(sid)] == ["user"] and fake_store.rows[sid]["state"] == {}
+
+
+async def test_a_failed_renew_is_retried_not_treated_as_lost(existing_session, car, slow_llm, fake_store, monkeypatch, caplog):
+    monkeypatch.setattr(diagnosis, "RENEW_EVERY_SECONDS", 0.01)
+
+    async def down(*args):
+        raise ConnectionError("db down")
+
+    lease = await _claim(fake_store, existing_session)
+    monkeypatch.setattr(fake_store, "renew", down)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
+    rest = asyncio.ensure_future(_drain(stream))
+    await asyncio.sleep(0.05)
+    slow_llm.gate.set()
+    events = await asyncio.wait_for(rest, 2)
+    assert events[-1][0] == "done" and not lease.lost
+    assert "session lease renew failed: ConnectionError" in caplog.text
+
+
+async def test_heartbeat_stops_with_the_turn(existing_session, car, fake_llm, fake_store, monkeypatch):
+    monkeypatch.setattr(diagnosis, "RENEW_EVERY_SECONDS", 0.01)
+    lease = await _claim(fake_store, existing_session)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
+    await _drain(stream)
+    renewals = fake_store.renewals
+    await asyncio.sleep(0.05)
+    assert fake_store.renewals == renewals
+
+
+async def _drain(stream) -> list[tuple[str, dict]]:
+    return _parse("".join([chunk async for chunk in stream]))
 
 
 async def test_send_claims_only_after_the_ownership_check(auth_headers_other_user, existing_session, fake_store, fake_llm):
@@ -316,8 +400,8 @@ def test_lock_released_if_building_response_fails(client, auth_headers, existing
 
 async def test_lock_released_when_client_disconnects(existing_session, car, fake_llm, fake_store):
     sid = existing_session["id"]
-    assert await fake_store.claim(sid, existing_session["user_id"])
-    stream, _ = session_route._events(existing_session, car, "fan clicks")
+    lease = await _claim(fake_store, existing_session)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
     assert (await anext(stream)).startswith("event: stage")
     assert (await anext(stream)).startswith("event: token")
     await stream.aclose()  # what the server does when the client goes away
@@ -332,8 +416,8 @@ async def test_lock_released_when_the_stream_is_cancelled(existing_session, car,
     import anyio
 
     sid = existing_session["id"]
-    assert await fake_store.claim(sid, existing_session["user_id"])
-    stream, _ = session_route._events(existing_session, car, "fan clicks")
+    lease = await _claim(fake_store, existing_session)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
 
     async def consume():
         async for _ in stream:
@@ -348,8 +432,8 @@ async def test_lock_released_when_the_stream_is_cancelled(existing_session, car,
 
 async def test_lock_released_if_stream_never_starts(existing_session, car, fake_store):
     sid = existing_session["id"]
-    assert await fake_store.claim(sid, existing_session["user_id"])
-    stream, _ = session_route._events(existing_session, car, "fan clicks")
+    lease = await _claim(fake_store, existing_session)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
     del stream
     gc.collect()  # the finalizer cannot await: it schedules the release on the loop
     await asyncio.wait_for(_until(lambda: not fake_store.busy(sid)), 2)
@@ -357,8 +441,8 @@ async def test_lock_released_if_stream_never_starts(existing_session, car, fake_
 
 async def test_finished_stream_does_not_release_a_later_turn(existing_session, car, fake_llm, fake_store):
     sid, uid = existing_session["id"], existing_session["user_id"]
-    assert await fake_store.claim(sid, uid)
-    stream, _ = session_route._events(existing_session, car, "fan clicks")
+    lease = await _claim(fake_store, existing_session)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
     _ = [chunk async for chunk in stream]
     assert not fake_store.busy(sid)  # released before the body ended, so the next message is accepted
     assert await fake_store.claim(sid, uid)  # the next turn takes the lease
@@ -370,9 +454,9 @@ async def test_finished_stream_does_not_release_a_later_turn(existing_session, c
 
 async def test_release_from_another_thread_is_handed_to_the_loop(existing_session, fake_store):
     sid = existing_session["id"]
-    assert await fake_store.claim(sid, existing_session["user_id"])
+    lease = await _claim(fake_store, existing_session)
     loop = asyncio.get_running_loop()
-    assert await asyncio.to_thread(session_route._release, loop, sid, None) is None  # a GC in a worker thread
+    assert await asyncio.to_thread(session_route._release, loop, lease, None) is None  # a GC in a worker thread
     await asyncio.wait_for(_until(lambda: not fake_store.busy(sid)), 2)
 
 
@@ -381,17 +465,27 @@ def test_release_with_the_loop_gone_leaves_the_lease_to_expire(tmp_path):
     loop.close()
     tmpdir = tmp_path / "turn"
     tmpdir.mkdir()
-    assert session_route._release(loop, "sid", str(tmpdir)) is None  # no error, nothing scheduled
+    assert session_route._release(loop, Lease("sid", "holder"), str(tmpdir)) is None  # no error, nothing scheduled
     assert not tmpdir.exists()
 
 
 async def test_a_failed_release_is_logged_and_left_to_expire(existing_session, fake_store, caplog):
-    async def down(session_id):
+    async def down(session_id, holder):
         raise ConnectionError("db down")
 
     fake_store.release = down
-    await session_route._free_lease(existing_session["id"])
+    await session_route._free_lease(Lease(existing_session["id"], "holder"))
     assert "lease release failed" in caplog.text and "ConnectionError" in caplog.text
+
+
+async def test_a_stale_holder_can_neither_free_nor_extend_the_next_lease(existing_session, fake_store):
+    sid, uid = existing_session["id"], existing_session["user_id"]
+    stale = await fake_store.claim(sid, uid, seconds=-1)  # A's lease, already expired
+    newcomer = await fake_store.claim(sid, uid)  # B takes it over
+    assert stale and newcomer and newcomer != stale
+    assert await fake_store.renew(sid, stale) is False
+    await fake_store.release(sid, stale)
+    assert fake_store.holder(sid) == newcomer and fake_store.busy(sid)
 
 
 # --- ChatSessionCRUD ------------------------------------------------------------
@@ -468,27 +562,33 @@ async def test_update_message_for_unknown_message_or_session_writes_nothing(fake
 
 async def test_claim_is_one_conditional_update_scoped_to_the_owner(fake_pool):
     sid = "33333333-3333-4333-8333-333333333333"
-    fake_pool.value = True
-    assert await ChatSessionCRUD().claim(sid, "u1", seconds=60) is True
+    fake_pool.value = "holder-token"  # RETURNING busy_by
+    assert await ChatSessionCRUD().claim(sid, "u1", seconds=60) == "holder-token"
     [(method, sql, args)] = fake_pool.calls
-    assert method == "fetchval" and args == (sid, "u1", 60.0)
-    assert "SET busy_until = now() + make_interval(secs => $3)" in sql
-    assert "WHERE id = $1 AND user_id = $2 AND (busy_until IS NULL OR busy_until < now()) RETURNING true" in sql
+    assert method == "fetchval" and args[:3] == (sid, "u1", 60.0)
+    assert len(args[3]) == 36  # a fresh uuid4 holder token per claim
+    assert "SET busy_until = now() + make_interval(secs => $3), busy_by = $4" in sql
+    assert "WHERE id = $1 AND user_id = $2 AND (busy_until IS NULL OR busy_until < now()) RETURNING busy_by" in sql
     fake_pool.value = None  # no row matched: held, missing or another user's
-    assert await ChatSessionCRUD().claim(sid, "u1") is False
+    assert await ChatSessionCRUD().claim(sid, "u1") is None
+    assert fake_pool.calls[0][2][3] != fake_pool.calls[1][2][3]
 
 
-async def test_claim_of_a_malformed_id_is_false_without_a_query(fake_pool):
-    assert await ChatSessionCRUD().claim("not-a-uuid", "u1") is False
+async def test_claim_of_a_malformed_id_is_none_without_a_query(fake_pool):
+    assert await ChatSessionCRUD().claim("not-a-uuid", "u1") is None
     assert fake_pool.calls == []
 
 
-async def test_renew_only_extends_a_held_lease_and_release_clears_it(fake_pool):
+async def test_renew_and_release_act_only_for_the_holder(fake_pool):
     fake_pool.value = True
-    assert await ChatSessionCRUD().renew("sid") is True
-    await ChatSessionCRUD().release("sid")
+    assert await ChatSessionCRUD().renew("sid", "h1") is True
+    await ChatSessionCRUD().release("sid", "h1")
     (_, renew_sql, renew_args), (method, release_sql, release_args) = fake_pool.calls
-    assert "make_interval(secs => $2)" in renew_sql and "busy_until IS NOT NULL" in renew_sql
-    assert renew_args == ("sid", 300.0)
-    assert method == "execute" and release_sql == 'UPDATE "Chatsession" SET busy_until = NULL WHERE id = $1'
-    assert release_args == ("sid",)
+    assert "make_interval(secs => $3)" in renew_sql and "WHERE id = $1 AND busy_by = $2" in renew_sql
+    assert renew_args == ("sid", "h1", 300.0)
+    assert method == "execute" and release_sql == (
+        'UPDATE "Chatsession" SET busy_until = NULL, busy_by = NULL WHERE id = $1 AND busy_by = $2'
+    )
+    assert release_args == ("sid", "h1")
+    fake_pool.value = None
+    assert await ChatSessionCRUD().renew("sid", "someone-else") is False

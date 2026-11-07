@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.Car import MAX_CAR_ID_CHARS, NO_NUL
 from app.services import diagnosis
-from app.services.diagnosis import run_turn, sse
+from app.services.diagnosis import Lease, run_turn, sse
 from app.services.media import Upload, validate_uploads
 from app.services.user_profile_service import UserProfileService
 from app.utils.auth_middleware import get_current_user
@@ -47,21 +47,21 @@ async def _owned_session(session_id: str, user_id: str) -> dict:
     return session
 
 
-async def _free_lease(session_id: str) -> None:
+async def _free_lease(lease: Lease) -> None:
     try:
-        await diagnosis.sessions.release(session_id)
+        await diagnosis.sessions.release(lease.session_id, lease.holder)
     except Exception as exc:
         await logger.warning(f"session lease release failed, it will expire: {type(exc).__name__}")
 
 
-def _spawn_release(session_id: str) -> asyncio.Task:
-    task = asyncio.get_running_loop().create_task(_free_lease(session_id))
+def _spawn_release(lease: Lease) -> asyncio.Task:
+    task = asyncio.get_running_loop().create_task(_free_lease(lease))
     _releasing.add(task)
     task.add_done_callback(_releasing.discard)
     return task
 
 
-def _release(loop: asyncio.AbstractEventLoop, session_id: str, tmpdir: str | None) -> asyncio.Task | None:
+def _release(loop: asyncio.AbstractEventLoop, lease: Lease, tmpdir: str | None) -> asyncio.Task | None:
     """End of a turn: delete the turn's upload dir and free the session's lease.
 
     It never awaits, because it also runs as a finalizer and inside streams that are being cancelled (where an
@@ -76,16 +76,16 @@ def _release(loop: asyncio.AbstractEventLoop, session_id: str, tmpdir: str | Non
     except RuntimeError:
         on_loop = False
     if on_loop:
-        return _spawn_release(session_id)
+        return _spawn_release(lease)
     try:
-        loop.call_soon_threadsafe(_spawn_release, session_id)
+        loop.call_soon_threadsafe(_spawn_release, lease)
     except RuntimeError:
         pass  # the loop is closed
     return None
 
 
 def _events(
-    session: dict, car: dict, text: str | None, uploads: Sequence[Upload] = (), tmpdir: str | None = None
+    lease: Lease, session: dict, car: dict, text: str | None, uploads: Sequence[Upload] = (), tmpdir: str | None = None
 ) -> tuple[AsyncIterator[str], weakref.finalize]:
     """SSE body for one turn, plus the release for the session lease the caller already holds.
 
@@ -98,7 +98,7 @@ def _events(
 
     async def stream():
         try:
-            async with aclosing(run_turn(session, car, text, list(uploads))) as events:
+            async with aclosing(run_turn(session, car, text, list(uploads), lease)) as events:
                 async for event, data in events:
                     yield sse(event, data)
         except Exception as exc:
@@ -113,7 +113,7 @@ def _events(
             await asyncio.shield(pending)
 
     body = stream()
-    release = weakref.finalize(body, _release, asyncio.get_running_loop(), session["id"], tmpdir)
+    release = weakref.finalize(body, _release, asyncio.get_running_loop(), lease, tmpdir)
     return body, release
 
 
@@ -140,13 +140,14 @@ async def delete_session(session_id: str, current_user: dict = Depends(get_curre
     session = await _owned_session(session_id, current_user["id"])
     sid = session["id"]
     # The lease keeps a turn from starting (and storing media) while the media and the row go away.
-    if not await diagnosis.sessions.claim(sid, current_user["id"]):
+    holder = await diagnosis.sessions.claim(sid, current_user["id"], diagnosis.LEASE_SECONDS)
+    if holder is None:
         raise ResourceConflictException(BUSY)
     try:
         await diagnosis.media_store.delete_prefix(session["user_id"], sid)  # best effort, never raises
         await diagnosis.sessions.delete({"id": sid, "user_id": current_user["id"]})  # the lease goes with the row
     except BaseException:
-        _release(asyncio.get_running_loop(), sid, None)
+        _release(asyncio.get_running_loop(), Lease(sid, holder), None)
         raise
     return {"deleted": sid}
 
@@ -169,8 +170,10 @@ async def send_message(
         raise RecordNotFoundException("Car")
 
     sid = session["id"]
-    if not await diagnosis.sessions.claim(sid, current_user["id"]):
+    holder = await diagnosis.sessions.claim(sid, current_user["id"], diagnosis.LEASE_SECONDS)
+    if holder is None:
         raise ResourceConflictException(BUSY)
+    lease = Lease(sid, holder)
     # From here every exit releases: the stream's own release once it exists, else _release.
     # Uploads are validated before the response starts, so their errors are plain JSON 4xx.
     tmpdir: str | None = None
@@ -182,14 +185,14 @@ async def send_message(
         if files:
             tmpdir = tempfile.mkdtemp(prefix="autocare-turn-")
             uploads = await validate_uploads(files, Path(tmpdir))
-        body, release = _events(session, car, text, uploads, tmpdir)
+        body, release = _events(lease, session, car, text, uploads, tmpdir)
         return StreamingResponse(
             body,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
         )
     except BaseException as exc:
-        pending = release() if release is not None else _release(asyncio.get_running_loop(), sid, tmpdir)
+        pending = release() if release is not None else _release(asyncio.get_running_loop(), lease, tmpdir)
         if pending is not None and isinstance(exc, Exception):
             await asyncio.shield(pending)  # a plain error (say a 415): answer once the lease is free
         raise

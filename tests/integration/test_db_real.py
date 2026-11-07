@@ -327,29 +327,82 @@ async def test_session_lease_claim_renew_release_and_expiry(real_pool):
                 'select extract(epoch from busy_until - now())::float8 from "Chatsession" where id = $1', sid
             )
 
-        assert await sessions.claim(sid, other) is False  # another user's id never takes it
+        assert await sessions.claim(sid, other) is None  # another user's id never takes it
         assert await lease() is None
         wins = await asyncio.gather(*(sessions.claim(sid, owner) for _ in range(8)))
-        assert sorted(wins) == [False] * 7 + [True]  # concurrent claims: exactly one wins
+        holders = [w for w in wins if w is not None]
+        assert len(holders) == 1  # concurrent claims: exactly one wins
+        holder = holders[0]
         assert 290 < await lease() <= 300
-        assert await sessions.claim(sid, owner) is False  # held
+        assert await sessions.claim(sid, owner) is None  # held
 
-        await pool.execute('update "Chatsession" set busy_until = now() + interval \'5 seconds\' where id = $1', sid)
-        assert await sessions.renew(sid, 120) is True
+        await pool.execute("""update "Chatsession" set busy_until = now() + interval '5 seconds' where id = $1""", sid)
+        assert await sessions.renew(sid, holder, 120) is True
         assert 110 < await lease() <= 120
 
-        await sessions.release(sid)
+        await sessions.release(sid, holder)
         assert await lease() is None
-        assert await sessions.renew(sid) is False  # nothing held, nothing renewed
-        assert await sessions.claim(sid, owner) is True  # free again
+        assert await sessions.renew(sid, holder) is False  # nothing held, nothing renewed
+        holder = await sessions.claim(sid, owner)
+        assert holder is not None  # free again
 
-        await pool.execute('update "Chatsession" set busy_until = now() - interval \'1 second\' where id = $1', sid)
-        assert await sessions.claim(sid, other) is False  # an expired lease is still owner-only
-        assert await sessions.claim(sid, owner) is True  # a crashed worker's lease expires on its own
+        await pool.execute("""update "Chatsession" set busy_until = now() - interval '1 second' where id = $1""", sid)
+        assert await sessions.claim(sid, other) is None  # an expired lease is still owner-only
+        assert await sessions.claim(sid, owner) is not None  # a crashed worker's lease expires on its own
 
-        assert await sessions.claim(str(uuid4()), owner) is False  # no such session
-        assert await sessions.claim("not-a-uuid", owner) is False
+        assert await sessions.claim(str(uuid4()), owner) is None  # no such session
+        assert await sessions.claim("not-a-uuid", owner) is None
         await sessions.delete({"id": sid, "user_id": owner})  # the lease dies with the row
-        assert await sessions.claim(sid, owner) is False
+        assert await sessions.claim(sid, owner) is None
     finally:
         await pool.execute("delete from users where id = any($1::uuid[])", [owner, other])
+
+
+async def test_a_stale_lease_holder_cannot_touch_the_next_holders_lease(real_pool):
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    sessions = ChatSessionCRUD()
+    owner = await _make_user(uuid4().hex[:8])
+    try:
+        sid = (await sessions.create({"user_id": owner, "car_id": "c"}))["id"]
+        a = await sessions.claim(sid, owner, 0.2)
+        assert isinstance(a, str)
+        await asyncio.sleep(0.3)  # A's lease expires while its turn is still running
+        b = await sessions.claim(sid, owner)
+        assert isinstance(b, str) and b != a
+        assert await sessions.renew(sid, a) is False  # A's late renew finds the lease gone
+        await sessions.release(sid, a)  # A's late release leaves B's lease alone
+        row = await pool.fetchrow(
+            'select busy_by::text as holder, extract(epoch from busy_until - now())::float8 as left'
+            ' from "Chatsession" where id = $1', sid,
+        )
+        assert row["holder"] == b and 290 < row["left"] <= 300
+        assert await sessions.claim(sid, owner) is None  # still B's
+        assert await sessions.renew(sid, b, 120) is True
+        await sessions.release(sid, b)
+        row = await pool.fetchrow('select busy_by, busy_until from "Chatsession" where id = $1', sid)
+        assert row == {"busy_by": None, "busy_until": None}
+    finally:
+        await pool.execute("delete from users where id = $1", owner)
+
+
+async def test_heartbeat_keeps_a_lease_alive_past_its_length(real_pool, monkeypatch):
+    from app.services import diagnosis
+
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    monkeypatch.setattr(diagnosis, "sessions", ChatSessionCRUD())
+    monkeypatch.setattr(diagnosis, "LEASE_SECONDS", 0.3)  # a 300 s lease, scaled down
+    monkeypatch.setattr(diagnosis, "RENEW_EVERY_SECONDS", 0.05)
+    owner = await _make_user(uuid4().hex[:8])
+    try:
+        sid = (await diagnosis.sessions.create({"user_id": owner, "car_id": "c"}))["id"]
+        lease = diagnosis.Lease(sid, await diagnosis.sessions.claim(sid, owner, 0.3))
+        beat = asyncio.create_task(diagnosis._heartbeat(lease))
+        for _ in range(12):  # 1.2 s: four lease lengths
+            await asyncio.sleep(0.1)
+            assert await diagnosis.sessions.claim(sid, owner) is None
+        beat.cancel()
+        assert not lease.lost
+        await asyncio.sleep(0.4)  # no more beats: the lease runs out on its own
+        assert await diagnosis.sessions.claim(sid, owner) is not None
+    finally:
+        await pool.execute("delete from users where id = $1", owner)

@@ -18,7 +18,7 @@ from PIL import Image
 from app.api.v1 import session_route
 from app.schemas.session import SoundTag
 from app.services import diagnosis, hearing, media
-from app.services.diagnosis import run_turn
+from app.services.diagnosis import Lease, run_turn
 from app.services.media import MediaError, Upload
 from app.utils.limiter import limiter
 
@@ -418,7 +418,6 @@ def test_photo_turn_over_http(client, auth_headers, existing_session, fake_all, 
     user_msg = fake_all.store.messages(sid)[0]
     assert user_msg["media"] == [{"kind": "image", "path": f"{uid}/{sid}/{user_msg['id']}/0.jpg"}]
     assert not fake_all.store.busy(sid)
-    assert fake_all.store.renewals == 3  # before media processing, the search + reply, and the state update
     assert len(turn_dirs) == 1 and not turn_dirs[0].exists()
 
 
@@ -441,8 +440,8 @@ async def test_tmpdir_removed_when_client_disconnects(existing_session, car, fak
     sid = existing_session["id"]
     tmpdir = tempfile.mkdtemp(prefix="autocare-test-")
     upload = make_upload("image", _jpeg(), folder=Path(tmpdir))
-    assert await fake_all.store.claim(sid, existing_session["user_id"])
-    stream, _ = session_route._events(existing_session, car, None, [upload], tmpdir)
+    lease = Lease(sid, await fake_all.store.claim(sid, existing_session["user_id"]))
+    stream, _ = session_route._events(lease, existing_session, car, None, [upload], tmpdir)
     assert (await anext(stream)).startswith("event: stage")
     await stream.aclose()
     assert await _released(fake_all.store, sid) and not Path(tmpdir).exists()
@@ -463,8 +462,8 @@ async def test_disconnect_during_processing_cancels_jobs_and_releases(existing_s
             raise
 
     fake_all.media.extract_frames.side_effect = frames
-    assert await fake_all.store.claim(sid, existing_session["user_id"])
-    stream, _ = session_route._events(existing_session, car, None, [upload], tmpdir)
+    lease = Lease(sid, await fake_all.store.claim(sid, existing_session["user_id"]))
+    stream, _ = session_route._events(lease, existing_session, car, None, [upload], tmpdir)
     assert (await anext(stream)).startswith("event: stage")
     pending = asyncio.ensure_future(anext(stream))  # now inside the media gather
     await asyncio.wait_for(started.wait(), 2)
@@ -480,8 +479,8 @@ async def test_tmpdir_removed_if_stream_never_starts(existing_session, car, make
     sid = existing_session["id"]
     tmpdir = tempfile.mkdtemp(prefix="autocare-test-")
     upload = make_upload("image", _jpeg(), folder=Path(tmpdir))
-    assert await fake_store.claim(sid, existing_session["user_id"])
-    stream, _ = session_route._events(existing_session, car, None, [upload], tmpdir)
+    lease = Lease(sid, await fake_store.claim(sid, existing_session["user_id"]))
+    stream, _ = session_route._events(lease, existing_session, car, None, [upload], tmpdir)
     del stream
     gc.collect()
     assert not Path(tmpdir).exists() and await _released(fake_store, sid)

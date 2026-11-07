@@ -89,9 +89,6 @@ class MemorySessions:
     async def save_state(self, session_id: str, state: dict, title: str) -> None:
         self.row["state"], self.row["title"] = state, title
 
-    async def renew(self, session_id: str, seconds: float = 300) -> bool:
-        return False  # no lease outside the API
-
 
 class NoStore:
     async def upload(self, user_id, session_id, message_id, n, kind, ext, src):

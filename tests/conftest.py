@@ -269,37 +269,42 @@ def _json_copy(value):
 
 
 class FakeSessionStore:
-    """In-memory stand-in for ChatSessionCRUD, with the busy_until lease (on the monotonic clock)."""
+    """In-memory stand-in for ChatSessionCRUD, with the busy_until/busy_by lease (on the monotonic clock)."""
 
     def __init__(self):
         self.rows: dict[str, dict] = {}
-        self.leases: dict[str, float] = {}  # session id -> expiry
+        self.leases: dict[str, tuple[float, str]] = {}  # session id -> (expiry, holder)
         self.renewals = 0
 
     def busy(self, session_id: str) -> bool:
-        return self.leases.get(session_id, float("-inf")) > time.monotonic()
+        return session_id in self.leases and self.leases[session_id][0] > time.monotonic()
 
-    def hold(self, session_id: str, seconds: float = 300) -> None:
-        """Another worker holds the lease (negative seconds: it held one that has expired)."""
-        self.leases[session_id] = time.monotonic() + seconds
+    def holder(self, session_id: str) -> str | None:
+        return self.leases[session_id][1] if session_id in self.leases else None
 
-    async def claim(self, session_id: str, user_id: str, seconds: float = 300) -> bool:
+    def hold(self, session_id: str, seconds: float = 300) -> str:
+        """Another worker holds the lease (negative seconds: it held one that has expired). Its holder token."""
+        holder = str(uuid4())
+        self.leases[session_id] = (time.monotonic() + seconds, holder)
+        return holder
+
+    async def claim(self, session_id: str, user_id: str, seconds: float = 300) -> str | None:
         row = self.rows.get(session_id)
         if row is None or row["user_id"] != user_id or self.busy(session_id):
-            return False
-        self.hold(session_id, seconds)
-        return True
+            return None
+        return self.hold(session_id, seconds)
 
-    async def renew(self, session_id: str, seconds: float = 300) -> bool:
-        if session_id not in self.leases:
+    async def renew(self, session_id: str, holder: str, seconds: float = 300) -> bool:
+        if self.holder(session_id) != holder:
             return False
         self.renewals += 1
-        self.hold(session_id, seconds)
+        self.leases[session_id] = (time.monotonic() + seconds, holder)
         return True
 
-    async def release(self, session_id: str) -> None:
+    async def release(self, session_id: str, holder: str) -> None:
         await asyncio.sleep(0)  # a database round trip suspends, so a cancelled caller would never get here
-        self.leases.pop(session_id, None)
+        if self.holder(session_id) == holder:
+            del self.leases[session_id]
 
     def add(self, user_id: str, car_id: str, **fields) -> dict:
         now = datetime.now(timezone.utc).isoformat()

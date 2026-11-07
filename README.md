@@ -51,7 +51,7 @@ The file is idempotent (`if not exists` / `or replace`), so re-running it adds n
 A database created before the session lease existed needs its column (new databases already have it):
 
 ```
-docker compose exec -T db psql -U autocare -d autocare -v ON_ERROR_STOP=1 -c 'alter table "Chatsession" add column if not exists busy_until timestamptz;'
+docker compose exec -T db psql -U autocare -d autocare -v ON_ERROR_STOP=1 -c 'alter table "Chatsession" add column if not exists busy_until timestamptz, add column if not exists busy_by uuid;'
 ```
 
 ### Reverse proxy (Caddy)
@@ -79,7 +79,7 @@ Put that in `.env` as `FORWARDED_ALLOW_IPS` and run `docker compose up -d`. Neve
 
 ### Workers
 
-The image runs a single uvicorn worker, and that is the recommended setting. The lock that stops two turns (or a turn and a delete) from running at once in one session (`409`) is a lease in the database (`"Chatsession".busy_until`, 5 minutes, renewed at every stage of a turn and expiring on its own if a worker dies), so several uvicorn workers or api replicas are safe for it. Two things still multiply per worker:
+The image runs a single uvicorn worker, and that is the recommended setting. The lock that stops two turns (or a turn and a delete) from running at once in one session (`409`) is a lease in the database (`"Chatsession".busy_until` and its holder `busy_by`: 5 minutes, renewed every minute while a turn runs, however long the model takes, and expiring on its own if a worker dies; a turn whose lease was taken over stops without saving), so several uvicorn workers or api replicas are safe for it. Two things still multiply per worker:
 
 - **Rate limits** are counted in each process's memory, so with N workers a client gets up to N times every limit (10/min for sign-in, 20/min for messages).
 - **Whisper and CLAP** are loaded once per worker, so each worker needs their RAM again. Keep 1 worker unless the host has the memory for more.

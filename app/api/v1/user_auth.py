@@ -12,6 +12,7 @@ from app.utils.exceptions import (
     ValidationException,
     DatabaseException,
     DuplicateRecordException,
+    ServiceUnavailableException,
 )
 from app.utils.auth_middleware import jwt_handler, get_current_user
 from app.utils.audit_logging import audit_logger, AuditEventType
@@ -38,6 +39,9 @@ class UserLogin(BaseModel):
 
 class GoogleLogin(BaseModel):
     id_token: str
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 class LoginResponse(BaseModel):
     access_token: str
@@ -141,6 +145,36 @@ async def login_with_google(body: GoogleLogin, request: Request):
     await _audit(request, AuditEventType.USER_LOGIN, "low", user_id=account["id"], method="google")
     await logger.info(f"Google sign-in successful [ID: {correlation_id}]")
     return _tokens(account)
+
+@router.post('/auth/refresh', response_model=LoginResponse)
+@limiter.limit(AUTH_RATE_LIMIT)
+async def refresh_tokens(body: RefreshRequest, request: Request):
+    """Trade a valid refresh token for a new access + refresh pair. The old refresh token stays valid until it
+    expires (tokens are stateless); revocation (Google link, deleted account) applies exactly as for access tokens."""
+    correlation_id = getattr(request.state, 'correlation_id', 'unknown')
+    issued_at = time.time()  # before the user check, like login: a revocation committing meanwhile covers the new pair
+    try:
+        claims = jwt_handler.verify_token(body.refresh_token)  # signature and expiry
+    except HTTPException:
+        claims = {}
+    user_id, token_iat, email = claims.get("sub"), claims.get("iat"), claims.get("email")
+    valid_shape = (
+        claims.get("type") == "refresh"
+        and isinstance(user_id, str)
+        and isinstance(token_iat, (int, float))
+        and not isinstance(token_iat, bool)
+    )
+    try:
+        valid = valid_shape and await auth_service.user_exists(user_id, token_iat)
+    except Exception as e:
+        await logger.error(f"Token refresh error - {type(e).__name__} [ID: {correlation_id}]")
+        raise ServiceUnavailableException() from None
+    if not valid:
+        await _audit(request, AuditEventType.AUTHENTICATION_FAILED, "medium", reason="refresh_token_rejected")
+        raise AuthenticationException("Invalid refresh token")
+
+    await logger.info(f"Token refresh successful [ID: {correlation_id}]")
+    return _tokens({"id": user_id, "email": email}, issued_at)
 
 @router.post('/auth/logout')
 async def logout_user(current_user: dict = Depends(get_current_user)):

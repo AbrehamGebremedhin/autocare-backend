@@ -232,7 +232,7 @@ def test_google_link_revokes_tokens_issued_before_it(client, fake_users, google)
     assert _logout(client, squatter["access_token"]).status_code == 401
     assert _logout(client, victim["access_token"]).status_code == 200
 
-    # Refresh tokens carry iat too, so a future refresh route rejects the squatter's and accepts the victim's.
+    # Refresh tokens carry iat too, so the refresh route rejects the squatter's and accepts the victim's.
     old_refresh, new_refresh = _claims_of(squatter["refresh_token"]), _claims_of(victim["refresh_token"])
     assert old_refresh["type"] == new_refresh["type"] == "refresh"
     assert asyncio.run(auth_service.user_exists(old_refresh["sub"], old_refresh["iat"])) is False
@@ -313,6 +313,87 @@ def test_google_cannot_reach_an_account_linked_to_another_google_user(client, fa
     assert next(iter(fake_users.rows.values()))["google_sub"] == "someone-else"
 
 
+# --- refresh ------------------------------------------------------------------
+
+REFRESH_401 = {"error_code": "AUTH_001", "message": "Invalid refresh token"}
+
+
+def _refresh(client, token):
+    return client.post("/api/v1/auth/refresh", json={"refresh_token": token})
+
+
+def _strip(r) -> dict:
+    return {k: v for k, v in r.json().items() if k not in ("correlation_id", "timestamp")}
+
+
+def test_refresh_returns_a_new_working_token_pair(client, fake_users):
+    first = _register(client).json()
+    r = _refresh(client, first["refresh_token"])
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == TOKEN_KEYS and body["user_id"] == first["user_id"] and body["expires_in"] == 1800
+    assert _claims_of(body["access_token"])["type"] == "access"
+    assert _claims_of(body["refresh_token"])["type"] == "refresh"
+    assert _logout(client, body["access_token"]).status_code == 200
+    assert _refresh(client, body["refresh_token"]).status_code == 200
+
+
+def test_refresh_rejects_an_access_token(client, fake_users):
+    access = _register(client).json()["access_token"]
+    r = _refresh(client, access)
+    assert r.status_code == 401 and _strip(r) == REFRESH_401
+
+
+def test_refresh_token_issued_before_a_google_link_is_401(client, fake_users, google):
+    squatter = _register(client, email="driver@gmail.com", password="attacker-pass").json()
+    assert _google(client).status_code == 200  # links the account and revokes earlier tokens
+    r = _refresh(client, squatter["refresh_token"])
+    assert r.status_code == 401 and _strip(r) == REFRESH_401
+
+
+def test_refresh_rejects_bad_expired_and_foreign_tokens_alike(client, fake_users, caplog):
+    import time
+
+    from app.utils.auth_middleware import jwt_handler
+
+    user_id = _register(client).json()["user_id"]
+    claims = {"sub": user_id, "type": "refresh", "iat": time.time()}
+    expired = jwt.encode({**claims, "exp": time.time() - 60}, jwt_handler.secret_key, "HS256")
+    foreign = jwt.encode({**claims, "exp": time.time() + 600}, "another-secret-0123456789-abcdefghijk", "HS256")
+    no_iat = jwt.encode({"sub": user_id, "type": "refresh", "exp": time.time() + 600}, jwt_handler.secret_key, "HS256")
+    with caplog.at_level(logging.DEBUG):
+        responses = [_refresh(client, t) for t in ("not-a-jwt", expired, foreign, no_iat)]
+    for token, r in zip(("not-a-jwt", expired, foreign, no_iat), responses):
+        assert r.status_code == 401 and _strip(r) == REFRESH_401
+        assert token not in caplog.text
+
+
+def test_refresh_of_a_deleted_user_is_401(client, fake_users):
+    refresh = _register(client).json()["refresh_token"]
+    fake_users.rows.clear()
+    assert _refresh(client, refresh).status_code == 401
+
+
+def test_refresh_during_a_database_outage_is_503(client, fake_users, fake_pool, monkeypatch):
+    from app.CRUD.user_crud import UserCRUD
+    from app.services import auth_service
+
+    refresh = _register(client).json()["refresh_token"]
+    monkeypatch.setattr(auth_service, "users", UserCRUD())  # the real CRUD, on the failing fake pool
+    fake_pool.error = ConnectionError("db down")
+    r = _refresh(client, refresh)
+    assert r.status_code == 503 and r.json()["error_code"] == "SYS_002"
+
+
+def test_refresh_never_logs_the_token(client, fake_users, caplog):
+    refresh = _register(client).json()["refresh_token"]
+    with caplog.at_level(logging.DEBUG):
+        r = _refresh(client, refresh)
+    assert r.status_code == 200
+    for secret in (refresh, r.json()["access_token"], r.json()["refresh_token"]):
+        assert secret not in caplog.text
+
+
 # --- rate limits --------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -321,6 +402,7 @@ def test_google_cannot_reach_an_account_linked_to_another_google_user(client, fa
         ("/api/v1/auth/login", {"email": "nobody@example.com", "password": "s3cret-pass"}),
         ("/api/v1/auth/register", {"email": "a@example.com", "password": "short"}),
         ("/api/v1/auth/google", {"id_token": "t"}),
+        ("/api/v1/auth/refresh", {"refresh_token": "t"}),
     ],
 )
 def test_sign_in_routes_are_rate_limited(client, fake_users, path, body):

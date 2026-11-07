@@ -102,19 +102,20 @@ docker compose start api
 - **Email + password**: `POST /api/v1/auth/register` and `POST /api/v1/auth/login` with `{"email", "password"}` (8 to 1024 chars, argon2id). There is no email confirmation, so email+password accounts are **not verified**. Register returns the same tokens as login; a taken email gets `409`. Unknown email and wrong password get the same `401`.
 - **Google**: in Google Cloud Console create OAuth client ids for each client you ship (Web, Android, iOS) and put them comma-separated in `GOOGLE_CLIENT_IDS`. The client signs in with Google, gets an **ID token** and sends `{"id_token": "..."}` to `POST /api/v1/auth/google`; the server checks signature, audience, issuer, expiry and `email_verified` and returns the app's tokens. With `GOOGLE_CLIENT_IDS` empty the route returns `404`.
 - **Linking**: when the email already has a password account, Google sign-in links to it only if Google is authoritative for the address (`@gmail.com`, `@googlemail.com`, or a Workspace token with an `hd` claim). Linking removes the password and invalidates every token issued before it, so someone who pre-registered the address loses access; the Google user inherits the account's cars and sessions. For any other address Google sign-in returns `401` instead of linking. New accounts are created for any verified Google email.
-- **Tokens and logout**: every sign-in returns `access_token` (30 minutes) and `refresh_token` (7 days), stateless HS256 JWTs. `POST /api/v1/auth/logout` only checks the bearer token; nothing is revoked, so clients must discard both tokens.
+- **Tokens and refresh**: every sign-in returns `access_token` (30 minutes) and `refresh_token` (7 days), stateless HS256 JWTs. Before the access token expires, send `{"refresh_token": "..."}` to `POST /api/v1/auth/refresh` (no bearer header) for a new pair in the same shape. Only a refresh token is accepted there, and one issued before a Google link or for a deleted account is refused; every failure is the same `401` (`Invalid refresh token`). The old refresh token keeps working until it expires, so clients should store the new one.
+- **Logout**: `POST /api/v1/auth/logout` only checks the bearer token; nothing is revoked (no server-side sessions), so clients must discard both tokens.
 - **Database outages**: while Postgres is unreachable, routes that check a token answer `503` (`{"error_code": "SYS_002", "message": "Service temporarily unavailable", ...}`), not `401`. Clients should keep their tokens and retry; only a `401` means sign in again.
-- Register, login and Google sign-in are limited to 10 requests per minute per client address, chat messages to 20.
+- Register, login, Google sign-in and refresh are each limited to 10 requests per minute per client address, chat messages to 20.
 
 Accounts have no delete route. Deleting one by hand (`delete from users where id = '...'`) cascades to the profile and sessions, but leaves the user's uploaded media in `MEDIA_DIR/{user_id}`; remove it with `docker compose exec api rm -rf /data/media/<user_id>`.
 
 ## API
 
-Interactive reference: `http://localhost:8000/docs`. `/docs`, `/redoc` and `/openapi.json` are public. Every route except `/api/v1/auth/register|login|google`, `/health` and the docs needs `Authorization: Bearer <access_token>`; the user id always comes from the token.
+Interactive reference: `http://localhost:8000/docs`. `/docs`, `/redoc` and `/openapi.json` are public. Every route except `/api/v1/auth/register|login|google|refresh`, `/health` and the docs needs `Authorization: Bearer <access_token>`; the user id always comes from the token.
 
 | Area | Routes |
 | --- | --- |
-| Auth | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/google`, `POST /api/v1/auth/logout` |
+| Auth | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/google`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout` |
 | Cars | `GET /api/v1/cars`, `POST /api/v1/cars` (`{"make", "model", "year"}`), `DELETE /api/v1/cars/{car_id}` |
 | Sessions | `POST /api/v1/sessions` (`{"car_id"}`), `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
 | Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE) |

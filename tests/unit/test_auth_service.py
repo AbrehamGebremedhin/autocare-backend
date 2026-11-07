@@ -306,9 +306,45 @@ async def test_link_google_sets_sub_and_drops_password_in_one_statement(fake_poo
     assert len(fake_pool.calls) == 1
     _, sql, args = fake_pool.calls[0]
     flat = " ".join(sql.split())
-    assert "SET google_sub = $2, password_hash = NULL, tokens_valid_after = now()" in flat
+    assert "SET google_sub = $2, password_hash = NULL, tokens_valid_after = greatest(tokens_valid_after, now())" in flat
     assert "WHERE lower(email) = lower($1) AND google_sub IS NULL" in flat
     assert args == ("driver@gmail.com", "google-sub-1")
+
+
+async def test_logout_revokes_a_refresh_that_checked_its_token_before_the_cutoff_committed(fake_users):
+    # The race: a refresh reads its clock after logout's first cutoff, then checks the old token before that
+    # UPDATE commits (so the check passes). The second cutoff, read after the commit, revokes its new pair.
+    user = await auth_service.register("driver@example.com", "s3cret-pass")
+    old_iat = time.time() - 1  # the stolen refresh token, minted earlier
+    fake_users.rows[user["id"]]["tokens_valid_after"] = old_iat - 1  # the account is older than the token
+    real = fake_users.revoke_tokens
+    refresh = {}
+
+    async def first_commit_lags(user_id, cutoff):
+        if not refresh:
+            refresh["iat"] = time.time()  # the refresh's issued_at, after logout read its cutoff
+            refresh["passed"] = await fake_users.exists(user_id, old_iat)  # before the UPDATE lands
+        await real(user_id, cutoff)
+
+    fake_users.revoke_tokens = first_commit_lags
+    await auth_service.log_out_everywhere(user["id"], old_iat)
+    assert refresh["passed"] is True
+    assert await fake_users.exists(user["id"], refresh["iat"]) is False  # the refreshed pair is revoked
+    assert await fake_users.exists(user["id"], time.time()) is True  # the next sign-in works
+
+
+async def test_logout_cutoff_is_taken_again_after_the_first_update(fake_users, monkeypatch):
+    user = await auth_service.register("driver@example.com", "s3cret-pass")
+    cutoffs = []
+    real = fake_users.revoke_tokens
+
+    async def spy(user_id, cutoff):
+        cutoffs.append(cutoff)
+        await real(user_id, cutoff)
+
+    monkeypatch.setattr(fake_users, "revoke_tokens", spy)
+    await auth_service.log_out_everywhere(user["id"], time.time() - 1)
+    assert len(cutoffs) == 2 and cutoffs[0] < cutoffs[1]
 
 
 async def test_inserts_bind_every_value(fake_pool):

@@ -188,7 +188,7 @@ class FakeUserStore:
         if row is None or row["google_sub"] is not None:
             return None
         self._check_unique(google_sub=google_sub, skip=row["id"])
-        row.update(google_sub=google_sub, password_hash=None, tokens_valid_after=time.time())
+        row.update(google_sub=google_sub, password_hash=None, tokens_valid_after=max(row["tokens_valid_after"], time.time()))
         return self._public(row)
 
 

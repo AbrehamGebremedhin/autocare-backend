@@ -62,10 +62,12 @@ class UserCRUD:
         Emails are never verified at registration, so a password set on this row may belong to whoever
         registered the address first. Only call this when Google is authoritative for the address: the
         owner of that Google account wins and from now on reaches the account through Google only. They
-        inherit whatever is already in it (cars, sessions); nothing is wiped.
+        inherit whatever is already in it (cars, sessions); nothing is wiped. The cutoff never moves back, so
+        a logout cutoff (taken from the app's clock) that is later than the database's now() stays in force.
         """
         return await pool.fetchrow(
-            "UPDATE users SET google_sub = $2, password_hash = NULL, tokens_valid_after = now()"
+            "UPDATE users SET google_sub = $2, password_hash = NULL,"
+            " tokens_valid_after = greatest(tokens_valid_after, now())"
             " WHERE lower(email) = lower($1) AND google_sub IS NULL RETURNING id, email",
             email,
             google_sub,

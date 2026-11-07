@@ -156,9 +156,11 @@ def test_logout_validates_token_and_revokes_the_users_tokens(client, auth_header
     assert r.status_code == 200
     assert r.json() == {"message": "Logged out successfully."}
     auth_middleware.validate_user.assert_awaited_once()
-    [(method, sql, args)] = fake_pool.calls
-    assert method == "execute" and "SET tokens_valid_after = greatest(tokens_valid_after, to_timestamp($2))" in sql
-    assert "WHERE id = $1" in sql and args[0] == user_id and args[1] > _claims_of(token)["iat"]
+    first, second = fake_pool.calls  # the cutoff, then again with the clock read after it committed
+    for method, sql, args in (first, second):
+        assert method == "execute" and "SET tokens_valid_after = greatest(tokens_valid_after, to_timestamp($2))" in sql
+        assert "WHERE id = $1" in sql and args[0] == user_id
+    assert first[2][1] > _claims_of(token)["iat"]
     assert token not in caplog.text
     assert "Logout successful" in caplog.text
 

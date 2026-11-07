@@ -406,3 +406,51 @@ async def test_heartbeat_keeps_a_lease_alive_past_its_length(real_pool, monkeypa
         assert await diagnosis.sessions.claim(sid, owner) is not None
     finally:
         await pool.execute("delete from users where id = $1", owner)
+
+
+async def test_logout_revokes_a_refresh_that_raced_its_first_update(real_pool, strict_clock, monkeypatch):
+    # Interleaving on the real table: the refresh reads its clock after logout's first cutoff and checks the
+    # old token before that UPDATE runs; logout's second, post-commit cutoff must still revoke the new pair.
+    import time
+
+    from app.services import auth_service
+
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    users = UserCRUD()
+    monkeypatch.setattr(auth_service, "users", users)
+    user_id = await _make_user(uuid4().hex[:8])
+    try:
+        await pool.execute("update users set tokens_valid_after = now() - interval '1 hour' where id = $1", user_id)
+        old_iat = time.time() - 60  # the stolen refresh token
+        real, refresh = users.revoke_tokens, {}
+
+        async def first_update_lags(uid, cutoff):
+            if not refresh:
+                refresh["iat"] = time.time()
+                refresh["passed"] = await users.exists(uid, old_iat)
+            await real(uid, cutoff)
+
+        monkeypatch.setattr(users, "revoke_tokens", first_update_lags)
+        await auth_service.log_out_everywhere(user_id, old_iat)
+        assert refresh["passed"] is True
+        assert await users.exists(user_id, old_iat) is False
+        assert await users.exists(user_id, refresh["iat"]) is False  # the raced refresh's pair is revoked too
+        assert await users.exists(user_id, time.time()) is True  # the next sign-in works
+    finally:
+        await pool.execute("delete from users where id = $1", user_id)
+
+
+async def test_google_link_never_moves_a_later_logout_cutoff_back(real_pool):
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    users = UserCRUD()
+    tag = uuid4().hex[:8]
+    email = f"link-{tag}@gmail.com"
+    try:
+        created = await users.create_password_user(email, "$argon2id$placeholder")
+        ahead = await pool.fetchval("select extract(epoch from now())::float8") + 5  # an app clock 5 s ahead
+        await users.revoke_tokens(created["id"], ahead)
+        assert await users.link_google(email, f"sub-{tag}") is not None
+        assert await users.exists(created["id"], ahead - 1) is False  # still revoked after the link
+        assert await users.exists(created["id"], ahead) is True
+    finally:
+        await pool.execute("delete from users where lower(email) = $1", email)

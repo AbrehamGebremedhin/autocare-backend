@@ -84,6 +84,8 @@ The image runs a single uvicorn worker, and that is the recommended setting. The
 - **Rate limits** are counted in each process's memory, so with N workers a client gets up to N times every limit (10/min for sign-in, 20/min for messages).
 - **Whisper and CLAP** are loaded once per worker, so each worker needs their RAM again. Keep 1 worker unless the host has the memory for more.
 
+API replicas on other hosts must keep their clocks NTP-synced with each other and with the database host. Token revocation compares the app's clock (token `iat`, the logout cutoff) with the database's (a Google link), so a skew of a few seconds lets tokens minted that long before a logout on another host survive it, or refuses fresh sign-ins on a slower host for that long (PyJWT also rejects an `iat` from the future).
+
 ## Backup and restore
 
 ```

@@ -93,8 +93,13 @@ async def log_out_everywhere(user_id: str, token_issued_at: float) -> None:
     in µs). It is at least 10 µs past the calling token's iat (more than the float and µs rounding of
     to_timestamp), so that token dies even when the clock has not ticked since it was minted. A token
     minted in the same instant as the cutoff stays valid (tokens_valid_after <= iat).
+
+    A /auth/refresh running alongside could read its clock after that cutoff yet check its old token before
+    the UPDATE commits, and so mint a pair that outlives the logout. A second cutoff, read after the first
+    UPDATE has committed, revokes such a pair too; refreshes that check later are refused outright.
     """
     await users.revoke_tokens(user_id, max(time.time(), token_issued_at + 1e-5))
+    await users.revoke_tokens(user_id, time.time())
 
 
 def _verify_google_token(token: str) -> dict:

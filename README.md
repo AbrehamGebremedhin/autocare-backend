@@ -10,12 +10,13 @@ Settings come from `.env` (`.env.example` lists every name with its default; `ap
 
 Required: `JWT_SECRET_KEY` (32+ chars), `POSTGRES_PASSWORD`, `DATABASE_URL`, `DEEPSEEK_API_KEY`.
 
-Optional: `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`, `MEDIA_USER_QUOTA_MB`.
+Optional: `REGISTRATION_CODE`, `ENABLE_DOCS`, `DAILY_MESSAGE_LIMIT`, `MAX_CONCURRENT_MEDIA_TURNS`, `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`, `MEDIA_USER_QUOTA_MB`.
 
 - `POSTGRES_PASSWORD` is also pasted into the api's `DATABASE_URL`, so it must be URL-safe (letters, digits, `-_.~`). Generate it with `openssl rand -hex 24`.
 - Inside compose, the api's `DATABASE_URL` is set by `docker-compose.yml` (host `db`) and overrides `.env`. The `.env` value is only for running the app or scripts outside compose, e.g. `postgresql://autocare:<password>@localhost:5432/autocare`.
 - `JWT_SECRET_KEY` signs the app's own tokens (HS256): `openssl rand -hex 32`.
 - Set `ENV=production` on the server (adds the HSTS header).
+- Set `REGISTRATION_CODE` on any public deployment: it is how sign-up is restricted (see [Abuse protection](#abuse-protection)). Left empty, anyone can register.
 
 ## VPS setup
 
@@ -110,7 +111,7 @@ docker compose start api
 
 ## Auth
 
-- **Email + password**: `POST /api/v1/auth/register` and `POST /api/v1/auth/login` with `{"email", "password"}` (8 to 1024 chars, argon2id). There is no email confirmation, so email+password accounts are **not verified**. Register returns the same tokens as login; a taken email gets `409`. Unknown email and wrong password get the same `401`.
+- **Email + password**: `POST /api/v1/auth/register` and `POST /api/v1/auth/login` with `{"email", "password"}` (8 to 1024 chars, argon2id). There is no email confirmation, so email+password accounts are **not verified**. Register returns the same tokens as login; a taken email gets `409`. With `REGISTRATION_CODE` set, register also needs `"invite_code"` (see [Abuse protection](#abuse-protection)). Unknown email and wrong password get the same `401`.
 - **Google**: in Google Cloud Console create OAuth client ids for each client you ship (Web, Android, iOS) and put them comma-separated in `GOOGLE_CLIENT_IDS`. The client signs in with Google, gets an **ID token** and sends `{"id_token": "..."}` to `POST /api/v1/auth/google`; the server checks signature, audience, issuer, expiry and `email_verified` and returns the app's tokens. With `GOOGLE_CLIENT_IDS` empty the route returns `404`.
 - **Linking**: when the email already has a password account, Google sign-in links to it only if Google is authoritative for the address (`@gmail.com`, `@googlemail.com`, or a Workspace token with an `hd` claim). Linking removes the password and invalidates every token issued before it, so someone who pre-registered the address loses access; the Google user inherits the account's cars and sessions. For any other address Google sign-in returns `401` instead of linking. New accounts are created for any verified Google email.
 - **Tokens and refresh**: every sign-in returns `access_token` (30 minutes) and `refresh_token` (7 days), stateless HS256 JWTs. Before the access token expires, send `{"refresh_token": "..."}` to `POST /api/v1/auth/refresh` (no bearer header) for a new pair in the same shape. Only a refresh token is accepted there, and one issued before a logout or a Google link, or for a deleted account, is refused; every failure is the same `401` (`Invalid refresh token`). The old refresh token keeps working until it expires, so clients should store the new one.
@@ -122,7 +123,7 @@ Accounts have no delete route. Deleting one by hand (`delete from users where id
 
 ## API
 
-Interactive reference: `http://localhost:8000/docs`. `/docs`, `/redoc` and `/openapi.json` are public. Every route except `/api/v1/auth/register|login|google|refresh`, `/health` and the docs needs `Authorization: Bearer <access_token>`; the user id always comes from the token.
+Interactive reference: `http://localhost:8000/docs`, served only when `ENABLE_DOCS=true` (off by default: `/docs`, `/redoc` and `/openapi.json` answer `404`). When on, they are public. Every route except `/api/v1/auth/register|login|google|refresh`, `/health` and the docs needs `Authorization: Bearer <access_token>`; the user id always comes from the token.
 
 | Area | Routes |
 | --- | --- |
@@ -184,6 +185,16 @@ It deletes files under `MEDIA_DIR` whose modification time is older than `--days
 ```
 0 3 * * * cd /path/to/autocare-backend && docker compose run --rm api uv run --no-sync python scripts/prune_media.py --days 90
 ```
+
+## Abuse protection
+
+The API is meant to be reachable from the internet, so these limits are on by default or one setting away. Defaults are in `app/core/config.py`.
+
+- **Invitation code** (`REGISTRATION_CODE`, empty by default = open registration). Set it on a public deployment. While it is set, `POST /api/v1/auth/register` needs the same value in the body field `invite_code`; a missing and a wrong code both get `403` `Registration is by invitation.`, checked before any hashing or database work, and the code is never logged. `POST /api/v1/auth/google` then signs in or links existing accounts as usual but refuses to create a new one (the same `403`). Existing accounts are not affected.
+- **API docs off** (`ENABLE_DOCS`, default `false`). `/docs`, `/redoc` and `/openapi.json` answer the normal `404` unless it is `true`.
+- **Daily message cap** (`DAILY_MESSAGE_LIMIT`, default 200, `0` turns it off). Each accepted `POST /sessions/{id}/messages` counts one for the account per UTC day. Past the cap the route answers `429` (`EXT_003`) with `Retry-After` set to the seconds until midnight UTC, before a lease is claimed or any model work starts. Requests refused for an unknown session or invalid input are not counted; one refused with `409` because the session is busy is.
+- **Media ceiling** (`MAX_CONCURRENT_MEDIA_TURNS`, default 2, `0` turns it off). At most this many turns that carry files (images, audio, video) run at once in the process. Another one is answered `429` at once (`Retry-After: 15`, `The server is busy processing other media. Try again shortly.`) before anything is claimed or stored. Text-only turns are not limited.
+- **Per process.** The daily counts and the media slots live in the process's memory: they reset when it restarts, and with several workers each would allow its own share (like the rate limits, see [Workers](#workers)). The image runs one worker.
 
 ## Development and tests
 

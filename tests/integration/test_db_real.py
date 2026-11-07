@@ -312,3 +312,44 @@ async def test_logout_revokes_access_and_refresh_tokens_and_a_new_login_works(re
             assert renewed.status_code == 200
     finally:
         await pool.execute("delete from users where lower(email) = $1", email)
+
+
+async def test_session_lease_claim_renew_release_and_expiry(real_pool):
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    sessions = ChatSessionCRUD()
+    tag = uuid4().hex[:8]
+    owner, other = await _make_user(tag), await _make_user(f"{tag}-other")
+    try:
+        sid = (await sessions.create({"user_id": owner, "car_id": "c"}))["id"]
+
+        async def lease():
+            return await pool.fetchval(
+                'select extract(epoch from busy_until - now())::float8 from "Chatsession" where id = $1', sid
+            )
+
+        assert await sessions.claim(sid, other) is False  # another user's id never takes it
+        assert await lease() is None
+        wins = await asyncio.gather(*(sessions.claim(sid, owner) for _ in range(8)))
+        assert sorted(wins) == [False] * 7 + [True]  # concurrent claims: exactly one wins
+        assert 290 < await lease() <= 300
+        assert await sessions.claim(sid, owner) is False  # held
+
+        await pool.execute('update "Chatsession" set busy_until = now() + interval \'5 seconds\' where id = $1', sid)
+        assert await sessions.renew(sid, 120) is True
+        assert 110 < await lease() <= 120
+
+        await sessions.release(sid)
+        assert await lease() is None
+        assert await sessions.renew(sid) is False  # nothing held, nothing renewed
+        assert await sessions.claim(sid, owner) is True  # free again
+
+        await pool.execute('update "Chatsession" set busy_until = now() - interval \'1 second\' where id = $1', sid)
+        assert await sessions.claim(sid, other) is False  # an expired lease is still owner-only
+        assert await sessions.claim(sid, owner) is True  # a crashed worker's lease expires on its own
+
+        assert await sessions.claim(str(uuid4()), owner) is False  # no such session
+        assert await sessions.claim("not-a-uuid", owner) is False
+        await sessions.delete({"id": sid, "user_id": owner})  # the lease dies with the row
+        assert await sessions.claim(sid, owner) is False
+    finally:
+        await pool.execute("delete from users where id = any($1::uuid[])", [owner, other])

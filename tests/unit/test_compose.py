@@ -145,7 +145,7 @@ def test_dockerfile_bake_step_placeholders():
 def test_dockerfile_cmd_runs_one_uvicorn_worker_behind_proxy_headers():
     cmd = next(line for line in _dockerfile() if line.startswith("CMD "))
     assert "uvicorn" in cmd and '"--proxy-headers"' in cmd
-    assert "--workers" not in cmd  # the in-flight session lock is per process
+    assert "--workers" not in cmd  # one worker: rate limits and the Whisper/CLAP models are per process
 
 
 def test_dockerignore_keeps_scripts_and_drops_car_data():

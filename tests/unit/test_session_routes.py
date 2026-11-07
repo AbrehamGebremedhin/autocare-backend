@@ -11,18 +11,12 @@ from app.api.v1 import session_route
 from app.CRUD.chat_session_crud import ChatSessionCRUD
 from app.utils.limiter import limiter
 
-BUSY = "A reply is still being generated for this session."
-DELETING = "This session is being deleted."
+BUSY = "This session is busy: a reply is still being generated, or it is being deleted."
 
 
 @pytest.fixture(autouse=True)
 def _clean():
     limiter.reset()
-    session_route._in_flight.clear()
-    session_route._deleting.clear()
-    yield
-    session_route._in_flight.clear()
-    session_route._deleting.clear()
 
 
 def _url(session_id):
@@ -130,10 +124,26 @@ def test_delete_succeeds_when_storage_fails(client, auth_headers, existing_sessi
 
 def test_delete_while_a_turn_is_in_flight_is_409(client, auth_headers, existing_session, fake_store, media_root, user_id):
     keep = _put(media_root, user_id, existing_session["id"], "m1/0.jpg")
-    session_route._in_flight.add(existing_session["id"])
+    fake_store.hold(existing_session["id"])  # a turn on any worker holds the lease
     r = client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
     assert r.status_code == 409 and r.json()["message"] == BUSY
     assert existing_session["id"] in fake_store.rows and keep.exists()
+
+
+def test_delete_after_an_expired_lease_succeeds(client, auth_headers, existing_session, fake_store):
+    fake_store.hold(existing_session["id"], seconds=-1)  # its worker crashed mid-turn
+    r = client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
+    assert r.status_code == 200 and existing_session["id"] not in fake_store.rows
+
+
+def test_delete_releases_the_lease_when_the_row_delete_fails(client, auth_headers, existing_session, fake_store):
+    async def broken(filters):
+        raise RuntimeError("db broke")
+
+    fake_store.delete = broken
+    with pytest.raises(RuntimeError):
+        client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
+    assert not fake_store.busy(existing_session["id"])
 
 
 async def test_send_while_delete_is_running_is_409(auth_headers, existing_session, fake_store, media_root, fake_llm):
@@ -153,13 +163,13 @@ async def test_send_while_delete_is_running_is_409(auth_headers, existing_sessio
         deleting = asyncio.create_task(ac.delete(f"/api/v1/sessions/{sid}", headers=auth_headers))
         await asyncio.wait_for(entered.wait(), 5)
         r = await ac.post(_url(sid), data={"text": "fan clicks"}, headers=auth_headers)
-        assert r.status_code == 409 and r.json()["message"] == DELETING
+        assert r.status_code == 409 and r.json()["message"] == BUSY
         again = await ac.delete(f"/api/v1/sessions/{sid}", headers=auth_headers)
-        assert again.status_code == 409 and again.json()["message"] == DELETING
+        assert again.status_code == 409 and again.json()["message"] == BUSY
         gate.set()
         assert (await asyncio.wait_for(deleting, 5)).status_code == 200
     assert fake_llm.calls == 0 and sid not in fake_store.rows
-    assert sid not in session_route._in_flight and sid not in session_route._deleting
+    assert not fake_store.busy(sid)
 
 
 # --- send ---------------------------------------------------------------------
@@ -178,7 +188,7 @@ def test_send_streams_sse(client, auth_headers, existing_session, fake_llm, fake
     events = _parse(r.text)
     assert events[0] == ("stage", {"name": "searching"}) and [e for e, _ in events[-2:]] == ["state", "done"]
     assert [m["role"] for m in fake_store.messages(existing_session["id"])] == ["user", "assistant"]
-    assert existing_session["id"] not in session_route._in_flight
+    assert not fake_store.busy(existing_session["id"])
 
 
 def test_send_to_other_users_session_is_404(client, auth_headers_other_user, existing_session, fake_llm):
@@ -229,7 +239,7 @@ def test_send_is_rate_limited(client, auth_headers, fake_store):
     assert codes[:20] == [404] * 20 and codes[20] == 429
 
 
-# --- in-flight lock -------------------------------------------------------------
+# --- session lease ----------------------------------------------------------------
 
 async def test_concurrent_send_gets_409(auth_headers, existing_session, slow_llm, fake_store):
     import main
@@ -237,14 +247,52 @@ async def test_concurrent_send_gets_409(auth_headers, existing_session, slow_llm
     sid = existing_session["id"]
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as ac:
         first = asyncio.create_task(ac.post(_url(sid), data={"text": "fan clicks"}, headers=auth_headers))
-        await asyncio.wait_for(_until(lambda: sid in session_route._in_flight), 5)
+        await asyncio.wait_for(_until(lambda: fake_store.busy(sid)), 5)
         second = await ac.post(_url(sid), data={"text": "again"}, headers=auth_headers)
         assert second.status_code == 409 and second.json()["message"] == BUSY
         slow_llm.gate.set()
         r1 = await asyncio.wait_for(first, 5)
     assert r1.status_code == 200 and _parse(r1.text)[-1][0] == "done"
-    assert sid not in session_route._in_flight
+    assert not fake_store.busy(sid)
     assert [m["content"] for m in fake_store.messages(sid) if m["role"] == "user"] == ["fan clicks"]
+
+
+def test_send_while_another_worker_holds_the_lease_is_409(client, auth_headers, existing_session, fake_store, fake_llm):
+    sid = existing_session["id"]
+    fake_store.hold(sid)
+    r = client.post(_url(sid), data={"text": "fan clicks"}, headers=auth_headers)
+    assert r.status_code == 409 and r.json()["message"] == BUSY
+    assert fake_llm.calls == 0 and fake_store.messages(sid) == []
+
+
+def test_send_takes_over_an_expired_lease(client, auth_headers, existing_session, fake_store, fake_llm):
+    sid = existing_session["id"]
+    fake_store.hold(sid, seconds=-1)  # left by a crashed worker
+    r = client.post(_url(sid), data={"text": "fan clicks"}, headers=auth_headers)
+    assert r.status_code == 200 and _parse(r.text)[-1][0] == "done"
+    assert not fake_store.busy(sid)
+
+
+def test_turn_renews_the_lease_before_each_long_stage(client, auth_headers, existing_session, fake_store, fake_llm):
+    r = client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
+    assert _parse(r.text)[-1][0] == "done"
+    assert fake_store.renewals == 2  # before the search + reply, and before the state update
+
+
+async def test_send_claims_only_after_the_ownership_check(auth_headers_other_user, existing_session, fake_store, fake_llm):
+    import main
+
+    claims = []
+    real = fake_store.claim
+
+    async def spy(session_id, user_id, seconds=300):
+        claims.append(user_id)
+        return await real(session_id, user_id, seconds)
+
+    fake_store.claim = spy
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as ac:
+        r = await ac.post(_url(existing_session["id"]), data={"text": "hi"}, headers=auth_headers_other_user)
+    assert r.status_code == 404 and claims == [] and not fake_store.busy(existing_session["id"])
 
 
 def test_lock_released_after_llm_failure(client, auth_headers, existing_session, fake_llm):
@@ -256,46 +304,94 @@ def test_lock_released_after_llm_failure(client, auth_headers, existing_session,
     assert r.status_code == 200 and _parse(r.text)[-1][0] == "done"
 
 
-def test_lock_released_if_building_response_fails(client, auth_headers, existing_session, fake_llm, monkeypatch):
+def test_lock_released_if_building_response_fails(client, auth_headers, existing_session, fake_llm, fake_store, monkeypatch):
     def broken(*args, **kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(session_route, "StreamingResponse", broken)
     with pytest.raises(RuntimeError):
         client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
-    assert existing_session["id"] not in session_route._in_flight
+    assert not fake_store.busy(existing_session["id"])
 
 
 async def test_lock_released_when_client_disconnects(existing_session, car, fake_llm, fake_store):
     sid = existing_session["id"]
-    session_route._in_flight.add(sid)
+    assert await fake_store.claim(sid, existing_session["user_id"])
     stream, _ = session_route._events(existing_session, car, "fan clicks")
     assert (await anext(stream)).startswith("event: stage")
     assert (await anext(stream)).startswith("event: token")
     await stream.aclose()  # what the server does when the client goes away
-    assert sid not in session_route._in_flight
+    await asyncio.wait_for(_until(lambda: not fake_store.busy(sid)), 2)
     assert [m["role"] for m in fake_store.messages(sid)] == ["user"]  # no partial reply saved
 
 
-def test_lock_released_if_stream_never_starts(existing_session, car):
+async def test_lock_released_when_the_stream_is_cancelled(existing_session, car, slow_llm, fake_store):
+    # Starlette streams inside an anyio task group and cancels its scope on a disconnect. anyio keeps
+    # cancelling every await inside that scope, so an awaited release in the stream's cleanup would never
+    # reach the database; the release runs in a task of its own.
+    import anyio
+
     sid = existing_session["id"]
-    session_route._in_flight.add(sid)
+    assert await fake_store.claim(sid, existing_session["user_id"])
+    stream, _ = session_route._events(existing_session, car, "fan clicks")
+
+    async def consume():
+        async for _ in stream:
+            pass
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(consume)
+        await asyncio.wait_for(_until(lambda: slow_llm.calls == 1), 2)  # now waiting on the model
+        tg.cancel_scope.cancel()
+    await asyncio.wait_for(_until(lambda: not fake_store.busy(sid)), 2)
+
+
+async def test_lock_released_if_stream_never_starts(existing_session, car, fake_store):
+    sid = existing_session["id"]
+    assert await fake_store.claim(sid, existing_session["user_id"])
     stream, _ = session_route._events(existing_session, car, "fan clicks")
     del stream
-    gc.collect()
-    assert sid not in session_route._in_flight
+    gc.collect()  # the finalizer cannot await: it schedules the release on the loop
+    await asyncio.wait_for(_until(lambda: not fake_store.busy(sid)), 2)
 
 
 async def test_finished_stream_does_not_release_a_later_turn(existing_session, car, fake_llm, fake_store):
-    sid = existing_session["id"]
-    session_route._in_flight.add(sid)
+    sid, uid = existing_session["id"], existing_session["user_id"]
+    assert await fake_store.claim(sid, uid)
     stream, _ = session_route._events(existing_session, car, "fan clicks")
     _ = [chunk async for chunk in stream]
-    assert sid not in session_route._in_flight
-    session_route._in_flight.add(sid)  # the next turn takes the lock
+    assert not fake_store.busy(sid)  # released before the body ended, so the next message is accepted
+    assert await fake_store.claim(sid, uid)  # the next turn takes the lease
     del stream
     gc.collect()
-    assert sid in session_route._in_flight
+    await asyncio.sleep(0.05)
+    assert fake_store.busy(sid)
+
+
+async def test_release_from_another_thread_is_handed_to_the_loop(existing_session, fake_store):
+    sid = existing_session["id"]
+    assert await fake_store.claim(sid, existing_session["user_id"])
+    loop = asyncio.get_running_loop()
+    assert await asyncio.to_thread(session_route._release, loop, sid, None) is None  # a GC in a worker thread
+    await asyncio.wait_for(_until(lambda: not fake_store.busy(sid)), 2)
+
+
+def test_release_with_the_loop_gone_leaves_the_lease_to_expire(tmp_path):
+    loop = asyncio.new_event_loop()
+    loop.close()
+    tmpdir = tmp_path / "turn"
+    tmpdir.mkdir()
+    assert session_route._release(loop, "sid", str(tmpdir)) is None  # no error, nothing scheduled
+    assert not tmpdir.exists()
+
+
+async def test_a_failed_release_is_logged_and_left_to_expire(existing_session, fake_store, caplog):
+    async def down(session_id):
+        raise ConnectionError("db down")
+
+    fake_store.release = down
+    await session_route._free_lease(existing_session["id"])
+    assert "lease release failed" in caplog.text and "ConnectionError" in caplog.text
 
 
 # --- ChatSessionCRUD ------------------------------------------------------------
@@ -368,3 +464,31 @@ async def test_update_message_patches_one_element_by_id_in_one_statement(fake_po
 async def test_update_message_for_unknown_message_or_session_writes_nothing(fake_pool):
     fake_pool.status = "UPDATE 0"
     assert await ChatSessionCRUD().update_message("sid", "missing", {"media": []}) is False
+
+
+async def test_claim_is_one_conditional_update_scoped_to_the_owner(fake_pool):
+    sid = "33333333-3333-4333-8333-333333333333"
+    fake_pool.value = True
+    assert await ChatSessionCRUD().claim(sid, "u1", seconds=60) is True
+    [(method, sql, args)] = fake_pool.calls
+    assert method == "fetchval" and args == (sid, "u1", 60.0)
+    assert "SET busy_until = now() + make_interval(secs => $3)" in sql
+    assert "WHERE id = $1 AND user_id = $2 AND (busy_until IS NULL OR busy_until < now()) RETURNING true" in sql
+    fake_pool.value = None  # no row matched: held, missing or another user's
+    assert await ChatSessionCRUD().claim(sid, "u1") is False
+
+
+async def test_claim_of_a_malformed_id_is_false_without_a_query(fake_pool):
+    assert await ChatSessionCRUD().claim("not-a-uuid", "u1") is False
+    assert fake_pool.calls == []
+
+
+async def test_renew_only_extends_a_held_lease_and_release_clears_it(fake_pool):
+    fake_pool.value = True
+    assert await ChatSessionCRUD().renew("sid") is True
+    await ChatSessionCRUD().release("sid")
+    (_, renew_sql, renew_args), (method, release_sql, release_args) = fake_pool.calls
+    assert "make_interval(secs => $2)" in renew_sql and "busy_until IS NOT NULL" in renew_sql
+    assert renew_args == ("sid", 300.0)
+    assert method == "execute" and release_sql == 'UPDATE "Chatsession" SET busy_until = NULL WHERE id = $1'
+    assert release_args == ("sid",)

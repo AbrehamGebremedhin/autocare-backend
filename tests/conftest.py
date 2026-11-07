@@ -269,10 +269,37 @@ def _json_copy(value):
 
 
 class FakeSessionStore:
-    """In-memory stand-in for ChatSessionCRUD."""
+    """In-memory stand-in for ChatSessionCRUD, with the busy_until lease (on the monotonic clock)."""
 
     def __init__(self):
         self.rows: dict[str, dict] = {}
+        self.leases: dict[str, float] = {}  # session id -> expiry
+        self.renewals = 0
+
+    def busy(self, session_id: str) -> bool:
+        return self.leases.get(session_id, float("-inf")) > time.monotonic()
+
+    def hold(self, session_id: str, seconds: float = 300) -> None:
+        """Another worker holds the lease (negative seconds: it held one that has expired)."""
+        self.leases[session_id] = time.monotonic() + seconds
+
+    async def claim(self, session_id: str, user_id: str, seconds: float = 300) -> bool:
+        row = self.rows.get(session_id)
+        if row is None or row["user_id"] != user_id or self.busy(session_id):
+            return False
+        self.hold(session_id, seconds)
+        return True
+
+    async def renew(self, session_id: str, seconds: float = 300) -> bool:
+        if session_id not in self.leases:
+            return False
+        self.renewals += 1
+        self.hold(session_id, seconds)
+        return True
+
+    async def release(self, session_id: str) -> None:
+        await asyncio.sleep(0)  # a database round trip suspends, so a cancelled caller would never get here
+        self.leases.pop(session_id, None)
 
     def add(self, user_id: str, car_id: str, **fields) -> dict:
         now = datetime.now(timezone.utc).isoformat()
@@ -326,6 +353,7 @@ class FakeSessionStore:
         gone = [r for r in self.rows.values() if all(r.get(k) == v for k, v in filters.items())]
         for r in gone:
             del self.rows[r["id"]]
+            self.leases.pop(r["id"], None)  # the lease is a column of the row
         return gone
 
 

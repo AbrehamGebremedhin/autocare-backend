@@ -48,6 +48,12 @@ docker compose exec -T db psql -U autocare -d autocare -v ON_ERROR_STOP=1 < app/
 
 The file is idempotent (`if not exists` / `or replace`), so re-running it adds new tables, indexes and functions, but it does not add columns to tables that already exist: write those `alter table` statements by hand with `docker compose exec db psql -U autocare -d autocare`.
 
+A database created before the session lease existed needs its column (new databases already have it):
+
+```
+docker compose exec -T db psql -U autocare -d autocare -v ON_ERROR_STOP=1 -c 'alter table "Chatsession" add column if not exists busy_until timestamptz;'
+```
+
 ### Reverse proxy (Caddy)
 
 Put Caddy in front for TLS. Response buffering must be off for SSE, and the body limit must allow the largest upload (`max(MAX_IMAGES * MAX_IMAGE_MB, MAX_MEDIA_MB) + 1` MB, 101 MB with the defaults):
@@ -71,9 +77,12 @@ docker network inspect autocare-backend_default -f '{{(index .IPAM.Config 0).Gat
 
 Put that in `.env` as `FORWARDED_ALLOW_IPS` and run `docker compose up -d`. Never trust a range that untrusted clients can connect from. Compose publishes the api on `127.0.0.1:8000` only, so plain HTTP never leaves the host. To expose it directly without Caddy (plain HTTP, not recommended), change the mapping in `docker-compose.yml` to `"8000:8000"`.
 
-### One worker
+### Workers
 
-The image runs a single uvicorn worker. The lock that stops two turns from running at once in one session (`409`) lives in process memory, so do not add `--workers` or run more than one api replica.
+The image runs a single uvicorn worker, and that is the recommended setting. The lock that stops two turns (or a turn and a delete) from running at once in one session (`409`) is a lease in the database (`"Chatsession".busy_until`, 5 minutes, renewed at every stage of a turn and expiring on its own if a worker dies), so several uvicorn workers or api replicas are safe for it. Two things still multiply per worker:
+
+- **Rate limits** are counted in each process's memory, so with N workers a client gets up to N times every limit (10/min for sign-in, 20/min for messages).
+- **Whisper and CLAP** are loaded once per worker, so each worker needs their RAM again. Keep 1 worker unless the host has the memory for more.
 
 ## Backup and restore
 

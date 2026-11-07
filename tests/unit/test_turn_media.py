@@ -61,11 +61,14 @@ def _image_blocks(prompt: list[dict]) -> list[bytes]:
 @pytest.fixture(autouse=True)
 def _clean():
     limiter.reset()
-    session_route._in_flight.clear()
-    session_route._deleting.clear()
-    yield
-    session_route._in_flight.clear()
-    session_route._deleting.clear()
+
+
+async def _released(store, session_id):
+    for _ in range(200):
+        if not store.busy(session_id):
+            return True
+        await asyncio.sleep(0.01)
+    return False
 
 
 @pytest.fixture
@@ -393,11 +396,11 @@ def _url(session_id):
     return f"/api/v1/sessions/{session_id}/messages"
 
 
-def test_validation_error_is_json_not_stream(client, auth_headers, existing_session, fake_mp4, fake_llm, turn_dirs):
+def test_validation_error_is_json_not_stream(client, auth_headers, existing_session, fake_mp4, fake_llm, fake_store, turn_dirs):
     r = client.post(_url(existing_session["id"]), files={"files": fake_mp4}, headers=auth_headers)
     assert r.status_code == 415 and r.headers["content-type"].startswith("application/json")
     assert fake_llm.calls == 0
-    assert existing_session["id"] not in session_route._in_flight
+    assert not fake_store.busy(existing_session["id"])
     assert len(turn_dirs) == 1 and not turn_dirs[0].exists()
     r = client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
     assert r.status_code == 200 and _parse(r.text)[-1][0] == "done"
@@ -414,7 +417,8 @@ def test_photo_turn_over_http(client, auth_headers, existing_session, fake_all, 
     assert len(_image_blocks(fake_all.llm.prompt)) == 1
     user_msg = fake_all.store.messages(sid)[0]
     assert user_msg["media"] == [{"kind": "image", "path": f"{uid}/{sid}/{user_msg['id']}/0.jpg"}]
-    assert sid not in session_route._in_flight
+    assert not fake_all.store.busy(sid)
+    assert fake_all.store.renewals == 3  # before media processing, the search + reply, and the state update
     assert len(turn_dirs) == 1 and not turn_dirs[0].exists()
 
 
@@ -425,7 +429,7 @@ def test_tmpdir_removed_after_llm_error(client, auth_headers, existing_session, 
     )
     assert _parse(r.text)[-1] == ("error", {"message": LLM_ERROR})
     assert len(turn_dirs) == 1 and not turn_dirs[0].exists()
-    assert existing_session["id"] not in session_route._in_flight
+    assert not fake_all.store.busy(existing_session["id"])
 
 
 def test_text_only_send_makes_no_tmpdir(client, auth_headers, existing_session, fake_llm, turn_dirs):
@@ -437,11 +441,11 @@ async def test_tmpdir_removed_when_client_disconnects(existing_session, car, fak
     sid = existing_session["id"]
     tmpdir = tempfile.mkdtemp(prefix="autocare-test-")
     upload = make_upload("image", _jpeg(), folder=Path(tmpdir))
-    session_route._in_flight.add(sid)
+    assert await fake_all.store.claim(sid, existing_session["user_id"])
     stream, _ = session_route._events(existing_session, car, None, [upload], tmpdir)
     assert (await anext(stream)).startswith("event: stage")
     await stream.aclose()
-    assert sid not in session_route._in_flight and not Path(tmpdir).exists()
+    assert await _released(fake_all.store, sid) and not Path(tmpdir).exists()
 
 
 async def test_disconnect_during_processing_cancels_jobs_and_releases(existing_session, car, fake_all, make_upload):
@@ -459,7 +463,7 @@ async def test_disconnect_during_processing_cancels_jobs_and_releases(existing_s
             raise
 
     fake_all.media.extract_frames.side_effect = frames
-    session_route._in_flight.add(sid)
+    assert await fake_all.store.claim(sid, existing_session["user_id"])
     stream, _ = session_route._events(existing_session, car, None, [upload], tmpdir)
     assert (await anext(stream)).startswith("event: stage")
     pending = asyncio.ensure_future(anext(stream))  # now inside the media gather
@@ -468,16 +472,16 @@ async def test_disconnect_during_processing_cancels_jobs_and_releases(existing_s
     with pytest.raises(asyncio.CancelledError):
         await pending
     assert cancelled.is_set()
-    assert sid not in session_route._in_flight and not Path(tmpdir).exists()
+    assert await _released(fake_all.store, sid) and not Path(tmpdir).exists()
     assert [m["role"] for m in fake_all.store.messages(sid)] == ["user"]
 
 
-def test_tmpdir_removed_if_stream_never_starts(existing_session, car, make_upload):
+async def test_tmpdir_removed_if_stream_never_starts(existing_session, car, make_upload, fake_store):
     sid = existing_session["id"]
     tmpdir = tempfile.mkdtemp(prefix="autocare-test-")
     upload = make_upload("image", _jpeg(), folder=Path(tmpdir))
-    session_route._in_flight.add(sid)
+    assert await fake_store.claim(sid, existing_session["user_id"])
     stream, _ = session_route._events(existing_session, car, None, [upload], tmpdir)
     del stream
     gc.collect()
-    assert sid not in session_route._in_flight and not Path(tmpdir).exists()
+    assert not Path(tmpdir).exists() and await _released(fake_store, sid)

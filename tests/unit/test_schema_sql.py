@@ -10,7 +10,7 @@ from app.services import kb
 SCHEMA = Path(__file__).resolve().parents[2] / "app" / "db" / "sql" / "schema.sql"
 
 # Columns the code touches outside the pydantic models.
-CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", "created_at", "updated_at"}  # chat_session_crud.py, session_route.py
+CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", "created_at", "updated_at", "busy_until"}  # chat_session_crud.py, session_route.py
 KB_PASSAGE_COLUMNS = {"source_type", "car_id", "title", "page", "content"}  # kb.ingest_pdf rows and its delete filter
 PROFILE_COLUMNS_WRITTEN = {"user_id", "cars", "preferences", "created_at", "updated_at"}  # user_profile_service
 USER_COLUMNS = {"id", "email", "password_hash", "google_sub", "created_at", "tokens_valid_after"}  # accounts (email+password, Google sign-in)
@@ -129,6 +129,7 @@ def test_chatsession_columns(schema):
     assert CHATSESSION_COLUMNS <= schema["Chatsession"]
     body = " ".join(_table_bodies(_sql())["Chatsession"].split()).lower()
     assert "user_id uuid not null references users (id) on delete cascade" in body
+    assert "busy_until timestamptz" in body and "busy_until timestamptz not null" not in body  # null = free
 
 
 def test_kb_passages_columns(schema):

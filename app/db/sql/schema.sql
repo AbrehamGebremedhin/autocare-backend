@@ -56,7 +56,8 @@ create table if not exists "Car" (
 );
 
 -- Chat sessions -----------------------------------------------------------------
--- Deleting an account deletes its sessions.
+-- Deleting an account deletes its sessions. busy_until is the lease a running turn or a delete holds
+-- (ChatSessionCRUD.claim/renew/release), shared by every api worker; null or past means free.
 create table if not exists "Chatsession" (
     id         uuid primary key default gen_random_uuid(),
     user_id    uuid not null references users (id) on delete cascade,
@@ -65,7 +66,8 @@ create table if not exists "Chatsession" (
     messages   jsonb not null default '[]',
     state      jsonb not null default '{}',
     created_at timestamptz default now(),
-    updated_at timestamptz default now()
+    updated_at timestamptz default now(),
+    busy_until timestamptz
 );
 
 create index if not exists chatsession_user_id_idx on "Chatsession" (user_id);

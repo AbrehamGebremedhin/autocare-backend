@@ -21,6 +21,34 @@ class ChatSessionCRUD(BaseCRUD):
         rows = await self.read({'id': session_id, 'user_id': user_id})
         return rows[0] if rows else None
 
+    # The session lease: busy_until is set while a turn or a delete owns the session, across every worker.
+    # Each call is one atomic statement on the database clock; nothing holds a connection in between. A lease
+    # nobody releases (a crashed worker) simply expires.
+
+    async def claim(self, session_id: str, user_id: str, seconds: float = 300) -> bool:
+        """Take the session's lease for `seconds` if it belongs to `user_id` and nobody holds it (or the holder's
+        lease expired). False when it is held, missing, or another user's."""
+        try:
+            session_id = str(UUID(session_id))
+        except ValueError:
+            return False
+        return await pool.fetchval(
+            'UPDATE "Chatsession" SET busy_until = now() + make_interval(secs => $3)'
+            ' WHERE id = $1 AND user_id = $2 AND (busy_until IS NULL OR busy_until < now()) RETURNING true',
+            session_id, user_id, float(seconds),
+        ) is True
+
+    async def renew(self, session_id: str, seconds: float = 300) -> bool:
+        """Push a held lease `seconds` into the future (long turns). False when no lease is held."""
+        return await pool.fetchval(
+            'UPDATE "Chatsession" SET busy_until = now() + make_interval(secs => $2)'
+            ' WHERE id = $1 AND busy_until IS NOT NULL RETURNING true',
+            session_id, float(seconds),
+        ) is True
+
+    async def release(self, session_id: str) -> None:
+        await pool.execute('UPDATE "Chatsession" SET busy_until = NULL WHERE id = $1', session_id)
+
     async def list_for_user(self, user_id: str) -> list[dict]:
         return await pool.fetch(
             'SELECT id, car_id, title, updated_at, jsonb_array_length(messages) AS message_count'

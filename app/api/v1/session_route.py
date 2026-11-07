@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import tempfile
 import weakref
@@ -28,12 +29,11 @@ profiles = UserProfileService()
 logger = get_logger_instance("session_route")
 
 MAX_TEXT_CHARS = 5000
-BUSY = "A reply is still being generated for this session."
-DELETING = "This session is being deleted."
+BUSY = "This session is busy: a reply is still being generated, or it is being deleted."
 
-# ponytail: in-process, per-instance. Move to a DB advisory lock if we ever run >1 instance.
-_in_flight: set[str] = set()  # sessions with a turn running
-_deleting: set[str] = set()  # sessions a DELETE is removing; no turn may start (and upload media)
+# A turn or a delete owns its session through the database lease (ChatSessionCRUD.claim), so the 409 holds
+# across every worker. Scheduled lease releases, kept here so they are not garbage-collected mid-flight.
+_releasing: set[asyncio.Task] = set()
 
 
 class SessionCreate(BaseModel):
@@ -47,22 +47,53 @@ async def _owned_session(session_id: str, user_id: str) -> dict:
     return session
 
 
-def _release(session_id: str, tmpdir: str | None) -> None:
-    """End of a turn: free the session's in-flight lock and delete the turn's upload dir."""
-    _in_flight.discard(session_id)
+async def _free_lease(session_id: str) -> None:
+    try:
+        await diagnosis.sessions.release(session_id)
+    except Exception as exc:
+        await logger.warning(f"session lease release failed, it will expire: {type(exc).__name__}")
+
+
+def _spawn_release(session_id: str) -> asyncio.Task:
+    task = asyncio.get_running_loop().create_task(_free_lease(session_id))
+    _releasing.add(task)
+    task.add_done_callback(_releasing.discard)
+    return task
+
+
+def _release(loop: asyncio.AbstractEventLoop, session_id: str, tmpdir: str | None) -> asyncio.Task | None:
+    """End of a turn: delete the turn's upload dir and free the session's lease.
+
+    It never awaits, because it also runs as a finalizer and inside streams that are being cancelled (where an
+    await would be cancelled too): the lease is freed by a task of its own on `loop`, returned when called on
+    that loop. Called from another thread (a finalizer run by a GC there) it hands the release over to the
+    loop; with the loop gone the lease simply expires.
+    """
     if tmpdir is not None:
         shutil.rmtree(tmpdir, ignore_errors=True)
+    try:
+        on_loop = asyncio.get_running_loop() is loop
+    except RuntimeError:
+        on_loop = False
+    if on_loop:
+        return _spawn_release(session_id)
+    try:
+        loop.call_soon_threadsafe(_spawn_release, session_id)
+    except RuntimeError:
+        pass  # the loop is closed
+    return None
 
 
 def _events(
     session: dict, car: dict, text: str | None, uploads: Sequence[Upload] = (), tmpdir: str | None = None
 ) -> tuple[AsyncIterator[str], weakref.finalize]:
-    """SSE body for one turn, plus the release for the in-flight lock the caller already holds.
+    """SSE body for one turn, plus the release for the session lease the caller already holds.
 
-    Release frees the lock and removes `tmpdir` (where `uploads` live, so it must outlive the
+    Release frees the lease and removes `tmpdir` (where `uploads` live, so it must outlive the
     response). The body releases when it completes, fails or is closed by a client disconnect;
     the finalizer also releases if the body is dropped without ever being iterated. Calling
-    `release` runs it once and detaches it, so a stale body can never free a later turn's lock.
+    `release` runs it once and detaches it, so a stale body can never free a later turn's lease.
+    Must be called on the event loop that serves the response.
     """
 
     async def stream():
@@ -74,10 +105,15 @@ def _events(
             await logger.error(f"turn failed: {type(exc).__name__}")
             yield sse("error", {"message": diagnosis.LLM_ERROR})
         finally:
-            release()
+            pending = release()
+        # Reached only when the body ran to its end (not on a disconnect): the response finishes once the
+        # lease is free, so the client's next message is not refused. Shielded: being cancelled here must
+        # not cancel the release.
+        if pending is not None:
+            await asyncio.shield(pending)
 
     body = stream()
-    release = weakref.finalize(body, _release, session["id"], tmpdir)
+    release = weakref.finalize(body, _release, asyncio.get_running_loop(), session["id"], tmpdir)
     return body, release
 
 
@@ -103,16 +139,15 @@ async def get_session(session_id: str, current_user: dict = Depends(get_current_
 async def delete_session(session_id: str, current_user: dict = Depends(get_current_user)):
     session = await _owned_session(session_id, current_user["id"])
     sid = session["id"]
-    if sid in _in_flight:
+    # The lease keeps a turn from starting (and storing media) while the media and the row go away.
+    if not await diagnosis.sessions.claim(sid, current_user["id"]):
         raise ResourceConflictException(BUSY)
-    if sid in _deleting:
-        raise ResourceConflictException(DELETING)
-    _deleting.add(sid)
     try:
-        await diagnosis.sessions.delete({"id": sid, "user_id": current_user["id"]})
         await diagnosis.media_store.delete_prefix(session["user_id"], sid)  # best effort, never raises
-    finally:
-        _deleting.discard(sid)
+        await diagnosis.sessions.delete({"id": sid, "user_id": current_user["id"]})  # the lease goes with the row
+    except BaseException:
+        _release(asyncio.get_running_loop(), sid, None)
+        raise
     return {"deleted": sid}
 
 
@@ -134,17 +169,14 @@ async def send_message(
         raise RecordNotFoundException("Car")
 
     sid = session["id"]
-    if sid in _deleting:
-        raise ResourceConflictException(DELETING)
-    if sid in _in_flight:
+    if not await diagnosis.sessions.claim(sid, current_user["id"]):
         raise ResourceConflictException(BUSY)
-    _in_flight.add(sid)
     # From here every exit releases: the stream's own release once it exists, else _release.
     # Uploads are validated before the response starts, so their errors are plain JSON 4xx.
     tmpdir: str | None = None
     release = None
     try:
-        # Re-read under the lock: the snapshot above may predate the previous turn's writes.
+        # Re-read under the lease: the snapshot above may predate the previous turn's writes.
         session = await _owned_session(sid, current_user["id"])
         uploads: list[Upload] = []
         if files:
@@ -156,9 +188,8 @@ async def send_message(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
         )
-    except BaseException:
-        if release is not None:
-            release()
-        else:
-            _release(sid, tmpdir)
+    except BaseException as exc:
+        pending = release() if release is not None else _release(asyncio.get_running_loop(), sid, tmpdir)
+        if pending is not None and isinstance(exc, Exception):
+            await asyncio.shield(pending)  # a plain error (say a 415): answer once the lease is free
         raise

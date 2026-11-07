@@ -101,6 +101,15 @@ async def _observe(uploads: list[Upload]) -> tuple[list[bytes], Observations | N
     return images, Observations(transcript=transcript, sounds=[s for o in heard for s in o.sounds])
 
 
+async def _keep_lease(session_id: str) -> None:
+    """Push the session's lease (taken by the send route) out again before a stage that can take long, so a
+    slow turn never loses it midway. A failure only logs: the lease guards the session, it holds no data."""
+    try:
+        await sessions.renew(session_id)
+    except Exception as exc:
+        await logger.warning(f"session lease renew failed: {type(exc).__name__}")
+
+
 async def run_turn(
     session: dict, car: dict, text: str | None, uploads: list[Upload]
 ) -> AsyncIterator[tuple[str, dict]]:
@@ -115,6 +124,7 @@ async def run_turn(
     observations: Observations | None = None
     images: list[bytes] = []
     if uploads:
+        await _keep_lease(session["id"])
         yield "stage", {"name": "processing_media"}
         # _store_originals never raises; only the processing result can be an exception.
         refs, seen = await asyncio.gather(
@@ -135,6 +145,7 @@ async def run_turn(
             yield "error", {"message": MEDIA_ERROR}
             return
 
+    await _keep_lease(session["id"])
     yield "stage", {"name": "searching"}
     heard = [observations.transcript, *(s.label for s in observations.sounds)] if observations else []
     query = " ".join(filter(None, [text, *heard]))
@@ -163,6 +174,7 @@ async def run_turn(
         reply = "".join(parts)
         if not reply.strip():
             raise _EmptyReply
+        await _keep_lease(session["id"])
         n = settings.HISTORY_MESSAGES
         recent = [{"role": m["role"], "content": prompt_content(m["content"])} for m in (history[-n:] if n > 0 else [])]
         state = await llm.extract_state(

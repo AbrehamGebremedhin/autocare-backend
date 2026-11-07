@@ -146,3 +146,61 @@ async def test_enough_free_space_writes_normally(root, src, monkeypatch):
     monkeypatch.setattr("app.services.media_store.shutil.disk_usage", lambda p: SimpleNamespace(free=10**12))
     await MediaStore(root).upload("u1", "s1", "m1", 0, "image", ".jpg", src)
     assert (root / "u1/s1/m1/0.jpg").exists()
+
+
+def _fill(path: Path, size: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+
+
+@pytest.fixture
+def quota(monkeypatch):
+    def set_quota(mb: int):
+        monkeypatch.setattr(get_settings(), "MEDIA_USER_QUOTA_MB", mb)
+
+    return set_quota
+
+
+async def test_upload_under_quota_writes(root, src, quota):
+    quota(1)
+    _fill(root / "u1/s0/m0/0.jpg", 1024 * 1024 - 100)
+    ref = await MediaStore(root).upload("u1", "s1", "m1", 0, "image", ".jpg", src)  # 14 bytes still fit
+    assert (root / ref["path"]).read_bytes() == b"original bytes"
+
+
+async def test_upload_over_quota_is_refused_and_writes_nothing(root, src, quota):
+    quota(1)
+    _fill(root / "u1/s0/m0/0.jpg", 1024 * 1024 - 10)
+    before = _tree(root)
+    with pytest.raises(OSError) as exc:
+        await MediaStore(root).upload("u1", "s1", "m1", 0, "image", ".jpg", src)  # 14 bytes do not
+    assert exc.value.errno == errno.EDQUOT
+    assert _tree(root) == before
+
+
+async def test_quota_zero_disables_the_cap(root, src, quota):
+    quota(0)
+    _fill(root / "u1/s0/m0/0.jpg", 3 * 1024 * 1024)
+    await MediaStore(root).upload("u1", "s1", "m1", 0, "image", ".jpg", src)
+    assert (root / "u1/s1/m1/0.jpg").exists()
+
+
+async def test_other_users_files_do_not_count(root, src, quota):
+    quota(1)
+    _fill(root / "u2/s0/m0/0.jpg", 5 * 1024 * 1024)
+    await MediaStore(root).upload("u1", "s1", "m1", 0, "image", ".jpg", src)
+    assert (root / "u1/s1/m1/0.jpg").exists()
+
+
+async def test_symlinks_are_not_followed_when_counting(root, src, quota, tmp_path):
+    quota(1)
+    big = tmp_path / "elsewhere"
+    _fill(big / "huge.bin", 5 * 1024 * 1024)
+    (root / "u1").mkdir(parents=True)
+    try:
+        (root / "u1/linkdir").symlink_to(big, target_is_directory=True)
+        (root / "u1/linkfile").symlink_to(big / "huge.bin")
+    except OSError:
+        pytest.skip("symlinks not permitted")
+    await MediaStore(root).upload("u1", "s1", "m1", 0, "image", ".jpg", src)
+    assert (root / "u1/s1/m1/0.jpg").exists()

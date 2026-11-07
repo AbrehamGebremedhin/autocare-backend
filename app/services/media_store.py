@@ -8,6 +8,7 @@ import errno
 import os
 import re
 import shutil
+import stat
 import uuid
 from pathlib import Path
 
@@ -24,6 +25,20 @@ def _component(value: str) -> str:
     if not isinstance(value, str) or not _ID.fullmatch(value):
         raise ValueError("invalid path component")
     return value
+
+
+def _used_bytes(folder: Path) -> int:
+    """Bytes held by regular files under `folder`; symlinks are neither followed nor counted."""
+    total = 0
+    for dirpath, _, files in os.walk(folder):  # os.walk does not follow directory symlinks
+        for name in files:
+            try:
+                st = os.lstat(os.path.join(dirpath, name))
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                total += st.st_size
+    return total
 
 
 class MediaStore:
@@ -46,6 +61,9 @@ class MediaStore:
         floor = get_settings().MEDIA_MIN_FREE_MB * 1024 * 1024
         if shutil.disk_usage(base).free < floor:
             raise OSError(errno.ENOSPC, "media volume is low on free space")
+        quota = get_settings().MEDIA_USER_QUOTA_MB * 1024 * 1024
+        if quota and _used_bytes(base / parts[0]) + src.stat().st_size > quota:
+            raise OSError(errno.EDQUOT, "user media quota exceeded")
         current = base
         for part in parts:
             current = current / part

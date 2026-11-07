@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     HISTORY_MESSAGES: int = 10
     MEDIA_DIR: str = "/data/media"
     MEDIA_MIN_FREE_MB: int = 2048  # uploads are refused when the media volume has less free space
+    MEDIA_USER_QUOTA_MB: int = 500  # per-user cap on stored originals; 0 turns the cap off
 
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
     GOOGLE_CLIENT_IDS: str = ""

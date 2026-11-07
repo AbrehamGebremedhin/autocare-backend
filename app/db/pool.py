@@ -1,7 +1,9 @@
 """One asyncpg pool per process, opened and closed by the FastAPI lifespan.
 
 Every helper acquires a connection for one statement and gives it straight back;
-`transaction()` holds one connection only for the length of its block. Rows come
+`transaction()` holds one connection only for the length of its block. Getting a
+connection waits at most ACQUIRE_TIMEOUT_SECONDS and a statement runs at most
+COMMAND_TIMEOUT_SECONDS, so an unreachable database answers 503 quickly. Rows come
 back as plain dicts. jsonb/json travel as Python objects (UTF-8, no \\u escapes)
 and uuid as str, so ids compare and format as plain strings everywhere.
 """
@@ -16,6 +18,10 @@ from app.core.config import get_settings
 
 _pool = None
 _init_lock = asyncio.Lock()
+
+CONNECT_TIMEOUT_SECONDS = 5.0  # opening one connection
+ACQUIRE_TIMEOUT_SECONDS = 5.0  # waiting for a free pooled connection, or opening a new one
+COMMAND_TIMEOUT_SECONDS = 30.0  # one statement; a database that stops answering (no RST) times out here
 
 
 def _dumps(value: Any) -> str:
@@ -34,7 +40,12 @@ async def init_pool(dsn: str | None = None) -> None:
     async with _init_lock:
         if _pool is None:
             _pool = await asyncpg.create_pool(
-                dsn=dsn or get_settings().DATABASE_URL, min_size=1, max_size=10, init=_init_connection
+                dsn=dsn or get_settings().DATABASE_URL,
+                min_size=1,
+                max_size=10,
+                init=_init_connection,
+                timeout=CONNECT_TIMEOUT_SECONDS,
+                command_timeout=COMMAND_TIMEOUT_SECONDS,
             )
 
 
@@ -70,7 +81,13 @@ _UNAVAILABLE = (
     asyncpg.AdminShutdownError,
     asyncpg.CrashShutdownError,
     asyncpg.TooManyConnectionsError,
-    asyncpg.InternalClientError,  # the pool's own state errors, seen live when its connections die
+    # The pool's own state errors, seen live when its connections die. It also covers ProtocolError and
+    # OutdatedSchemaCacheError (a client bug, a schema changed under a cached statement); those read as an
+    # outage too, which is acceptable: the request can be retried.
+    asyncpg.InternalClientError,
+    # "pool is closing" / "pool is closed" / "connection is closed" during a shutdown or restart. Client
+    # misuse ("another operation is in progress") is an InterfaceError as well and would also answer 503.
+    asyncpg.InterfaceError,
 )
 
 
@@ -111,25 +128,48 @@ class Connection:
             await self._target.executemany(sql, args_list)
 
 
+@asynccontextmanager
+async def _connection() -> AsyncIterator[Connection]:
+    """One pooled connection for one statement, waiting at most ACQUIRE_TIMEOUT_SECONDS for it."""
+    with _availability():
+        async with _require().acquire(timeout=ACQUIRE_TIMEOUT_SECONDS) as conn:
+            yield Connection(conn)
+
+
 async def fetch(sql: str, *args) -> list[dict]:
-    return await Connection(_require()).fetch(sql, *args)
+    async with _connection() as conn:
+        return await conn.fetch(sql, *args)
 
 
 async def fetchrow(sql: str, *args) -> dict | None:
-    return await Connection(_require()).fetchrow(sql, *args)
+    async with _connection() as conn:
+        return await conn.fetchrow(sql, *args)
 
 
 async def fetchval(sql: str, *args) -> Any:
-    return await Connection(_require()).fetchval(sql, *args)
+    async with _connection() as conn:
+        return await conn.fetchval(sql, *args)
 
 
 async def execute(sql: str, *args) -> str:
-    return await Connection(_require()).execute(sql, *args)
+    async with _connection() as conn:
+        return await conn.execute(sql, *args)
 
 
 @asynccontextmanager
 async def transaction() -> AsyncIterator[Connection]:
-    """Commits when the block finishes, rolls back when it raises."""
-    async with _require().acquire() as conn:
-        async with conn.transaction():
-            yield Connection(conn)
+    """Commits when the block finishes, rolls back when it raises. Failing to get the connection, to begin,
+    commit or roll back is DatabaseUnavailable like any statement; the block's own exceptions pass through."""
+    raised = None
+    try:
+        async with _require().acquire(timeout=ACQUIRE_TIMEOUT_SECONDS) as conn:
+            async with conn.transaction():
+                try:
+                    yield Connection(conn)
+                except BaseException as exc:
+                    raised = exc
+                    raise
+    except _UNAVAILABLE as exc:
+        if exc is raised:
+            raise  # the block's own error (say an OSError reading a file), not the database's
+        raise DatabaseUnavailable(type(exc).__name__) from exc

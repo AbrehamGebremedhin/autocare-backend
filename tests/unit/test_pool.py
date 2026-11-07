@@ -105,6 +105,8 @@ async def test_init_pool_sizes_and_codecs_and_is_idempotent(created, fake_pool):
     kwargs = created[0]
     assert kwargs["dsn"] == "postgresql://u:p@db.invalid/x"
     assert (kwargs["min_size"], kwargs["max_size"]) == (1, 10)
+    assert kwargs["command_timeout"] == pool.COMMAND_TIMEOUT_SECONDS == 30
+    assert kwargs["timeout"] == pool.CONNECT_TIMEOUT_SECONDS == 5
     assert kwargs["init"] is pool._init_connection
     fake_pool.value = 1
     assert await pool.fetchval("select 1") == 1
@@ -150,6 +152,7 @@ async def test_close_pool_closes_and_forgets_the_pool(fake_pool):
         asyncpg.AdminShutdownError("terminating connection due to administrator command"),
         asyncpg.TooManyConnectionsError("too many clients already"),
         asyncpg.InternalClientError("PoolConnectionHolder.connect() called while another connection already exists"),
+        asyncpg.InterfaceError("pool is closing"),
     ],
 )
 async def test_connectivity_failures_become_database_unavailable(fake_pool, error):
@@ -167,3 +170,40 @@ async def test_query_errors_are_not_reported_as_an_outage(fake_pool, error):
     fake_pool.error = error
     with pytest.raises(type(error)):
         await pool.fetch("select 1")
+
+
+async def test_helpers_wait_at_most_the_acquire_timeout(fake_pool):
+    await pool.fetch("select 1")
+    await pool.execute("select 1")
+    assert fake_pool.acquire_timeouts == [pool.ACQUIRE_TIMEOUT_SECONDS] * 2 and pool.ACQUIRE_TIMEOUT_SECONDS == 5
+    assert fake_pool.acquired == 0
+
+
+@pytest.mark.parametrize(
+    "error", [TimeoutError(), asyncpg.InterfaceError("pool is closed"), ConnectionRefusedError("refused")]
+)
+async def test_failing_to_get_a_connection_is_database_unavailable(fake_pool, error):
+    fake_pool.acquire_error = error
+    with pytest.raises(pool.DatabaseUnavailable):
+        await pool.fetchval("select 1")
+    with pytest.raises(pool.DatabaseUnavailable):
+        async with pool.transaction():
+            pass
+
+
+async def test_a_failed_commit_is_database_unavailable(fake_pool):
+    fake_pool.commit_error = asyncpg.ConnectionDoesNotExistError("connection was closed in the middle of operation")
+    with pytest.raises(pool.DatabaseUnavailable):
+        async with pool.transaction() as tx:
+            await tx.execute("INSERT INTO t VALUES ($1)", 1)
+    assert fake_pool.acquire_timeouts == [pool.ACQUIRE_TIMEOUT_SECONDS]
+
+
+async def test_a_transaction_blocks_own_errors_pass_through(fake_pool):
+    with pytest.raises(FileNotFoundError):  # an OSError, but not the database's
+        async with pool.transaction():
+            raise FileNotFoundError("manual.pdf")
+    fake_pool.error = ConnectionRefusedError()
+    with pytest.raises(pool.DatabaseUnavailable):  # a statement inside: already translated
+        async with pool.transaction() as tx:
+            await tx.execute("select 1")

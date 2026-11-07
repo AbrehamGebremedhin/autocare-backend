@@ -31,6 +31,8 @@ class _FakeTransaction:
 
     async def __aexit__(self, exc_type, exc, tb):
         self.pool.transactions.append("rollback" if exc_type else "commit")
+        if exc_type is None and self.pool.commit_error is not None:
+            raise self.pool.commit_error
         return False
 
 
@@ -60,6 +62,9 @@ class FakePool:
         self.error_on_executemany = 0  # n: the nth executemany call raises
         self.transactions: list[str] = []
         self.acquired = 0
+        self.acquire_timeouts: list = []
+        self.acquire_error: Exception | None = None  # acquire() raises it (pool closing, timeout)
+        self.commit_error: Exception | None = None  # a transaction's COMMIT raises it
         self.closed = False
 
     def _run(self, method: str, sql: str, args: tuple):
@@ -88,7 +93,10 @@ class FakePool:
         if self.error_on_executemany and len([c for c in self.calls if c[0] == "executemany"]) == self.error_on_executemany:
             raise RuntimeError("batch failed")
 
-    def acquire(self):
+    def acquire(self, timeout=None):
+        self.acquire_timeouts.append(timeout)
+        if self.acquire_error is not None:
+            raise self.acquire_error
         return _FakeAcquire(self)
 
     def transaction(self):

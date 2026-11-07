@@ -454,3 +454,37 @@ async def test_google_link_never_moves_a_later_logout_cutoff_back(real_pool):
         assert await users.exists(created["id"], ahead) is True
     finally:
         await pool.execute("delete from users where lower(email) = $1", email)
+
+
+async def test_a_statement_that_hangs_times_out_as_unavailable(real_pool, monkeypatch):
+    monkeypatch.setattr(pool, "COMMAND_TIMEOUT_SECONDS", 0.3)
+    await pool.close_pool()
+    await pool.init_pool(os.environ["TEST_DATABASE_URL"])  # reopened with the short command timeout
+    with pytest.raises(pool.DatabaseUnavailable):
+        await pool.fetchval("select pg_sleep(3)")
+    assert await pool.fetchval("select 1") == 1  # the pool is still usable
+
+
+async def test_waiting_for_a_free_connection_times_out_as_unavailable(real_pool, monkeypatch):
+    import time
+
+    monkeypatch.setattr(pool, "ACQUIRE_TIMEOUT_SECONDS", 0.3)
+    release, held = asyncio.Event(), []
+
+    async def hold():
+        async with pool.transaction() as tx:
+            held.append(await tx.fetchval("select 1"))
+            await release.wait()
+
+    holders = [asyncio.create_task(hold()) for _ in range(10)]  # max_size: every connection is busy
+    try:
+        while len(held) < 10:
+            await asyncio.sleep(0.01)
+        start = time.monotonic()
+        with pytest.raises(pool.DatabaseUnavailable):
+            await pool.fetchval("select 1")
+        assert time.monotonic() - start < 2
+    finally:
+        release.set()
+        await asyncio.gather(*holders)
+    assert await pool.fetchval("select 1") == 1

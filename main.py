@@ -6,18 +6,19 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
+from fastapi.responses import JSONResponse, Response
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.routes import router as v1_router
 from app.core.config import get_settings
 from app.db import pool
 from app.services import llm
 from app.utils.body_limit import BodySizeLimitMiddleware
-from app.utils.exceptions import BaseAPIException
+from app.utils.exceptions import ErrorCode, error_body, http_error_body
 from app.utils.limiter import limiter
 from app.utils.security_middleware import SecurityHeadersMiddleware
 
@@ -47,7 +48,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AutoCare API", debug=settings.DEBUG, lifespan=lifespan)
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Bodies are capped before FastAPI reads them (multipart files would otherwise be spooled to disk before auth).
 # Only the chat route takes uploads: the largest legal payload plus 1 MB for the form fields. JSON routes get 1 MB.
 _MB = 1024 * 1024
@@ -68,9 +68,53 @@ app.add_middleware(
 )
 
 
-@app.exception_handler(BaseAPIException)
-async def api_exception_handler(request: Request, exc: BaseAPIException):
-    return JSONResponse(status_code=exc.status_code, content=exc.detail)
+# Every error response has the same body: {"error_code", "message", "correlation_id", "timestamp", ...}
+# (app.utils.exceptions.error_body). None of them echoes request data.
+
+MAX_REPORTED_FIELDS = 20
+_SOURCES = {"body", "query", "path", "header", "cookie"}
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # BaseAPIException, FastAPI's and Starlette's HTTPExceptions (unknown route 404, wrong method 405), media 413/415.
+    if exc.status_code in (204, 304):
+        return Response(status_code=exc.status_code, headers=exc.headers)
+    return JSONResponse(
+        status_code=exc.status_code, content=http_error_body(exc.status_code, exc.detail), headers=exc.headers
+    )
+
+
+def invalid_fields(errors) -> list[str]:
+    """The names of the invalid fields ("make", "files"), without the request source, list indexes or the
+    rejected values themselves."""
+    names: list[str] = []
+    for error in errors:
+        loc = list(error.get("loc", ()))
+        source = str(loc.pop(0)) if loc and loc[0] in _SOURCES else "body"
+        name = ".".join(part for part in loc if isinstance(part, str))[:64] or source
+        if name not in names:
+            names.append(name)
+    return names[:MAX_REPORTED_FIELDS]
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content=error_body(ErrorCode.INVALID_INPUT.value, "Invalid request", fields=invalid_fields(exc.errors())),
+    )
+
+
+def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
+    # Sync on purpose: SlowAPIMiddleware calls the registered handler only when it is not a coroutine.
+    response = JSONResponse(
+        status_code=429, content=error_body(ErrorCode.RATE_LIMIT_EXCEEDED.value, f"Rate limit exceeded: {exc.detail}")
+    )
+    return request.app.state.limiter._inject_headers(response, request.state.view_rate_limit)  # as slowapi's own
+
+
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 
 
 @app.exception_handler(Exception)
@@ -79,7 +123,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     logger.error("Unhandled %s on %s %s", type(exc).__name__, request.method, request.url.path)
     return JSONResponse(
         status_code=500,
-        content={"error_code": "SYS_001", "message": "Internal server error"},
+        content=error_body(ErrorCode.INTERNAL_SERVER_ERROR.value, "Internal server error"),
     )
 
 

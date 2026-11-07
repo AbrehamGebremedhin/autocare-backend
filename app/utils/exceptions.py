@@ -1,8 +1,9 @@
 from fastapi import HTTPException, status
 from typing import Any, Dict, Optional
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
+from http import HTTPStatus
 
 class ErrorCode(str, Enum):
     """Standard error codes for the application"""
@@ -39,6 +40,52 @@ class ErrorCode(str, Enum):
     INTERNAL_SERVER_ERROR = "SYS_001"
     SERVICE_UNAVAILABLE = "SYS_002"
     CONFIGURATION_ERROR = "SYS_003"
+    ROUTE_NOT_FOUND = "SYS_004"
+    METHOD_NOT_ALLOWED = "SYS_005"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()  # naive UTC, as before
+
+
+def error_body(error_code: str, message: str, **extra: Any) -> Dict[str, Any]:
+    """The JSON body of every error response: error_code and message, a correlation id and a timestamp,
+    then any extra fields. Messages are fixed texts, never request data."""
+    return {
+        "error_code": error_code,
+        "message": message,
+        "correlation_id": str(uuid.uuid4()),
+        "timestamp": _utc_now_iso(),
+        **extra,
+    }
+
+
+# Error codes for HTTPExceptions raised with a plain status (Starlette's router, FastAPI, app.services.media).
+_STATUS_ERROR_CODES = {
+    400: ErrorCode.INVALID_INPUT,
+    401: ErrorCode.AUTHENTICATION_FAILED,
+    403: ErrorCode.INSUFFICIENT_PERMISSIONS,
+    404: ErrorCode.ROUTE_NOT_FOUND,
+    405: ErrorCode.METHOD_NOT_ALLOWED,
+    409: ErrorCode.RESOURCE_CONFLICT,
+    413: ErrorCode.PAYLOAD_TOO_LARGE,
+    415: ErrorCode.INVALID_FORMAT,
+    422: ErrorCode.INVALID_INPUT,
+    429: ErrorCode.RATE_LIMIT_EXCEEDED,
+    500: ErrorCode.INTERNAL_SERVER_ERROR,
+    503: ErrorCode.SERVICE_UNAVAILABLE,
+}
+
+
+def http_error_body(status_code: int, detail: Any) -> Dict[str, Any]:
+    """error_body for an HTTPException: BaseAPIException bodies as they are, any other one gets the code of
+    its status and its string detail (or the status phrase) as the message."""
+    if isinstance(detail, dict) and "error_code" in detail and "message" in detail:
+        return detail
+    code = _STATUS_ERROR_CODES.get(status_code)
+    message = detail if isinstance(detail, str) and detail else HTTPStatus(status_code).phrase
+    return error_body(code.value if code else f"HTTP_{status_code}", message)
+
 
 class BaseAPIException(HTTPException):
     """Base exception class for API errors with structured error handling"""
@@ -53,7 +100,7 @@ class BaseAPIException(HTTPException):
     ):
         self.error_code = error_code
         self.correlation_id = correlation_id or str(uuid.uuid4())
-        self.timestamp = datetime.utcnow().isoformat()
+        self.timestamp = _utc_now_iso()
         self.details = details or {}
         
         # Safe message for client (no internal details exposed)

@@ -1,13 +1,14 @@
 from datetime import date
 from typing import Annotated, List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
+from fastapi import APIRouter, BackgroundTasks, Depends, Path
 from pydantic import BaseModel, Field, field_validator
 
 from app.CRUD.car_crud import ingest_car_manual
 from app.schemas.Car import MAX_CAR_ID_CHARS, MAX_CAR_NAME_CHARS, MIN_CAR_YEAR, NO_NUL, CarBase
 from app.services.user_profile_service import UserProfileService
 from app.utils.auth_middleware import get_current_user
+from app.utils.exceptions import RecordNotFoundException, ValidationException
 
 router = APIRouter(prefix="/cars", tags=["Cars"])
 
@@ -41,7 +42,7 @@ async def add_car(
         user_id=current_user["id"], make=car.make, model=car.model, year=car.year
     )
     if not result["success"]:
-        raise HTTPException(status_code=400, detail="Could not add car")
+        raise ValidationException("Could not add car")
     car_info = result["car_info"]
     if car_info.get("kb_status", "pending") == "pending":
         background_tasks.add_task(ingest_car_manual, car_info)
@@ -55,5 +56,5 @@ async def delete_car(
 ):
     result = await user_profile_service.remove_car_from_user(current_user["id"], car_id)
     if not result["success"]:
-        raise HTTPException(status_code=404, detail="Car not found")
+        raise RecordNotFoundException("Car")
     return {"deleted": car_id}

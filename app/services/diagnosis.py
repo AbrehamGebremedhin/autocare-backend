@@ -166,6 +166,8 @@ async def run_turn(
 async def _turn(
     session: dict, car: dict, text: str | None, uploads: list[Upload], lease: Lease | None
 ) -> AsyncIterator[tuple[str, dict]]:
+    # `error` and `done` must stay terminal events: nothing may be written or yielded after either one,
+    # because run_turn stops the heartbeat and the send route frees the session lease when it sees them.
     settings = get_settings()
     previous = DiagnosisState.model_validate(session.get("state") or {})
     history = session.get("messages") or []

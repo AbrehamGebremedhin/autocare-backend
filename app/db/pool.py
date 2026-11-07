@@ -85,10 +85,18 @@ _UNAVAILABLE = (
     # OutdatedSchemaCacheError (a client bug, a schema changed under a cached statement); those read as an
     # outage too, which is acceptable: the request can be retried.
     asyncpg.InternalClientError,
-    # "pool is closing" / "pool is closed" / "connection is closed" during a shutdown or restart. Client
-    # misuse ("another operation is in progress") is an InterfaceError as well and would also answer 503.
+    # Only the InterfaceErrors of _CLOSED_MESSAGES (see _is_outage); any other is client misuse, a 500.
     asyncpg.InterfaceError,
 )
+# InterfaceErrors raised during a shutdown or restart; "another operation is in progress", a wrong argument
+# count and the like are bugs and keep their own error.
+_CLOSED_MESSAGES = ("pool is closing", "pool is closed", "connection is closed")
+
+
+def _is_outage(exc: BaseException) -> bool:
+    if isinstance(exc, asyncpg.InterfaceError):
+        return str(exc).startswith(_CLOSED_MESSAGES)
+    return isinstance(exc, _UNAVAILABLE)
 
 
 @contextmanager
@@ -96,6 +104,8 @@ def _availability() -> Iterator[None]:
     try:
         yield
     except _UNAVAILABLE as exc:
+        if not _is_outage(exc):
+            raise
         raise DatabaseUnavailable(type(exc).__name__) from exc
 
 
@@ -170,6 +180,6 @@ async def transaction() -> AsyncIterator[Connection]:
                     raised = exc
                     raise
     except _UNAVAILABLE as exc:
-        if exc is raised:
-            raise  # the block's own error (say an OSError reading a file), not the database's
+        if exc is raised or not _is_outage(exc):
+            raise  # the block's own error (say an OSError reading a file), or a client bug: not an outage
         raise DatabaseUnavailable(type(exc).__name__) from exc

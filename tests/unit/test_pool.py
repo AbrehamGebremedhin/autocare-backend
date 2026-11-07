@@ -153,6 +153,8 @@ async def test_close_pool_closes_and_forgets_the_pool(fake_pool):
         asyncpg.TooManyConnectionsError("too many clients already"),
         asyncpg.InternalClientError("PoolConnectionHolder.connect() called while another connection already exists"),
         asyncpg.InterfaceError("pool is closing"),
+        asyncpg.InterfaceError("pool is closed"),
+        asyncpg.InterfaceError("connection is closed"),
     ],
 )
 async def test_connectivity_failures_become_database_unavailable(fake_pool, error):
@@ -207,3 +209,34 @@ async def test_a_transaction_blocks_own_errors_pass_through(fake_pool):
     with pytest.raises(pool.DatabaseUnavailable):  # a statement inside: already translated
         async with pool.transaction() as tx:
             await tx.execute("select 1")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncpg.InterfaceError("the server expects 2 arguments for this query, 1 was passed"),
+        asyncpg.InterfaceError("cannot perform operation: another operation is in progress"),
+    ],
+)
+async def test_other_interface_errors_are_bugs_not_an_outage(fake_pool, error):
+    fake_pool.error = error
+    with pytest.raises(asyncpg.InterfaceError):
+        await pool.fetchval("select $1, $2", 1)
+    fake_pool.error = None
+    with pytest.raises(asyncpg.InterfaceError):
+        async with pool.transaction() as tx:
+            fake_pool.commit_error = error
+            await tx.execute("select 1")
+
+
+def test_a_wrong_argument_count_is_a_500_not_a_503(auth_headers, fake_pool):
+    import main
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app, raise_server_exceptions=False) as c:  # one client: its exit closes the pool
+        fake_pool.error = asyncpg.InterfaceError("the server expects 2 arguments for this query, 1 was passed")
+        r = c.get("/api/v1/sessions", headers=auth_headers)
+        assert r.status_code == 500 and r.json()["error_code"] == "SYS_001"
+        fake_pool.error = asyncpg.InterfaceError("pool is closing")
+        r = c.get("/api/v1/sessions", headers=auth_headers)
+        assert r.status_code == 503 and r.json()["error_code"] == "SYS_002"

@@ -35,7 +35,27 @@ def test_csp_has_no_unsafe_inline_or_websockets(client):
     assert "ws:" not in csp and "wss:" not in csp
 
 
-def test_only_docs_pages_skip_csp(client):
-    assert "Content-Security-Policy" not in client.get("/docs").headers
+def test_docs_pages_skip_csp_only_when_docs_are_on(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.core.config import get_settings
+    from app.utils.security_middleware import SecurityHeadersMiddleware
+
+    def docs_app(enabled):
+        monkeypatch.setattr(get_settings(), "ENABLE_DOCS", enabled)
+        app = FastAPI(**({} if enabled else {"docs_url": None, "redoc_url": None, "openapi_url": None}))
+        app.add_middleware(SecurityHeadersMiddleware)
+        return TestClient(app)
+
+    on = docs_app(True)
+    for path in ("/docs", "/redoc"):
+        assert on.get(path).status_code == 200 and "Content-Security-Policy" not in on.get(path).headers
     # a path that merely contains "/docs" is not exempt
-    assert "Content-Security-Policy" in client.get("/api/v1/cars/docs").headers
+    assert "Content-Security-Policy" in on.get("/api/v1/cars/docs").headers
+
+    off = docs_app(False)  # the 404s at those paths get the full headers
+    for path in ("/docs", "/redoc"):
+        r = off.get(path)
+        assert r.status_code == 404
+        assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"] and r.headers["X-Frame-Options"] == "DENY"

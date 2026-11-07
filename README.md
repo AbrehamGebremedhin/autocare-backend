@@ -133,7 +133,7 @@ Interactive reference: `http://localhost:8000/docs`. `/docs`, `/redoc` and `/ope
 
 Car `make` and `model` must be 1 to 64 characters and `year` between 1900 and next year; car ids are at most 200 characters; NUL characters are refused. Such input gets `422`. Adding a car starts a background ingest of its manual; the car's `kb_status` (`pending`, `ready`, `failed`, `no_manual`) tracks progress. Deleting a session deletes its media.
 
-**Errors.** Every error response, whatever the status (validation, body too large, rate limit, unknown route, server error), has the same JSON body: `{"error_code": "VAL_001", "message": "...", "correlation_id": "...", "timestamp": "..."}` (FastAPI's `{"detail": ...}` is not used). A `422` from request validation adds `fields`, the names of the invalid fields; the rejected values are never echoed. A `409` (`BIZ_002`) on a session means a reply is being generated or the session is being deleted; retry later.
+**Errors.** Every error response, whatever the status (validation, body too large, rate limit, unknown route, server error), has the same JSON body: `{"error_code": "VAL_001", "message": "...", "correlation_id": "...", "timestamp": "..."}` (FastAPI's `{"detail": ...}` is not used). A `422` from request validation adds `fields`, the names of the invalid fields; the rejected values are never echoed. `correlation_id` is the request's id, also sent on every response as the `X-Correlation-ID` header and written on the server's log lines for that request (`[ID: ...]`); quote it when reporting a problem. A `409` (`BIZ_002`) on a session means a reply is being generated or the session is being deleted; retry later.
 
 ### SSE events
 

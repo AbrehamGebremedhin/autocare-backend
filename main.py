@@ -19,6 +19,7 @@ from app.db import pool
 from app.db.pool import DatabaseUnavailable
 from app.services import llm
 from app.utils.body_limit import BodySizeLimitMiddleware
+from app.utils.correlation import CorrelationIdMiddleware
 from app.utils.exceptions import ErrorCode, ServiceUnavailableException, error_body, http_error_body
 from app.utils.limiter import limiter
 from app.utils.security_middleware import SecurityHeadersMiddleware
@@ -66,14 +67,35 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Correlation-ID"],
 )
+app.add_middleware(CorrelationIdMiddleware)  # outermost: every response and log line of a request share the id
 
 
 # Every error response has the same body: {"error_code", "message", "correlation_id", "timestamp", ...}
-# (app.utils.exceptions.error_body). None of them echoes request data.
+# (app.utils.exceptions.error_body). None of them echoes request data. correlation_id is the request's
+# (app.utils.correlation), and each error is logged with it: method, route, status, code and class names only.
 
 MAX_REPORTED_FIELDS = 20
 _SOURCES = {"body", "query", "path", "header", "cookie"}
+MAX_LOGGED_PATH_CHARS = 100
+
+
+def _route(request: Request) -> str:
+    """The matched route's template (no ids from the URL), else the raw path, truncated."""
+    return getattr(request.scope.get("route"), "path", None) or request.url.path[:MAX_LOGGED_PATH_CHARS]
+
+
+def _error_response(request: Request, status_code: int, body: dict, cause: str, headers=None) -> JSONResponse:
+    cid = getattr(request.state, "correlation_id", None)
+    if cid:
+        body = {**body, "correlation_id": cid}
+    log = logger.error if status_code >= 500 else logger.info
+    log(
+        "%s %s answered %d %s (%s) [ID: %s]",
+        request.method, _route(request), status_code, body["error_code"], cause, body["correlation_id"],
+    )
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -81,8 +103,8 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     # BaseAPIException, FastAPI's and Starlette's HTTPExceptions (unknown route 404, wrong method 405), media 413/415.
     if exc.status_code in (204, 304):
         return Response(status_code=exc.status_code, headers=exc.headers)
-    return JSONResponse(
-        status_code=exc.status_code, content=http_error_body(exc.status_code, exc.detail), headers=exc.headers
+    return _error_response(
+        request, exc.status_code, http_error_body(exc.status_code, exc.detail), type(exc).__name__, exc.headers
     )
 
 
@@ -101,17 +123,14 @@ def invalid_fields(errors) -> list[str]:
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=422,
-        content=error_body(ErrorCode.INVALID_INPUT.value, "Invalid request", fields=invalid_fields(exc.errors())),
-    )
+    body = error_body(ErrorCode.INVALID_INPUT.value, "Invalid request", fields=invalid_fields(exc.errors()))
+    return _error_response(request, 422, body, type(exc).__name__)
 
 
 def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
     # Sync on purpose: SlowAPIMiddleware calls the registered handler only when it is not a coroutine.
-    response = JSONResponse(
-        status_code=429, content=error_body(ErrorCode.RATE_LIMIT_EXCEEDED.value, f"Rate limit exceeded: {exc.detail}")
-    )
+    body = error_body(ErrorCode.RATE_LIMIT_EXCEEDED.value, f"Rate limit exceeded: {exc.detail}")
+    response = _error_response(request, 429, body, type(exc).__name__)
     return request.app.state.limiter._inject_headers(response, request.state.view_rate_limit)  # as slowapi's own
 
 
@@ -121,19 +140,18 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 @app.exception_handler(DatabaseUnavailable)
 async def database_unavailable_handler(request: Request, exc: DatabaseUnavailable):
     # The same 503 as a token check during an outage: clients keep their tokens and retry.
-    logger.error("Database unavailable (%s) on %s %s", exc, request.method, request.url.path)
     unavailable = ServiceUnavailableException()
-    return JSONResponse(status_code=unavailable.status_code, content=unavailable.detail)
+    return _error_response(request, unavailable.status_code, unavailable.detail, f"DatabaseUnavailable: {exc}")
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    # Log type and route only; no request data, headers or stack trace in the response.
-    logger.error("Unhandled %s on %s %s", type(exc).__name__, request.method, request.url.path)
-    return JSONResponse(
-        status_code=500,
-        content=error_body(ErrorCode.INTERNAL_SERVER_ERROR.value, "Internal server error"),
-    )
+    # Log type and route only; no request data, headers or stack trace in the response. Starlette sends this
+    # one from outside every middleware, so the correlation header is added here.
+    body = error_body(ErrorCode.INTERNAL_SERVER_ERROR.value, "Internal server error")
+    cid = getattr(request.state, "correlation_id", None)
+    headers = {"X-Correlation-ID": cid} if cid else None
+    return _error_response(request, 500, body, f"unhandled {type(exc).__name__}", headers)
 
 
 app.include_router(v1_router, prefix="/api/v1")

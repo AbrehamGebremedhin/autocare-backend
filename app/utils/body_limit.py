@@ -4,6 +4,7 @@ import re
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.utils.correlation import correlation_id
 from app.utils.exceptions import PayloadTooLargeException
 
 
@@ -47,4 +48,5 @@ class BodySizeLimitMiddleware:
 
 async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
     exc = PayloadTooLargeException()
-    await JSONResponse(status_code=exc.status_code, content=exc.detail)(scope, receive, send)
+    body = {**exc.detail, "correlation_id": correlation_id(scope) or exc.correlation_id}
+    await JSONResponse(status_code=exc.status_code, content=body)(scope, receive, send)

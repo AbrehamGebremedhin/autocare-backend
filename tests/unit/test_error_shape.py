@@ -184,3 +184,66 @@ def test_token_checks_answer_503_during_a_database_outage(client, db_down):
     _unavailable(client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"}))
     refresh = jwt_handler.create_refresh_token({"sub": "11111111-1111-4111-8111-111111111111"})
     _unavailable(client.post("/api/v1/auth/refresh", json={"refresh_token": refresh}))
+
+
+# --- correlation ids: the error body, the response header and the log lines share one id per request -------
+
+
+def test_every_response_carries_its_own_correlation_id(client):
+    first, second = client.get("/health"), client.get("/health")
+    assert first.headers["x-correlation-id"] != second.headers["x-correlation-id"]
+
+
+def test_error_body_header_and_log_line_share_the_correlation_id(client, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        r = client.post("/api/v1/auth/login", json={"email": "not-an-email-s3cret"})
+    cid = r.headers["x-correlation-id"]
+    assert r.json()["correlation_id"] == cid
+    line = next(rec.getMessage() for rec in caplog.records if cid in rec.getMessage() and "answered" in rec.getMessage())
+    assert "POST /api/v1/auth/login answered 422 VAL_001 (RequestValidationError)" in line
+    assert "s3cret" not in caplog.text
+
+
+def test_route_logs_use_the_request_correlation_id(client, fake_users, caplog):
+    import logging
+
+    with caplog.at_level(logging.DEBUG):
+        r = client.post("/api/v1/auth/login", json={"email": "nobody@example.com", "password": "s3cret-pass"})
+    cid = r.headers["x-correlation-id"]
+    assert r.json()["correlation_id"] == cid
+    assert f"Login attempt [ID: {cid}]" in caplog.text and "[ID: unknown]" not in caplog.text
+
+
+def test_outage_and_unhandled_errors_are_logged_with_the_id_and_class_names_only(auth_headers, fake_pool, mocker, caplog):
+    import logging
+
+    import main
+
+    fake_pool.error = ConnectionRefusedError(LEAK)
+    mocker.patch("app.services.diagnosis.sessions.list_for_user", side_effect=RuntimeError(LEAK))
+    with caplog.at_level(logging.INFO), TestClient(main.app, raise_server_exceptions=False) as c:
+        down = c.get("/api/v1/cars", headers=auth_headers)
+        bug = c.get("/api/v1/sessions", headers=auth_headers)
+    for r, cause in ((down, "DatabaseUnavailable: ConnectionRefusedError"), (bug, "unhandled RuntimeError")):
+        cid = r.headers["x-correlation-id"]
+        assert r.json()["correlation_id"] == cid
+        assert f"({cause}) [ID: {cid}]" in caplog.text
+    assert "GET /api/v1/cars answered 503 SYS_002" in caplog.text
+    assert "GET /api/v1/sessions answered 500 SYS_001" in caplog.text
+    assert LEAK not in caplog.text
+
+
+def test_route_templates_not_raw_ids_are_logged(client, auth_headers, mocker, caplog):
+    import logging
+
+    mocker.patch("app.api.v1.car_route.user_profile_service.remove_car_from_user", return_value={"success": False})
+    with caplog.at_level(logging.INFO):
+        client.delete("/api/v1/cars/some-private-car-id", headers=auth_headers)
+    assert "DELETE /api/v1/cars/{car_id} answered 404 DB_002" in caplog.text
+
+
+def test_body_limit_rejection_uses_the_request_correlation_id(client):
+    r = client.post("/api/v1/auth/login", content=b"x" * (1024 * 1024 + 1), headers={"content-type": "application/json"})
+    assert r.status_code == 413 and r.json()["correlation_id"] == r.headers["x-correlation-id"]

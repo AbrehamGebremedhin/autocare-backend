@@ -2,7 +2,7 @@
 
 FastAPI backend for an AI car-diagnosis assistant. A user signs up, adds a car, opens a diagnosis session and chats about a problem with text, photos, audio or video. Each turn streams back as Server-Sent Events. Answers are grounded in a Postgres full-text knowledge base (car manuals and books) and use DeepSeek as the LLM (at most 2 LLM calls per turn: one streamed reply, one state update). Audio is transcribed with faster-whisper and engine sounds are tagged with CLAP.
 
-It runs as two containers from `docker-compose.yml`: `db` (Postgres 16, not published to the host) and `api` (this app on port 8000). Uploaded media lives on a Docker volume.
+It runs as two containers from `docker-compose.yml`: `db` (Postgres 16, not published to the host) and `api` (this app, published on `127.0.0.1:8000` only, for a reverse proxy on the same host). Uploaded media lives on a Docker volume.
 
 ## Configuration
 
@@ -69,7 +69,7 @@ Caddy sends `X-Forwarded-For`/`-Proto`/`-Host` by default. The api runs uvicorn 
 docker network inspect autocare-backend_default -f '{{(index .IPAM.Config 0).Gateway}}'
 ```
 
-Put that in `.env` as `FORWARDED_ALLOW_IPS` and run `docker compose up -d`. Never trust a range that untrusted clients can connect from. To keep port 8000 off the internet, firewall it or change the mapping to `127.0.0.1:8000:8000`.
+Put that in `.env` as `FORWARDED_ALLOW_IPS` and run `docker compose up -d`. Never trust a range that untrusted clients can connect from. Compose publishes the api on `127.0.0.1:8000` only, so plain HTTP never leaves the host. To expose it directly without Caddy (plain HTTP, not recommended), change the mapping in `docker-compose.yml` to `"8000:8000"`.
 
 ### One worker
 

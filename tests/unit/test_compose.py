@@ -72,7 +72,7 @@ def test_api_waits_for_healthy_db(compose):
     assert api["depends_on"]["db"]["condition"] == "service_healthy"
     assert api["env_file"] == ".env"
     assert api["restart"] == "unless-stopped"
-    assert "8000:8000" in api["ports"]
+    assert api["ports"] == ["127.0.0.1:8000:8000"]  # plain HTTP stays on the host; Caddy terminates TLS
 
 
 def test_api_database_url_points_at_db_service(compose):

@@ -30,8 +30,10 @@ services:
         condition: service_healthy
     volumes:
       - media:/data/media
+    # Caddy on the host terminates TLS and proxies to this port. To expose the API directly (plain HTTP),
+    # change the mapping to "8000:8000".
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

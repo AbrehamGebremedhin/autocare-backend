@@ -72,7 +72,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Correlation-ID"],
+    expose_headers=["X-Correlation-ID", "Retry-After"],
 )
 app.add_middleware(CorrelationIdMiddleware)  # outermost: every response and log line of a request share the id
 

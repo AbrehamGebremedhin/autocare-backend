@@ -106,3 +106,9 @@ def test_api_docs_are_served_when_enabled(path):
 
     assert TestClient(FastAPI(**main.docs_urls(True))).get(path).status_code == 200
     assert TestClient(FastAPI(**main.docs_urls(False))).get(path).status_code == 404
+
+
+def test_cors_exposes_retry_after_to_browsers(client):
+    r = client.get("/health", headers={"Origin": "http://localhost:3000"})
+    exposed = r.headers["access-control-expose-headers"]
+    assert "Retry-After" in exposed and "X-Correlation-ID" in exposed

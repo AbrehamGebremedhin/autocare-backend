@@ -40,22 +40,25 @@ class JWTHandler:
         self.access_token_expire_minutes = 30
         self.refresh_token_expire_days = 7
     
-    def _encode(self, data: Dict[str, Any], lifetime: timedelta, token_type: str) -> str:
+    def _encode(self, data: Dict[str, Any], lifetime: timedelta, token_type: str, issued_at: float | None) -> str:
         # iat keeps microseconds (a JWT NumericDate may be fractional): users.tokens_valid_after is compared
         # with it exactly, so a token minted just before a bump in the same second is still rejected.
-        issued_at = time.time()
+        # Sign-in routes pass the time taken before they read the account, so a revocation that commits
+        # while they run (a Google link during argon2) also covers the tokens they hand out.
+        if issued_at is None:
+            issued_at = time.time()
         expire = datetime.fromtimestamp(issued_at, timezone.utc) + lifetime
         return jwt.encode(
             {**data, "iat": issued_at, "exp": expire, "type": token_type}, self.secret_key, algorithm=self.algorithm
         )
 
-    def create_access_token(self, data: Dict[str, Any]) -> str:
+    def create_access_token(self, data: Dict[str, Any], issued_at: float | None = None) -> str:
         """Create access token"""
-        return self._encode(data, timedelta(minutes=self.access_token_expire_minutes), "access")
-    
-    def create_refresh_token(self, data: Dict[str, Any]) -> str:
+        return self._encode(data, timedelta(minutes=self.access_token_expire_minutes), "access", issued_at)
+
+    def create_refresh_token(self, data: Dict[str, Any], issued_at: float | None = None) -> str:
         """Create refresh token"""
-        return self._encode(data, timedelta(days=self.refresh_token_expire_days), "refresh")
+        return self._encode(data, timedelta(days=self.refresh_token_expire_days), "refresh", issued_at)
     
     def verify_token(self, token: str) -> Dict[str, Any]:
         """Verify and decode token"""

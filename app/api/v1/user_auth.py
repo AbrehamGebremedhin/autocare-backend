@@ -1,3 +1,5 @@
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 from app.core.config import get_settings
@@ -44,8 +46,9 @@ class LoginResponse(BaseModel):
     expires_in: int
     user_id: str
 
-def _tokens(user: dict) -> dict:
-    """The app's own access and refresh tokens for an account; every sign-in route returns this body."""
+def _tokens(user: dict, issued_at: float | None = None) -> dict:
+    """The app's own access and refresh tokens for an account; every sign-in route returns this body.
+    `issued_at` is the time taken before the account was read (see JWTHandler._encode)."""
     token_data = {
         "sub": user["id"],
         "email": user["email"],
@@ -53,8 +56,8 @@ def _tokens(user: dict) -> dict:
         "permissions": []
     }
     return {
-        "access_token": jwt_handler.create_access_token(token_data),
-        "refresh_token": jwt_handler.create_refresh_token(token_data),
+        "access_token": jwt_handler.create_access_token(token_data, issued_at),
+        "refresh_token": jwt_handler.create_refresh_token(token_data, issued_at),
         "token_type": "bearer",
         "expires_in": jwt_handler.access_token_expire_minutes * 60,
         "user_id": user["id"]
@@ -99,6 +102,7 @@ async def login_user(user_login: UserLogin, request: Request):
     correlation_id = getattr(request.state, 'correlation_id', 'unknown')
     await logger.info(f"Login attempt [ID: {correlation_id}]")
 
+    issued_at = time.time()  # before the hash is read: a Google link committing during argon2 revokes these tokens
     try:
         account = await auth_service.authenticate(user_login.email, user_login.password)
     except Exception as e:
@@ -112,7 +116,7 @@ async def login_user(user_login: UserLogin, request: Request):
 
     await _audit(request, AuditEventType.USER_LOGIN, "low", user_id=account["id"])
     await logger.info(f"Login successful [ID: {correlation_id}]")
-    return _tokens(account)
+    return _tokens(account, issued_at)
 
 @router.post('/auth/google', response_model=LoginResponse)
 @limiter.limit(AUTH_RATE_LIMIT)

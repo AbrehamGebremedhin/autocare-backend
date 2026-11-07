@@ -239,6 +239,23 @@ def test_google_link_revokes_tokens_issued_before_it(client, fake_users, google)
     assert asyncio.run(auth_service.user_exists(new_refresh["sub"], new_refresh["iat"])) is True
 
 
+def test_password_login_racing_a_google_link_gets_a_revoked_token(client, fake_users, monkeypatch):
+    # The link commits after login read the old hash but before argon2 finished: the login still succeeds,
+    # but its tokens must predate the link (iat is stamped before the read), so they are already revoked.
+    _register(client, email="driver@gmail.com", password="attacker-pass")
+    read = fake_users.get_by_email
+
+    async def read_then_link(email):
+        row = await read(email)
+        await fake_users.link_google(email, "google-sub-1")
+        return row
+
+    monkeypatch.setattr(fake_users, "get_by_email", read_then_link)
+    r = _login(client, email="driver@gmail.com", password="attacker-pass")
+    assert r.status_code == 200
+    assert _logout(client, r.json()["access_token"]).status_code == 401
+
+
 def test_google_will_not_link_a_non_google_address(client, fake_users, google):
     google.return_value = _google_claims(email="alice@company.com")
     owner = _register(client, email="alice@company.com", password="alice-pass").json()

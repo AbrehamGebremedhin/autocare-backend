@@ -47,6 +47,15 @@ async def _owned_session(session_id: str, user_id: str) -> dict:
     return session
 
 
+async def _claim(session_id: str, user_id: str) -> Lease:
+    """The session's lease, else 409; 404 when the session was deleted since the caller's ownership check."""
+    holder = await diagnosis.sessions.claim(session_id, user_id, diagnosis.LEASE_SECONDS)
+    if holder is None:
+        await _owned_session(session_id, user_id)  # gone meanwhile: 404, not "busy"
+        raise ResourceConflictException(BUSY)
+    return Lease(session_id, holder)
+
+
 async def _free_lease(lease: Lease) -> None:
     try:
         await diagnosis.sessions.release(lease.session_id, lease.holder)
@@ -96,21 +105,26 @@ def _events(
     Must be called on the event loop that serves the response.
     """
 
+    async def finish() -> None:
+        # Before the turn's last event (its writes are done): a client that sends its next message as soon
+        # as it sees `done` must find the lease free. Shielded: being cancelled here must not cancel it.
+        pending = release()
+        if pending is not None:
+            await asyncio.shield(pending)
+
     async def stream():
         try:
             async with aclosing(run_turn(session, car, text, list(uploads), lease)) as events:
                 async for event, data in events:
+                    if event in ("done", "error"):
+                        await finish()
                     yield sse(event, data)
         except Exception as exc:
             await logger.error(f"turn failed: {type(exc).__name__}")
+            await finish()
             yield sse("error", {"message": diagnosis.LLM_ERROR})
         finally:
-            pending = release()
-        # Reached only when the body ran to its end (not on a disconnect): the response finishes once the
-        # lease is free, so the client's next message is not refused. Shielded: being cancelled here must
-        # not cancel the release.
-        if pending is not None:
-            await asyncio.shield(pending)
+            release()  # backstop (disconnect, cancellation): starts the release, never awaits it
 
     body = stream()
     release = weakref.finalize(body, _release, asyncio.get_running_loop(), lease, tmpdir)
@@ -139,16 +153,15 @@ async def get_session(session_id: str, current_user: dict = Depends(get_current_
 async def delete_session(session_id: str, current_user: dict = Depends(get_current_user)):
     session = await _owned_session(session_id, current_user["id"])
     sid = session["id"]
-    # The lease keeps a turn from starting (and storing media) while the media and the row go away.
-    holder = await diagnosis.sessions.claim(sid, current_user["id"], diagnosis.LEASE_SECONDS)
-    if holder is None:
-        raise ResourceConflictException(BUSY)
+    # The lease keeps a turn from starting while the row goes; after that no claim can succeed, so no turn
+    # can store media while the folder is removed.
+    lease = await _claim(sid, current_user["id"])
     try:
-        await diagnosis.media_store.delete_prefix(session["user_id"], sid)  # best effort, never raises
         await diagnosis.sessions.delete({"id": sid, "user_id": current_user["id"]})  # the lease goes with the row
     except BaseException:
-        _release(asyncio.get_running_loop(), Lease(sid, holder), None)
+        _release(asyncio.get_running_loop(), lease, None)
         raise
+    await diagnosis.media_store.delete_prefix(session["user_id"], sid)  # best effort, never raises
     return {"deleted": sid}
 
 
@@ -170,10 +183,7 @@ async def send_message(
         raise RecordNotFoundException("Car")
 
     sid = session["id"]
-    holder = await diagnosis.sessions.claim(sid, current_user["id"], diagnosis.LEASE_SECONDS)
-    if holder is None:
-        raise ResourceConflictException(BUSY)
-    lease = Lease(sid, holder)
+    lease = await _claim(sid, current_user["id"])
     # From here every exit releases: the stream's own release once it exists, else _release.
     # Uploads are validated before the response starts, so their errors are plain JSON 4xx.
     tmpdir: str | None = None

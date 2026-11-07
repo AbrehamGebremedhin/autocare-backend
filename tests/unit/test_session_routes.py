@@ -138,7 +138,9 @@ def test_delete_after_an_expired_lease_succeeds(client, auth_headers, existing_s
     assert r.status_code == 200 and existing_session["id"] not in fake_store.rows
 
 
-def test_delete_releases_the_lease_when_the_row_delete_fails(client, auth_headers, existing_session, fake_store):
+def test_delete_releases_the_lease_when_the_row_delete_fails(client, auth_headers, existing_session, fake_store, media_root, user_id):
+    keep = _put(media_root, user_id, existing_session["id"], "m1/0.jpg")
+
     async def broken(filters):
         raise RuntimeError("db broke")
 
@@ -146,6 +148,44 @@ def test_delete_releases_the_lease_when_the_row_delete_fails(client, auth_header
     with pytest.raises(RuntimeError):
         client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
     assert not fake_store.busy(existing_session["id"])
+    assert keep.exists()  # the row comes first: a session that stays keeps its media
+
+
+def test_delete_removes_the_row_before_the_media(client, auth_headers, existing_session, fake_store, media_root, monkeypatch):
+    from app.services import diagnosis as diag
+
+    order = []
+    real_delete, real_prefix = fake_store.delete, diag.media_store.delete_prefix
+
+    async def delete(filters):
+        order.append("row")
+        return await real_delete(filters)
+
+    async def delete_prefix(*args):
+        order.append("media")
+        return await real_prefix(*args)
+
+    fake_store.delete = delete
+    monkeypatch.setattr(diag.media_store, "delete_prefix", delete_prefix)
+    assert client.delete(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers).status_code == 200
+    assert order == ["row", "media"]
+
+
+@pytest.mark.parametrize("method", ["send", "delete"])
+def test_a_session_deleted_before_the_claim_is_404_not_409(client, auth_headers, existing_session, fake_store, fake_llm, method):
+    sid = existing_session["id"]
+    real = fake_store.claim
+
+    async def deleted_meanwhile(session_id, user_id, seconds=300):
+        fake_store.rows.pop(session_id)  # another request's DELETE finished after our ownership check
+        return await real(session_id, user_id, seconds)
+
+    fake_store.claim = deleted_meanwhile
+    if method == "send":
+        r = client.post(_url(sid), data={"text": "fan clicks"}, headers=auth_headers)
+    else:
+        r = client.delete(f"/api/v1/sessions/{sid}", headers=auth_headers)
+    assert r.status_code == 404 and r.json()["message"] == "Session not found"
 
 
 async def test_send_while_delete_is_running_is_409(auth_headers, existing_session, fake_store, media_root, fake_llm):
@@ -396,6 +436,31 @@ def test_lock_released_if_building_response_fails(client, auth_headers, existing
     with pytest.raises(RuntimeError):
         client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
     assert not fake_store.busy(existing_session["id"])
+
+
+async def test_lease_is_free_before_the_done_event_arrives(existing_session, car, fake_llm, fake_store):
+    sid = existing_session["id"]
+    lease = await _claim(fake_store, existing_session)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
+    async for chunk in stream:
+        if chunk.startswith("event: done"):
+            assert not fake_store.busy(sid)  # a client may send its next message right now
+            break
+    else:
+        pytest.fail("no done event")
+    await stream.aclose()
+
+
+async def test_lease_is_free_before_an_error_event_arrives(existing_session, car, fake_llm, fake_store):
+    fake_llm.fail_stream_after = 1
+    sid = existing_session["id"]
+    lease = await _claim(fake_store, existing_session)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks")
+    async for chunk in stream:
+        if chunk.startswith("event: error"):
+            assert not fake_store.busy(sid)
+            break
+    await stream.aclose()
 
 
 async def test_lock_released_when_client_disconnects(existing_session, car, fake_llm, fake_store):

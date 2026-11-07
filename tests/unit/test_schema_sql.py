@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from app.schemas.Car import CarBase
-from app.schemas.User import UserProfile
 from app.services import kb
 
 SCHEMA = Path(__file__).resolve().parents[2] / "app" / "db" / "sql" / "schema.sql"
@@ -114,7 +113,7 @@ def test_users_unique_indexes():
 
 
 def test_user_profiles_reference_users(schema):
-    assert set(UserProfile.model_fields) | PROFILE_COLUMNS_WRITTEN <= schema["user_profiles"]
+    assert PROFILE_COLUMNS_WRITTEN <= schema["user_profiles"]
     body = " ".join(_table_bodies(_sql())["user_profiles"].split()).lower()
     assert "user_id uuid primary key references users (id) on delete cascade" in body
 

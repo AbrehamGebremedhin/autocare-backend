@@ -220,23 +220,6 @@ def client():
 
 
 @pytest.fixture
-def sample_user_data():
-    """Sample user data for testing."""
-    return {
-        "id": "test-user-123",
-        "email": "test@example.com",
-        "created_at": datetime.now(timezone.utc),
-        "phone": "+1234567890",
-        "user_metadata": {"name": "Test User"},
-        "app_metadata": {"role": "user"},
-        "confirmed_at": datetime.now(timezone.utc),
-        "last_sign_in_at": datetime.now(timezone.utc),
-        "role": "user",
-        "cars": ["car-123", "car-456"]
-    }
-
-
-@pytest.fixture
 def sample_car_data():
     """Sample car data for testing."""
     return {

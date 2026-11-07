@@ -3,7 +3,7 @@
 Every helper acquires a connection for one statement and gives it straight back;
 `transaction()` holds one connection only for the length of its block. Rows come
 back as plain dicts. jsonb/json travel as Python objects (UTF-8, no \\u escapes)
-and uuid as str, the same shapes the code got from PostgREST.
+and uuid as str, so ids compare and format as plain strings everywhere.
 """
 import asyncio
 import json

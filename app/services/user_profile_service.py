@@ -22,8 +22,6 @@ class UserProfileService(BaseService):
         """
         if action == "add_car":
             return await self.add_car_to_user(*args, **kwargs)
-        elif action == "get_cars":
-            return await self.get_user_cars_with_details(*args, **kwargs)
         elif action == "remove_car":
             return await self.remove_car_from_user(*args, **kwargs)
         else:

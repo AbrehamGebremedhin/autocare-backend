@@ -63,6 +63,15 @@ class TestJWTHandler:
         payload = jwt.decode(token, jwt_handler.secret_key, algorithms=[jwt_handler.algorithm])
         assert payload["sub"] == "user-123"
         assert payload["type"] == "refresh"
+
+    def test_tokens_carry_a_fractional_iat(self, jwt_handler, sample_user_data):
+        """iat keeps sub-second precision so revocation (users.tokens_valid_after) is exact."""
+        import time
+
+        before = time.time()
+        for token in (jwt_handler.create_access_token(sample_user_data), jwt_handler.create_refresh_token(sample_user_data)):
+            payload = jwt.decode(token, jwt_handler.secret_key, algorithms=[jwt_handler.algorithm])
+            assert isinstance(payload["iat"], float) and before <= payload["iat"] <= time.time()
     
     def test_verify_valid_token(self, jwt_handler, sample_user_data):
         """Test verification of valid token"""
@@ -161,7 +170,7 @@ class TestAuthenticationMiddleware:
         jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
         
         try:
-            with patch('app.utils.auth_middleware.validate_user_with_supabase', new_callable=AsyncMock) as mock_validate:
+            with patch('app.utils.auth_middleware.validate_user', new_callable=AsyncMock) as mock_validate:
                 mock_validate.return_value = True
                 
                 user = await get_current_user(mock_request, valid_credentials)
@@ -249,7 +258,7 @@ class TestAuthenticationMiddleware:
         jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
         
         try:
-            with patch('app.utils.auth_middleware.validate_user_with_supabase', new_callable=AsyncMock) as mock_validate:
+            with patch('app.utils.auth_middleware.validate_user', new_callable=AsyncMock) as mock_validate:
                 mock_validate.return_value = True
                 
                 user = await get_current_user(mock_request, valid_credentials)
@@ -343,56 +352,137 @@ class TestAuthorizationDecorators:
         assert "required role" in str(exc_info.value.detail).lower()
 
 
-class TestSupabaseValidation:
-    """Test Supabase user validation"""
-    
+class TestValidateUser:
+    """The token's sub must still be a row in the users table."""
+
+    USER = "11111111-1111-4111-8111-111111111111"
+
     @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_validate_user_with_supabase_success(self, mock_db_handler):
-        """Test successful Supabase validation"""
-        from app.utils.auth_middleware import validate_user_with_supabase
-        
-        # Mock successful Supabase response
-        mock_user_response = MagicMock()
-        mock_user_response.user = MagicMock()
-        mock_user_response.user.id = "user-123"
-        
-        mock_db = MagicMock()
-        mock_db.auth.get_user.return_value = mock_user_response
-        
-        # Create mock handler instance with async get_client method
-        mock_handler_instance = MagicMock()
-        mock_handler_instance.get_client = AsyncMock(return_value=mock_db)
-        mock_db_handler.return_value = mock_handler_instance
-        
-        result = await validate_user_with_supabase("user-123", "valid-token")
-        assert result == True
-    
+    async def test_existing_user_passes(self, fake_users):
+        import time
+        from app.utils.auth_middleware import validate_user
+
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
+        assert await validate_user(user["id"], time.time()) is True
+
     @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_validate_user_with_supabase_invalid_token(self, mock_db_handler):
-        """Test Supabase validation with invalid token"""
-        from app.utils.auth_middleware import validate_user_with_supabase
-        
-        # Mock failed Supabase response
-        mock_user_response = MagicMock()
-        mock_user_response.user = None
-        
-        mock_db = MagicMock()
-        mock_db.auth.get_user.return_value = mock_user_response
-        mock_db_handler.return_value.client = AsyncMock(return_value=mock_db)
-        
+    async def test_token_issued_before_revocation_is_401(self, fake_users):
+        from app.utils.auth_middleware import validate_user
+
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
         with pytest.raises(AuthenticationError):
-            await validate_user_with_supabase("user-123", "invalid-token")
-    
+            await validate_user(user["id"], user["tokens_valid_after"] - 0.000001)
+
     @pytest.mark.asyncio
-    @patch('app.utils.auth_middleware.SupabaseDBHandler')
-    async def test_validate_user_with_supabase_exception(self, mock_db_handler):
-        """Test Supabase validation with exception"""
-        from app.utils.auth_middleware import validate_user_with_supabase
-        
-        # Mock Supabase exception
-        mock_db_handler.return_value.client.side_effect = Exception("Database error")
-        
+    async def test_token_without_iat_is_401(self, mock_request, fake_users):
+        from app.utils.auth_middleware import jwt_handler
+
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
+        token = jwt.encode(
+            {"sub": user["id"], "type": "access", "exp": datetime.utcnow() + timedelta(minutes=5)},
+            jwt_handler.secret_key, algorithm=jwt_handler.algorithm,
+        )
         with pytest.raises(AuthenticationError):
-            await validate_user_with_supabase("user-123", "token")
+            await get_current_user(mock_request, HTTPAuthorizationCredentials(scheme="Bearer", credentials=token))
+
+    @pytest.mark.asyncio
+    async def test_unknown_user_is_401(self, fake_users):
+        from app.utils.auth_middleware import validate_user
+
+        with pytest.raises(AuthenticationError) as exc_info:
+            await validate_user(self.USER, 1.0)
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_lookup_is_one_bound_query(self, fake_pool):
+        from app.utils.auth_middleware import validate_user
+
+        fake_pool.value = True
+        assert await validate_user(self.USER, 1_800_000_000.25) is True
+        [(method, sql, args)] = fake_pool.calls
+        assert method == "fetchval" and "users" in sql and args == (self.USER, 1_800_000_000.25)
+
+    @pytest.mark.asyncio
+    async def test_non_uuid_sub_is_401_without_a_query(self, fake_pool):
+        from app.utils.auth_middleware import validate_user
+
+        with pytest.raises(AuthenticationError):
+            await validate_user("user-123", 1.0)
+        assert fake_pool.calls == []
+
+    @pytest.mark.asyncio
+    async def test_database_failure_is_503_not_401(self, fake_pool):
+        # A 401 would make clients throw their tokens away during a database outage.
+        from app.utils.auth_middleware import validate_user
+        from app.utils.exceptions import ServiceUnavailableException
+
+        fake_pool.error = ConnectionError("db down")
+        with pytest.raises(ServiceUnavailableException) as exc:
+            await validate_user(self.USER, 1.0)
+        assert exc.value.status_code == 503
+
+
+class TestProtectedRoutesWithRealValidator:
+    """An app token reaches protected routes only while its user exists."""
+
+    def test_existing_user_reaches_protected_route(self, client, fake_users, monkeypatch):
+        from app.utils.auth_middleware import jwt_handler
+        from app.api.v1 import car_route
+
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
+        monkeypatch.setattr(car_route.user_profile_service, "get_user_cars", AsyncMock(return_value=[]))
+
+        token = jwt_handler.create_access_token({"sub": user["id"]})
+        r = client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+
+    def test_deleted_user_gets_401_on_protected_route(self, client, fake_users):
+        from app.utils.auth_middleware import jwt_handler
+
+        user = fake_users.add("driver@example.com", google_sub="sub-1")
+        token = jwt_handler.create_access_token({"sub": user["id"]})
+        del fake_users.rows[user["id"]]
+        r = client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 401
+
+    def test_database_outage_gets_generic_503_on_protected_route(self, client, fake_pool):
+        from app.utils.auth_middleware import jwt_handler
+
+        token = jwt_handler.create_access_token({"sub": "11111111-1111-4111-8111-111111111111"})
+        fake_pool.error = ConnectionError("connection refused to 10.0.0.5")
+        r = client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 503
+        body = r.json()
+        assert body["error_code"] == "SYS_002" and body["message"] == "Service temporarily unavailable"
+        assert "10.0.0.5" not in r.text and "WWW-Authenticate" not in r.headers
+
+
+class TestErrorLogsHideDetails:
+    """Error logs carry only the exception class, never its message."""
+
+    @pytest.mark.asyncio
+    async def test_user_validation_logs_class_only(self, fake_pool, caplog):
+        import logging
+        from app.utils.auth_middleware import validate_user
+
+        from app.utils.exceptions import ServiceUnavailableException
+
+        fake_pool.error = RuntimeError("leaked eyJ-token-body")
+
+        with caplog.at_level(logging.DEBUG), pytest.raises(ServiceUnavailableException):
+            await validate_user("11111111-1111-4111-8111-111111111111", 1.0)
+        assert "RuntimeError" in caplog.text
+        assert "eyJ-token-body" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_get_current_user_unexpected_error_logs_class_only(self, mock_request, caplog):
+        import logging
+        from app.utils.auth_middleware import get_current_user
+
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="tok")
+        with patch('app.utils.auth_middleware.jwt_handler') as h:
+            h.verify_token.side_effect = ValueError("secret internals")
+            with caplog.at_level(logging.DEBUG), pytest.raises(AuthenticationError):
+                await get_current_user(mock_request, creds)
+        assert "ValueError" in caplog.text
+        assert "secret internals" not in caplog.text

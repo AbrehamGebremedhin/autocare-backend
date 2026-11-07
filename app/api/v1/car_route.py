@@ -1,143 +1,60 @@
-from fastapi import APIRouter, HTTPException, Depends
-from app.services.user_service import user_service
+from datetime import date
+from typing import Annotated, List
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Path
+from pydantic import BaseModel, Field, field_validator
+
+from app.CRUD.car_crud import ingest_car_manual
+from app.schemas.Car import MAX_CAR_ID_CHARS, MAX_CAR_NAME_CHARS, MIN_CAR_YEAR, NO_NUL, CarBase
 from app.services.user_profile_service import UserProfileService
-from app.services.car_vectorization_service import CarVectorizationService
-from app.CRUD.car_crud import CarCRUD
-from app.schemas.User import UserBase
-from app.schemas.Car import CarBase
-from typing import List
-import json
-import asyncio
+from app.utils.auth_middleware import get_current_user
+from app.utils.exceptions import RecordNotFoundException, ValidationException
 
-router = APIRouter(
-    prefix="/user/cars",
-    tags=["Cars"],
-    responses={
-        404: {"description": "User or car not found."},
-        400: {"description": "Bad request or car could not be created."},
-        200: {"description": "Successful Response."}
-    }
-)
+router = APIRouter(prefix="/cars", tags=["Cars"])
 
-car_crud = CarCRUD()
 user_profile_service = UserProfileService()
-vectorization_service = CarVectorizationService()
 
-def ensure_list(value):
-    if isinstance(value, list):
-        return value
-    if value is None:
-        return []
-    try:
-        return json.loads(value)
-    except Exception:
-        return []
 
-@router.get(
-    "/{user_id}",
-    response_model=List[CarBase],
-    summary="Get user's cars",
-    description="Retrieve the list of cars associated with a user with full car details.",
-    responses={
-        200: {"description": "List of user cars with details."},
-        404: {"description": "User not found."}
-    }
-)
-async def get_user_cars(user_id: str):
-    """
-    Retrieve the list of cars associated with a user with full details.
-    - **user_id**: The unique identifier of the user.
-    - **Returns**: List of car objects with vectorization status.
-    """
-    if not await user_service.user_exists(user_id):
-        raise HTTPException(status_code=404, detail="User not found.")
-    
-    cars = await user_profile_service.get_user_cars(user_id)
-    
-    # Update vectorization status for each car
-    for car in cars:
-        status = await vectorization_service.get_car_vectorization_status(car['id'])
-        car['is_vectorized'] = status['is_vectorized']
-        car['vector_chunk_count'] = status['chunk_count']
-    
-    return cars
+class CarCreate(BaseModel):
+    make: str = Field(min_length=1, max_length=MAX_CAR_NAME_CHARS, pattern=NO_NUL)
+    model: str = Field(min_length=1, max_length=MAX_CAR_NAME_CHARS, pattern=NO_NUL)
+    year: int = Field(ge=MIN_CAR_YEAR)
 
-@router.post(
-    "/{user_id}",
-    response_model=dict,
-    summary="Add a car to user",
-    description="Add a car to the user's list. Car will be created if it doesn't exist and automatically vectorized. Ensures car uniqueness.",
-    responses={
-        200: {"description": "Car added to user."},
-        400: {"description": "Car could not be created."},
-        404: {"description": "User not found."}
-    }
-)
-async def add_car_to_user(user_id: str, car: dict):
-    """
-    Add a car to the user's list. Car will be created if it doesn't exist and automatically vectorized.
-    - **user_id**: The unique identifier of the user.
-    - **car**: Car data (must include make, model, year).
-    - **Returns**: The car object with vectorization status.
-    """
-    if not await user_service.user_exists(user_id):
-        raise HTTPException(status_code=404, detail="User not found.")
-    
-    # Validate required fields
-    make = car.get("make")
-    model = car.get("model")
-    year = car.get("year")
-    
-    if not (make and model and year):
-        raise HTTPException(status_code=400, detail="Car must include make, model, and year.")
-    
-    try:
-        # Use the user profile service to add car (handles uniqueness and vectorization)
-        result = await user_profile_service.add_car_to_user(
-            user_id=user_id,
-            make=make,
-            model=model,
-            year=year
-        )
-        
-        if result["success"]:
-            car_info = result["car_info"]
-            # Add vectorization status message
-            vectorization_status = "vectorized and ready for use" if car_info.get("is_vectorized") else "added but vectorization in progress"
-            return {
-                **car_info,
-                "message": f"{make} {model} {year} successfully {vectorization_status}",
-                "vectorization_chunks": car_info.get("vector_chunk_count", 0)
-            }
-        else:
-            raise HTTPException(status_code=400, detail=result.get("error", "Failed to add car"))
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to add car: {str(e)}")
+    @field_validator("year")
+    @classmethod
+    def _not_after_next_year(cls, year: int) -> int:
+        latest = date.today().year + 1  # next year's models are on sale
+        if year > latest:
+            raise ValueError(f"year must be at most {latest}")
+        return year
 
-@router.delete(
-    "/{user_id}/{car_id}",
-    response_model=dict,
-    summary="Remove a car from user",
-    description="Remove a car from the user's list of cars.",
-    responses={
-        200: {"description": "Car removed from user."},
-        404: {"description": "User not found."}
-    }
-)
-async def remove_car_from_user(user_id: str, car_id: str):
-    """
-    Remove a car from the user's list of cars.
-    - **user_id**: The unique identifier of the user.
-    - **car_id**: The unique identifier of the car to remove.
-    - **Returns**: The removed car ID and the updated list of car IDs.
-    """
-    if not await user_service.user_exists(user_id):
-        raise HTTPException(status_code=404, detail="User not found.")
-    
-    # Remove car from user's profile
-    await user_service.remove_car_from_user(user_id, car_id)
-    
-    # Get updated car list
-    cars = await user_service.get_user_cars(user_id)
-    return {"removed": car_id, "cars": cars}
+
+@router.get("", response_model=List[CarBase], summary="List the current user's cars")
+async def list_cars(current_user: dict = Depends(get_current_user)):
+    return await user_profile_service.get_user_cars(current_user["id"])
+
+
+@router.post("", response_model=CarBase, summary="Add a car to the current user")
+async def add_car(
+    car: CarCreate, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)
+):
+    result = await user_profile_service.add_car_to_user(
+        user_id=current_user["id"], make=car.make, model=car.model, year=car.year
+    )
+    if not result["success"]:
+        raise ValidationException("Could not add car")
+    car_info = result["car_info"]
+    if car_info.get("kb_status", "pending") == "pending":
+        background_tasks.add_task(ingest_car_manual, car_info)
+    return car_info
+
+
+@router.delete("/{car_id}", summary="Remove a car from the current user")
+async def delete_car(
+    car_id: Annotated[str, Path(max_length=MAX_CAR_ID_CHARS, pattern=NO_NUL)],
+    current_user: dict = Depends(get_current_user),
+):
+    result = await user_profile_service.remove_car_from_user(current_user["id"], car_id)
+    if not result["success"]:
+        raise RecordNotFoundException("Car")
+    return {"deleted": car_id}

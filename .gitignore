@@ -1,6 +1,11 @@
 .env
+.env.*
+!.env.example
 .venv/
 
 **.pyc
 __pycache__/
 car_data/
+reports/
+tests/fixtures/e2e/
+backups/

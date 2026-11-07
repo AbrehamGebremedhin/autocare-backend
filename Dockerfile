@@ -1,55 +1,41 @@
-# Use official Python image with specific version
-FROM python:3.12.4-slim
+FROM python:3.12-slim
 
-# Create non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set work directory
+COPY --from=ghcr.io/astral-sh/uv:0.8.18 /uv /uvx /bin/
+
+ENV PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    HF_HOME=/home/autocare/.cache/huggingface
+
+RUN useradd --create-home --uid 10001 autocare \
+    && mkdir /app \
+    && chown autocare:autocare /app
+
+# A fresh named volume mounted here copies this owner, so the non-root app can write uploads.
+RUN mkdir -p /data/media && chown autocare:autocare /data/media
+
 WORKDIR /app
+USER autocare
 
-# Install system dependencies and security updates
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && apt-get upgrade -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /var/cache/apt/archives/*
+COPY --chown=autocare:autocare pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy requirements first for better caching
-COPY requirements.txt ./
+COPY --chown=autocare:autocare . .
+RUN uv sync --frozen --no-dev
 
-# Install Python dependencies with security flags
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir --trusted-host pypi.org --trusted-host pypi.python.org -r requirements.txt \
-    && pip check
+# Bake the models into HF_HOME. Settings validation needs placeholder values at build time only.
+RUN JWT_SECRET_KEY=build-time-placeholder-not-a-secret-000 \
+    DEEPSEEK_API_KEY=placeholder \
+    DATABASE_URL=postgresql://placeholder@localhost/placeholder \
+    uv run --no-sync python -m app.services.hearing
 
-# Copy app code with proper ownership
-COPY --chown=appuser:appuser . .
-
-# Create necessary directories with proper permissions
-RUN mkdir -p /app/logs /app/temp \
-    && chown -R appuser:appuser /app \
-    && chmod -R 755 /app \
-    && chmod -R 777 /app/logs /app/temp
-
-# Switch to non-root user
-USER appuser
-
-# Expose FastAPI port
 EXPOSE 8000
 
-# Set environment variables for host services
-ENV REDIS_HOST=host.docker.internal
-ENV MILVUS_HOST=host.docker.internal
-ENV OLLAMA_HOST=host.docker.internal
-ENV PYTHONPATH=/app
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Start FastAPI app with production settings
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--access-log"]
+# One worker only: the in-flight session lock lives in process memory.
+# --proxy-headers trusts X-Forwarded-For only from the addresses in $FORWARDED_ALLOW_IPS (uvicorn's default: 127.0.0.1).
+CMD ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

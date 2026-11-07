@@ -1,102 +1,236 @@
-"""
-Test configuration and fixtures for the AutoCare backend application.
-Enhanced with security, authentication, and comprehensive testing utilities.
-"""
-import pytest
-import asyncio
 import os
-import sys
+
+# Required settings come from env vars so tests never need a real .env.
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-0123456789-abcdefghijklmnop")
+# .invalid never resolves: nothing can reach a real database even if the fake pool were bypassed.
+os.environ.setdefault("DATABASE_URL", "postgresql://autocare:test@db.invalid:5432/autocare")
+os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
+os.environ.setdefault("GOOGLE_CLIENT_IDS", "")  # Google sign-in off unless a test turns it on
+os.environ.setdefault("ENV", "development")
+
+import asyncio
+import json
+import re
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
-from typing import Dict, Any, List
-import json
-from dotenv import load_dotenv
+from uuid import uuid4
 
-# Load test environment before importing app modules
-test_env_path = Path(__file__).parent.parent / ".env.test"
-if test_env_path.exists():
-    load_dotenv(test_env_path, override=True)
-else:
-    # Set minimal test environment if .env.test doesn't exist
-    os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
-    os.environ.setdefault("TESTING", "true")
-    os.environ.setdefault("DATABASE_URL", "sqlite:///./test_autocare.db")
-    os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
+import asyncpg
+import pytest
+from fastapi.testclient import TestClient
 
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
 
-# Test event loop configuration
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+class _FakeTransaction:
+    def __init__(self, pool):
+        self.pool = pool
 
-# Test environment setup
-@pytest.fixture(scope="session", autouse=True)
-def setup_test_environment():
-    """Setup test environment variables and configuration."""
-    test_env = {
-        "ENVIRONMENT": "test",
-        "DEBUG": "false",
-        "LOG_LEVEL": "WARNING",
-        
-        # Database settings (test values)
-        "SUPABASE_URL": "https://test.supabase.co",
-        "SUPABASE_ANON_KEY": "test_anon_key",
-        "DATABASE_URL": "postgresql://test:test@localhost:5432/test_db",
-        
-        # Redis settings (test values)
-        "REDIS_HOST": "localhost",
-        "REDIS_PORT": "6379",
-        "REDIS_DB": "1",  # Use different DB for tests
-        
-        # Security settings (test values)
-        "SECRET_KEY": "test_secret_key_for_testing_only",
-        "JWT_SECRET_KEY": "test_jwt_secret_key",
-        "ALLOWED_ORIGINS": "http://localhost:3000,http://localhost:8080",
-        
-        # Rate limiting (relaxed for tests)
-        "RATE_LIMIT_ENABLED": "false",
-        "RATE_LIMIT_PER_MINUTE": "1000",
-        "RATE_LIMIT_PER_HOUR": "10000",
-    }
-    
-    # Store original values
-    original_env = {}
-    for key, value in test_env.items():
-        original_env[key] = os.environ.get(key)
-        os.environ[key] = value
-    
-    yield
-    
-    # Restore original values
-    for key, original_value in original_env.items():
-        if original_value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = original_value
+    async def __aenter__(self):
+        return self
 
-# Mock data fixtures
+    async def __aexit__(self, exc_type, exc, tb):
+        self.pool.transactions.append("rollback" if exc_type else "commit")
+        if exc_type is None and self.pool.commit_error is not None:
+            raise self.pool.commit_error
+        return False
+
+
+class _FakeAcquire:
+    def __init__(self, pool):
+        self.pool = pool
+
+    async def __aenter__(self):
+        self.pool.acquired += 1
+        return self.pool  # the fake pool doubles as its own connection
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.pool.acquired -= 1
+        return False
+
+
+class FakePool:
+    """Stand-in for an asyncpg pool (and its connections): records (method, sql, args) for every statement.
+    `rows` answers fetch/fetchrow, `value` answers fetchval, `status` answers execute; `error` makes every statement raise."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str, tuple]] = []
+        self.rows: list[dict] = []
+        self.value = None
+        self.status = "OK"
+        self.error: Exception | None = None
+        self.error_on_executemany = 0  # n: the nth executemany call raises
+        self.transactions: list[str] = []
+        self.acquired = 0
+        self.acquire_timeouts: list = []
+        self.acquire_error: Exception | None = None  # acquire() raises it (pool closing, timeout)
+        self.commit_error: Exception | None = None  # a transaction's COMMIT raises it
+        self.closed = False
+
+    def _run(self, method: str, sql: str, args: tuple):
+        self.calls.append((method, sql, args))
+        if self.error is not None:
+            raise self.error
+
+    async def fetch(self, sql, *args):
+        self._run("fetch", sql, args)
+        return [dict(r) for r in self.rows]
+
+    async def fetchrow(self, sql, *args):
+        self._run("fetchrow", sql, args)
+        return dict(self.rows[0]) if self.rows else None
+
+    async def fetchval(self, sql, *args):
+        self._run("fetchval", sql, args)
+        return self.value
+
+    async def execute(self, sql, *args):
+        self._run("execute", sql, args)
+        return self.status
+
+    async def executemany(self, sql, args_list):
+        self._run("executemany", sql, tuple(tuple(a) for a in args_list))
+        if self.error_on_executemany and len([c for c in self.calls if c[0] == "executemany"]) == self.error_on_executemany:
+            raise RuntimeError("batch failed")
+
+    def acquire(self, timeout=None):
+        self.acquire_timeouts.append(timeout)
+        if self.acquire_error is not None:
+            raise self.acquire_error
+        return _FakeAcquire(self)
+
+    def transaction(self):
+        return _FakeTransaction(self)
+
+    async def close(self):
+        self.closed = True
+
+
+@pytest.fixture(autouse=True)
+def fake_pool():
+    """Every test runs against a fake pool, so no test can open a real database connection."""
+    from app.db import pool
+
+    fake = FakePool()
+    pool.set_pool_for_tests(fake)
+    yield fake
+    pool.set_pool_for_tests(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_google_network(monkeypatch):
+    """Google ID token checks never fetch Google's keys in tests; a test that needs one patches it again."""
+    from google.oauth2 import id_token
+
+    def offline(*args, **kwargs):
+        raise RuntimeError("network disabled in tests")
+
+    monkeypatch.setattr(id_token, "verify_oauth2_token", offline)
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """The limiter keeps its counters in memory for the whole run; every test starts from zero."""
+    from app.utils.limiter import limiter
+
+    limiter.reset()
+
+
+class FakeUserStore:
+    """In-memory stand-in for UserCRUD, with the users table's unique indexes on lower(email) and google_sub.
+    tokens_valid_after is epoch seconds (float), compared with a token's iat like the SQL does."""
+
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+
+    def _check_unique(self, email: str | None = None, google_sub: str | None = None, skip: str | None = None) -> None:
+        for row in self.rows.values():
+            if row["id"] == skip:
+                continue
+            if (email is not None and row["email"].lower() == email.lower()) or (
+                google_sub is not None and row["google_sub"] == google_sub
+            ):
+                raise asyncpg.UniqueViolationError("duplicate key value violates unique constraint")
+
+    def add(self, email: str, password_hash: str | None = None, google_sub: str | None = None) -> dict:
+        self._check_unique(email, google_sub)
+        row = {
+            "id": str(uuid4()), "email": email, "password_hash": password_hash, "google_sub": google_sub,
+            "tokens_valid_after": time.time(),
+        }
+        self.rows[row["id"]] = row
+        return row
+
+    def by_email(self, email: str) -> dict | None:
+        return next((r for r in self.rows.values() if r["email"].lower() == email), None)
+
+    @staticmethod
+    def _public(row: dict | None) -> dict | None:
+        return None if row is None else {"id": row["id"], "email": row["email"]}
+
+    async def get_by_email(self, email: str) -> dict | None:
+        row = self.by_email(email)
+        return dict(row) if row else None
+
+    async def get_by_google_sub(self, google_sub: str) -> dict | None:
+        row = next((r for r in self.rows.values() if r["google_sub"] == google_sub), None)
+        return dict(row) if row else None
+
+    async def exists(self, user_id: str, issued_at: float) -> bool:
+        row = self.rows.get(user_id)
+        return row is not None and row["tokens_valid_after"] <= issued_at
+
+    async def revoke_tokens(self, user_id: str, cutoff: float) -> None:
+        row = self.rows.get(user_id)
+        if row is not None:
+            row["tokens_valid_after"] = max(row["tokens_valid_after"], cutoff)
+
+    async def create_password_user(self, email: str, password_hash: str) -> dict:
+        return self._public(self.add(email, password_hash=password_hash))
+
+    async def create_google_user(self, email: str, google_sub: str) -> dict:
+        return self._public(self.add(email, google_sub=google_sub))
+
+    async def link_google(self, email: str, google_sub: str) -> dict | None:
+        row = self.by_email(email)
+        if row is None or row["google_sub"] is not None:
+            return None
+        self._check_unique(google_sub=google_sub, skip=row["id"])
+        row.update(google_sub=google_sub, password_hash=None, tokens_valid_after=max(row["tokens_valid_after"], time.time()))
+        return self._public(row)
+
+
 @pytest.fixture
-def sample_user_data():
-    """Sample user data for testing."""
-    return {
-        "id": "test-user-123",
-        "email": "test@example.com",
-        "created_at": datetime.now(timezone.utc),
-        "phone": "+1234567890",
-        "user_metadata": {"name": "Test User"},
-        "app_metadata": {"role": "user"},
-        "confirmed_at": datetime.now(timezone.utc),
-        "last_sign_in_at": datetime.now(timezone.utc),
-        "role": "user",
-        "cars": ["car-123", "car-456"]
-    }
+def strict_clock(monkeypatch):
+    """time.time() that never repeats a value (Windows' clock can tick in ~16 ms steps), so a token issued
+    before a tokens_valid_after bump and one issued after it never share a timestamp in tests."""
+    real, last = time.time, [0.0]
+
+    def now() -> float:
+        last[0] = max(real(), last[0] + 1e-6)
+        return last[0]
+
+    monkeypatch.setattr(time, "time", now)
+
+
+@pytest.fixture
+def fake_users(monkeypatch, strict_clock):
+    from app.services import auth_service
+
+    store = FakeUserStore()
+    monkeypatch.setattr(auth_service, "users", store)
+    return store
+
+
+@pytest.fixture
+def client():
+    import main
+
+    with patch("main.llm.ping", AsyncMock(return_value=True)), patch(
+        "main.check_database", AsyncMock(return_value=True)
+    ), TestClient(main.app) as c:
+        yield c
+
 
 @pytest.fixture
 def sample_car_data():
@@ -106,298 +240,14 @@ def sample_car_data():
         "make": "Toyota",
         "model": "Camry",
         "year": 2020,
-        "text": "Toyota Camry 2020 sedan vehicle",
         "owner_manual_url": "https://example.com/manual.pdf",
         "service_manual_url": "https://example.com/service.pdf",
-        "car_guide_links": ["https://example.com/guide1", "https://example.com/guide2"]
-    }
-
-@pytest.fixture
-def sample_chat_session_data():
-    """Sample chat session data for testing."""
-    return {
-        "id": "session-123",
-        "user_id": "test-user-123",
-        "car_id": "car-123",
-        "title": "Engine Issue Troubleshooting",
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc),
-        "messages": [
-            {"role": "user", "content": "My car won't start"},
-            {"role": "assistant", "content": "Let me help you troubleshoot that issue."}
+        "car_guide_links": [
+            {"link": "https://example.com/guide1", "summary": "Guide one"},
+            {"link": "https://example.com/guide2"},
         ]
     }
 
-@pytest.fixture
-def sample_diagnosis_data():
-    """Sample diagnosis data for testing."""
-    return {
-        "id": "diagnosis-123",
-        "user_id": "test-user-123",
-        "car_id": "car-123",
-        "symptoms": ["won't start", "clicking sound"],
-        "diagnosis": "Battery issue",
-        "confidence": 0.85,
-        "recommendations": ["Check battery connections", "Test battery voltage"],
-        "created_at": datetime.now(timezone.utc)
-    }
-
-# Mock service fixtures
-@pytest.fixture
-def mock_websocket_manager():
-    """Mock WebSocket manager for testing."""
-    manager = AsyncMock()
-    manager.connect = AsyncMock()
-    manager.disconnect = AsyncMock()
-    manager.send_personal_message = AsyncMock()
-    manager.broadcast = AsyncMock()
-    manager.close = AsyncMock()
-    return manager
-
-@pytest.fixture
-def mock_db_handler():
-    """Mock database handler for testing."""
-    db_handler = AsyncMock()
-    db_handler.create = AsyncMock()
-    db_handler.read = AsyncMock()
-    db_handler.update = AsyncMock()
-    db_handler.delete = AsyncMock()
-    db_handler.close = AsyncMock()
-    return db_handler
-
-@pytest.fixture
-def mock_logger():
-    """Mock logger for testing."""
-    logger = AsyncMock()
-    logger.info = AsyncMock()
-    logger.error = AsyncMock()
-    logger.warning = AsyncMock()
-    logger.debug = AsyncMock()
-    logger.close = AsyncMock()
-    return logger
-
-@pytest.fixture
-def mock_redis_cache():
-    """Mock Redis cache for testing."""
-    cache = AsyncMock()
-    cache.get = AsyncMock()
-    cache.set = AsyncMock()
-    cache.delete = AsyncMock()
-    cache.exists = AsyncMock()
-    cache.close = AsyncMock()
-    return cache
-
-@pytest.fixture
-def mock_llm_service():
-    """Mock LLM service for testing."""
-    service = AsyncMock()
-    service.generate_response = AsyncMock()
-    service.extract_symptoms = AsyncMock()
-    service.diagnose = AsyncMock()
-    return service
-
-@pytest.fixture
-def mock_embedding_service():
-    """Mock embedding service for testing."""
-    service = AsyncMock()
-    service.embed_text = AsyncMock()
-    service.search_similar = AsyncMock()
-    return service
-
-# Mock external dependencies
-@pytest.fixture
-def mock_supabase_client():
-    """Mock Supabase client for testing."""
-    client = MagicMock()
-    client.table = MagicMock()
-    
-    # Mock table operations
-    table_mock = MagicMock()
-    table_mock.select = MagicMock(return_value=table_mock)
-    table_mock.insert = MagicMock(return_value=table_mock)
-    table_mock.update = MagicMock(return_value=table_mock)
-    table_mock.delete = MagicMock(return_value=table_mock)
-    table_mock.eq = MagicMock(return_value=table_mock)
-    table_mock.execute = MagicMock()
-    
-    client.table.return_value = table_mock
-    return client
-
-@pytest.fixture
-def mock_milvus_client():
-    """Mock Milvus client for testing."""
-    client = MagicMock()
-    client.search = MagicMock()
-    client.insert = MagicMock()
-    client.delete = MagicMock()
-    client.create_collection = MagicMock()
-    client.drop_collection = MagicMock()
-    return client
-
-# Test data generators
-@pytest.fixture
-def generate_test_messages():
-    """Generate test messages for various scenarios."""
-    def _generate(count: int = 5, message_type: str = "chat") -> List[Dict[str, Any]]:
-        messages = []
-        for i in range(count):
-            msg = {
-                "type": message_type,
-                "source": "user" if i % 2 == 0 else "assistant",
-                "content": f"Test message {i+1}",
-                "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
-                "session_id": "test-session-123"
-            }
-            messages.append(msg)
-        return messages
-    return _generate
-
-@pytest.fixture
-def generate_test_embeddings():
-    """Generate test embeddings for testing."""
-    def _generate(dimension: int = 768, count: int = 1) -> List[List[float]]:
-        import random
-        embeddings = []
-        for _ in range(count):
-            embedding = [random.random() for _ in range(dimension)]
-            embeddings.append(embedding)
-        return embeddings if count > 1 else embeddings[0]
-    return _generate
-
-# Environment setup fixtures
-@pytest.fixture
-def mock_environment_variables():
-    """Mock environment variables for testing."""
-    env_vars = {
-        "SUPABASE_URL": "https://test.supabase.co",
-        "SUPABASE_KEY": "test-key",
-        "REDIS_URL": "redis://localhost:6379",
-        "MILVUS_URI": "http://localhost:19530",
-        "OPENAI_API_KEY": "test-openai-key",
-        "ANTHROPIC_API_KEY": "test-anthropic-key",
-        "CELERY_BROKER_URL": "redis://localhost:6379/0",
-        "CELERY_RESULT_BACKEND": "redis://localhost:6379/0"
-    }
-    
-    with patch.dict("os.environ", env_vars):
-        yield env_vars
-
-# Async test helpers
-@pytest.fixture
-def async_test_client():
-    """Create a test client for FastAPI application."""
-    from fastapi.testclient import TestClient
-    from main import app
-    
-    with TestClient(app) as client:
-        yield client
-
-# Database fixtures
-@pytest.fixture
-async def mock_db_response():
-    """Mock database response structure."""
-    def _create_response(data: Any = None, error: Any = None):
-        response = MagicMock()
-        response.data = data if data is not None else []
-        response.error = error
-        return response
-    return _create_response
-
-# Utility fixtures
-@pytest.fixture
-def json_serializer():
-    """JSON serialization utility for tests."""
-    def _serialize(obj: Any) -> str:
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        return json.dumps(obj, default=str)
-    return _serialize
-
-@pytest.fixture
-def datetime_now():
-    """Fixed datetime for consistent testing."""
-    return datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-# Security test fixtures
-@pytest.fixture
-def mock_logger():
-    """Mock logger for testing."""
-    logger = MagicMock()
-    logger.info = AsyncMock()
-    logger.warning = AsyncMock()
-    logger.error = AsyncMock()
-    logger.debug = AsyncMock()
-    return logger
-
-@pytest.fixture
-def mock_settings():
-    """Mock settings for testing."""
-    settings = MagicMock()
-    settings.ENVIRONMENT = "test"
-    settings.DEBUG = False
-    settings.SECRET_KEY = "test_secret"
-    settings.SUPABASE_URL = "https://test.supabase.co"
-    settings.SUPABASE_ANON_KEY = "test_key"
-    settings.REDIS_HOST = "localhost"
-    settings.REDIS_PORT = "6379"
-    settings.ALLOWED_ORIGINS = ["http://localhost:3000"]
-    return settings
-
-@pytest.fixture
-def mock_supabase_client():
-    """Enhanced mock Supabase client for testing."""
-    client = MagicMock()
-    
-    # Mock table operations
-    table_mock = MagicMock()
-    table_mock.select = MagicMock(return_value=table_mock)
-    table_mock.insert = MagicMock(return_value=table_mock)
-    table_mock.update = MagicMock(return_value=table_mock)
-    table_mock.delete = MagicMock(return_value=table_mock)
-    table_mock.eq = MagicMock(return_value=table_mock)
-    table_mock.execute = AsyncMock()
-    
-    client.table = MagicMock(return_value=table_mock)
-    client.from_ = MagicMock(return_value=table_mock)
-    
-    # Mock auth operations
-    auth_mock = MagicMock()
-    auth_mock.sign_up = AsyncMock()
-    auth_mock.sign_in_with_password = AsyncMock()
-    auth_mock.get_user = AsyncMock()
-    client.auth = auth_mock
-    
-    return client
-
-@pytest.fixture
-def mock_redis_client():
-    """Enhanced mock Redis client for testing."""
-    redis = MagicMock()
-    redis.get = AsyncMock()
-    redis.set = AsyncMock()
-    redis.delete = AsyncMock()
-    redis.ping = AsyncMock(return_value=True)
-    redis.info = AsyncMock(return_value={
-        "connected_clients": 1,
-        "used_memory": 1024000,
-        "keyspace_hits": 100,
-        "keyspace_misses": 10
-    })
-    redis.close = AsyncMock()
-    return redis
-
-@pytest.fixture
-def mock_jwt_payload():
-    """Mock JWT payload for testing."""
-    return {
-        "sub": "test_user_id",
-        "email": "test@example.com",
-        "role": "user",
-        "permissions": ["read", "write"],
-        "exp": 9999999999,  # Far future
-        "iat": 1000000000,
-        "jti": "test_token_id"
-    }
 
 @pytest.fixture
 def mock_request():
@@ -414,184 +264,257 @@ def mock_request():
     request.state = MagicMock()
     return request
 
-# Test utilities
-class TestHelper:
-    """Helper class for common test operations."""
-    
-    @staticmethod
-    def create_mock_response(status_code=200, json_data=None, text_data=None):
-        """Create a mock HTTP response."""
-        response = MagicMock()
-        response.status_code = status_code
-        response.json.return_value = json_data or {}
-        response.text = text_data or ""
-        response.headers = {}
-        return response
-    
-    @staticmethod
-    def create_mock_exception(exception_type, message="Test exception"):
-        """Create a mock exception for testing error handling."""
-        return exception_type(message)
-    
-    @staticmethod
-    def assert_correlation_id_in_response(response_data):
-        """Assert that correlation ID is present in response."""
-        assert "correlation_id" in response_data
-        assert isinstance(response_data["correlation_id"], str)
-        assert len(response_data["correlation_id"]) > 0
-    
-    @staticmethod
-    def assert_security_headers_present(headers):
-        """Assert that security headers are present."""
-        security_headers = [
-            "X-Content-Type-Options",
-            "X-Frame-Options", 
-            "X-XSS-Protection",
-            "Strict-Transport-Security",
-            "Content-Security-Policy"
+
+# --- Chat sessions and diagnosis turns ----------------------------------------
+# Offline fakes: no database, no DeepSeek. The store round-trips through JSON like jsonb.
+
+USER_ID = "11111111-1111-4111-8111-111111111111"
+OTHER_USER_ID = "22222222-2222-4222-8222-222222222222"
+
+
+def _json_copy(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+class FakeSessionStore:
+    """In-memory stand-in for ChatSessionCRUD, with the busy_until/busy_by lease (on the monotonic clock)."""
+
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+        self.leases: dict[str, tuple[float, str]] = {}  # session id -> (expiry, holder)
+        self.renewals = 0
+
+    def busy(self, session_id: str) -> bool:
+        return session_id in self.leases and self.leases[session_id][0] > time.monotonic()
+
+    def holder(self, session_id: str) -> str | None:
+        return self.leases[session_id][1] if session_id in self.leases else None
+
+    def hold(self, session_id: str, seconds: float = 300) -> str:
+        """Another worker holds the lease (negative seconds: it held one that has expired). Its holder token."""
+        holder = str(uuid4())
+        self.leases[session_id] = (time.monotonic() + seconds, holder)
+        return holder
+
+    async def claim(self, session_id: str, user_id: str, seconds: float = 300) -> str | None:
+        row = self.rows.get(session_id)
+        if row is None or row["user_id"] != user_id or self.busy(session_id):
+            return None
+        return self.hold(session_id, seconds)
+
+    async def renew(self, session_id: str, holder: str, seconds: float = 300) -> bool:
+        if self.holder(session_id) != holder:
+            return False
+        self.renewals += 1
+        self.leases[session_id] = (time.monotonic() + seconds, holder)
+        return True
+
+    async def release(self, session_id: str, holder: str) -> None:
+        await asyncio.sleep(0)  # a database round trip suspends, so a cancelled caller would never get here
+        if self.holder(session_id) == holder:
+            del self.leases[session_id]
+
+    def add(self, user_id: str, car_id: str, **fields) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            "id": str(uuid4()), "user_id": user_id, "car_id": car_id, "title": "New diagnosis",
+            "messages": [], "state": {}, "created_at": now, "updated_at": now, **fields,
+        }
+        self.rows[row["id"]] = row
+        return _json_copy(row)
+
+    def messages(self, session_id: str) -> list[dict]:
+        return self.rows[session_id]["messages"]
+
+    async def create(self, data: dict) -> dict:
+        return self.add(**data)
+
+    async def get_for_user(self, session_id: str, user_id: str) -> dict | None:
+        row = self.rows.get(session_id)
+        return _json_copy(row) if row and row["user_id"] == user_id else None
+
+    async def list_for_user(self, user_id: str) -> list[dict]:
+        rows = sorted(
+            (r for r in self.rows.values() if r["user_id"] == user_id), key=lambda r: r["updated_at"], reverse=True
+        )
+        return [
+            {"id": r["id"], "car_id": r["car_id"], "title": r["title"], "updated_at": r["updated_at"],
+             "message_count": len(r["messages"])}
+            for r in rows
         ]
-        
-        for header in security_headers:
-            assert header in headers, f"Security header {header} is missing"
+
+    # Like the real CRUD: writes to a missing row are no-ops, and every write bumps updated_at.
+    def _write(self, session_id: str, **fields) -> None:
+        if session_id in self.rows:
+            self.rows[session_id].update(fields, updated_at=datetime.now(timezone.utc).isoformat())
+
+    async def append_messages(self, session_id: str, messages: list[dict]) -> None:
+        if session_id in self.rows:
+            self._write(session_id, messages=[*self.rows[session_id]["messages"], *_json_copy(messages)])
+
+    async def update_message(self, session_id: str, message_id: str, patch: dict) -> bool:
+        if session_id not in self.rows or not any(m["id"] == message_id for m in self.rows[session_id]["messages"]):
+            return False
+        msgs = [{**m, **_json_copy(patch)} if m["id"] == message_id else m for m in self.rows[session_id]["messages"]]
+        self._write(session_id, messages=msgs)
+        return True
+
+    async def save_state(self, session_id: str, state: dict, title: str) -> None:
+        self._write(session_id, state=_json_copy(state), title=title)
+
+    async def delete(self, filters: dict) -> list[dict]:
+        gone = [r for r in self.rows.values() if all(r.get(k) == v for k, v in filters.items())]
+        for r in gone:
+            del self.rows[r["id"]]
+            self.leases.pop(r["id"], None)  # the lease is a column of the row
+        return gone
+
+
+class FakeKB:
+    def __init__(self):
+        self.passages: list[dict] = []
+        self.error: Exception | None = None
+        self.queries: list[tuple] = []
+
+    async def search(self, query: str, car_id: str, k: int) -> list[dict]:
+        self.queries.append((query, car_id, k))
+        if self.error is not None:
+            raise self.error
+        return self.passages
+
+
+class FakeLLM:
+    """Counts calls; `fail_stream_after=n` raises before token n (0 = before the first token)."""
+
+    def __init__(self):
+        from app.schemas.session import DiagnosisState, SuspectedCause
+
+        self.calls = 0
+        self.reply = "Likely the fan relay. Check it with the engine cold."
+        self.fail_stream_after: int | None = None
+        self.state: DiagnosisState | None = DiagnosisState(
+            suspected_causes=[SuspectedCause(cause="Fan relay", likelihood=0.6)],
+            title="Fan cycling on and off",
+        )
+        self.gate: asyncio.Event | None = None
+        self.prompt: list[dict] | None = None
+        self.conversation: list[dict] | None = None
+
+    async def stream_reply(self, messages: list[dict]):
+        self.calls += 1
+        self.prompt = messages
+        if self.gate is not None:
+            await self.gate.wait()
+        for token in re.findall(r"\S+\s*", self.reply)[: self.fail_stream_after]:
+            yield token
+        if self.fail_stream_after is not None:
+            raise RuntimeError("stream broke")
+
+    async def extract_state(self, conversation: list[dict], previous):
+        self.calls += 1
+        self.conversation = conversation
+        return self.state if self.state is not None else previous
+
 
 @pytest.fixture
-def test_helper():
-    """Provide TestHelper instance for tests."""
-    return TestHelper()
+def user_id():
+    return USER_ID
 
-# Error simulation fixtures
-@pytest.fixture
-def database_error():
-    """Simulate database connection error."""
-    return ConnectionError("Database connection failed")
-
-@pytest.fixture 
-def redis_error():
-    """Simulate Redis connection error."""
-    return ConnectionError("Redis connection failed")
 
 @pytest.fixture
-def external_api_error():
-    """Simulate external API error."""
-    import requests
-    return requests.RequestException("External API unavailable")
+def other_user_id():
+    return OTHER_USER_ID
 
-# Performance test fixtures
+
 @pytest.fixture
-def performance_monitor():
-    """Monitor for performance testing."""
-    import time
-    class PerformanceMonitor:
-        def __init__(self):
-            self.start_time = None
-            self.end_time = None
-        
-        def start(self):
-            self.start_time = time.time()
-        
-        def stop(self):
-            self.end_time = time.time()
-        
-        @property
-        def duration(self):
-            if self.start_time and self.end_time:
-                return self.end_time - self.start_time
-            return None
-        
-        def assert_duration_less_than(self, max_duration):
-            assert self.duration is not None, "Timer not started/stopped"
-            assert self.duration < max_duration, f"Duration {self.duration}s exceeds {max_duration}s"
-    
-    return PerformanceMonitor()
+def car():
+    return {"id": "toyota-echo-2001", "make": "Toyota", "model": "Echo", "year": 2001}
 
-# Pytest configuration
-def pytest_configure(config):
-    """Configure pytest with custom markers and settings."""
-    config.addinivalue_line(
-        "markers", "unit: mark test as a unit test"
-    )
-    config.addinivalue_line(
-        "markers", "integration: mark test as an integration test"
-    )
-    config.addinivalue_line(
-        "markers", "security: mark test as a security test"
-    )
-    config.addinivalue_line(
-        "markers", "performance: mark test as a performance test"
-    )
-    config.addinivalue_line(
-        "markers", "slow: mark test as slow running"
-    )
 
-def pytest_collection_modifyitems(config, items):
-    """Modify test collection to add markers based on test paths."""
-    for item in items:
-        # Add markers based on test file path
-        if "test_security" in item.nodeid:
-            item.add_marker(pytest.mark.security)
-        if "test_auth" in item.nodeid:
-            item.add_marker(pytest.mark.security)
-        if "integration" in item.nodeid:
-            item.add_marker(pytest.mark.integration)
-        else:
-            item.add_marker(pytest.mark.unit)
-
-# Async test decorator
-def async_test(coro):
-    """Decorator to run async test functions."""
-    def wrapper(*args, **kwargs):
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(coro(*args, **kwargs))
-    return wrapper
-
-# Performance testing fixtures
 @pytest.fixture
-def performance_timer():
-    """Timer for performance testing."""
-    import time
-    
-    class Timer:
-        def __init__(self):
-            self.start_time = None
-            self.end_time = None
-        
-        def start(self):
-            self.start_time = time.time()
-        
-        def stop(self):
-            self.end_time = time.time()
-        
-        @property
-        def elapsed(self):
-            if self.start_time and self.end_time:
-                return self.end_time - self.start_time
-            return None
-    
-    return Timer()
+def fake_store(monkeypatch):
+    from app.services import diagnosis
 
-# Error simulation fixtures
+    store = FakeSessionStore()
+    monkeypatch.setattr(diagnosis, "sessions", store)
+    return store
+
+
 @pytest.fixture
-def simulate_errors():
-    """Simulate various error conditions for testing."""
-    class ErrorSimulator:
-        @staticmethod
-        def connection_error():
-            from requests.exceptions import ConnectionError
-            raise ConnectionError("Connection failed")
-        
-        @staticmethod
-        def timeout_error():
-            from requests.exceptions import Timeout
-            raise Timeout("Request timed out")
-        
-        @staticmethod
-        def validation_error():
-            from pydantic import ValidationError
-            raise ValidationError("Validation failed", None)
-        
-        @staticmethod
-        def http_error(status_code: int = 500):
-            from fastapi import HTTPException
-            raise HTTPException(status_code=status_code, detail="HTTP Error")
-    
-    return ErrorSimulator()
+def media_root(monkeypatch, tmp_path):
+    """A real MediaStore rooted in tmp_path, swapped in for the one diagnosis uses."""
+    from app.services import diagnosis
+    from app.services.media_store import MediaStore
+
+    root = tmp_path / "media-root"
+    monkeypatch.setattr(diagnosis, "media_store", MediaStore(root))
+    return root
+
+
+@pytest.fixture
+def fake_kb(monkeypatch):
+    from app.services import kb
+
+    fake = FakeKB()
+    monkeypatch.setattr(kb, "search", fake.search)
+    return fake
+
+
+@pytest.fixture
+def fake_llm(monkeypatch, fake_kb):
+    from app.services import llm
+
+    fake = FakeLLM()
+    monkeypatch.setattr(llm, "stream_reply", fake.stream_reply)
+    monkeypatch.setattr(llm, "extract_state", fake.extract_state)
+    return fake
+
+
+@pytest.fixture
+def slow_llm(fake_llm):
+    """The reply stream waits on `slow_llm.gate` before its first token."""
+    fake_llm.gate = asyncio.Event()
+    return fake_llm
+
+
+@pytest.fixture
+def session(fake_store, media_root, car):
+    return fake_store.add(USER_ID, car["id"])
+
+
+@pytest.fixture
+def fake_garage(monkeypatch, car):
+    """USER_ID owns `car`; nobody else owns any car."""
+    from app.api.v1 import session_route
+
+    async def get_user_cars(user_id):
+        return [car] if user_id == USER_ID else []
+
+    async def get_car_by_id(car_id):
+        return car if car_id == car["id"] else None
+
+    monkeypatch.setattr(session_route.profiles, "get_user_cars", get_user_cars)
+    monkeypatch.setattr(session_route.profiles.car_crud, "get_car_by_id", get_car_by_id)
+
+
+@pytest.fixture
+def existing_session(session, fake_garage):
+    return session
+
+
+def _bearer(monkeypatch, user_id: str) -> dict:
+    from app.utils import auth_middleware
+
+    monkeypatch.setattr(auth_middleware, "validate_user", AsyncMock(return_value=True))
+    token = auth_middleware.jwt_handler.create_access_token({"sub": user_id})
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def auth_headers(monkeypatch):
+    return _bearer(monkeypatch, USER_ID)
+
+
+@pytest.fixture
+def auth_headers_other_user(monkeypatch):
+    return _bearer(monkeypatch, OTHER_USER_ID)

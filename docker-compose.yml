@@ -1,62 +1,47 @@
-version: "3.8"
-
 services:
-  autocare-backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: autocare-app
-    ports:
-      - "8000:8000"
+  db:
+    image: postgres:16-alpine
     environment:
-      - REDIS_HOST=host.docker.internal
-      - MILVUS_HOST=host.docker.internal
-      - OLLAMA_HOST=host.docker.internal
-      - ENV=production
+      POSTGRES_USER: autocare
+      POSTGRES_DB: autocare
+      # Must be URL-safe (letters, digits, - _ . ~) because it is also put into DATABASE_URL below.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs only when pgdata is empty (first start); later schema changes are applied by hand with psql.
+      - ./app/db/sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "autocare", "-d", "autocare"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # No published ports: only the api service reaches Postgres, over the compose network.
     restart: unless-stopped
 
-    # Resource limits for security and stability
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 1G
-        reservations:
-          cpus: "0.5"
-          memory: 512M
-
-    # Security settings
-    security_opt:
-      - no-new-privileges:true
-    read_only: false # Set to true if app doesn't need write access
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - SETGID
-      - SETUID
-
-    # Volume mounts with read-only where possible
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://autocare:${POSTGRES_PASSWORD}@db:5432/autocare
+      # Address of the reverse proxy whose X-Forwarded-For uvicorn trusts (see README).
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
-      - ./logs:/app/logs # Only mount logs directory
-      - ./car_data:/app/car_data:ro # Read-only data
-
-    # Health check
+      - media:/data/media
+    # Caddy on the host terminates TLS and proxies to this port. To expose the API directly (plain HTTP),
+    # change the mapping to "8000:8000".
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 40s
+      retries: 5
+      start_period: 90s
 
-    # Network configuration
-    networks:
-      - autocare-network
-
-networks:
-  autocare-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
+volumes:
+  pgdata:
+  media:

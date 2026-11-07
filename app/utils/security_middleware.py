@@ -4,6 +4,8 @@ from typing import Callable
 import secrets
 import os
 
+DOCS_PATHS = {"/docs", "/docs/oauth2-redirect", "/redoc"}
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """
     Middleware that adds security headers to all HTTP responses
@@ -24,8 +26,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         
         # Determine CSP policy based on endpoint
-        is_docs_endpoint = '/docs' in str(request.url.path) or '/redoc' in str(request.url.path)
-        is_confirm_page = '/auth/confirm-page' in str(request.url.path)
+        # Swagger UI / ReDoc pages need inline scripts and CDN assets, so only they skip the CSP
+        is_docs_endpoint = request.url.path in DOCS_PATHS
         
         # Security headers
         headers = {
@@ -51,9 +53,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         # Only add security headers for non-docs endpoints
         if not is_docs_endpoint:
-            headers["Content-Security-Policy"] = self._get_csp_policy(nonce, is_docs_endpoint, is_confirm_page)
+            headers["Content-Security-Policy"] = self._get_csp_policy(nonce)
             headers["X-Frame-Options"] = "DENY"
         
+        # A route's own Cache-Control (e.g. the SSE stream's no-cache) wins
+        if "cache-control" in response.headers:
+            del headers["Cache-Control"]
+
         # Add headers to response
         for header, value in headers.items():
             if value:  # Only add non-empty headers
@@ -61,47 +67,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         return response
     
-    def _get_csp_policy(self, nonce: str, is_docs_endpoint: bool = False, is_confirm_page: bool = False) -> str:
+    def _get_csp_policy(self, nonce: str) -> str:
         """Generate Content Security Policy"""
-        
-        if is_docs_endpoint:
-            # Very relaxed CSP for documentation pages to allow all Swagger UI resources
-            return (
-                f"default-src *; "
-                f"script-src * 'unsafe-inline' 'unsafe-eval'; "
-                f"style-src * 'unsafe-inline'; "
-                f"font-src *; "
-                f"img-src * data:; "
-                f"connect-src *; "
-                f"frame-src *; "
-                f"object-src *"
-            )
-        elif is_confirm_page:
-            # Relaxed CSP for confirmation page to allow inline scripts
-            return (
-                f"default-src 'self'; "
-                f"script-src 'self' 'nonce-{nonce}' 'unsafe-inline'; "
-                f"style-src 'self' 'nonce-{nonce}' 'unsafe-inline'; "
-                f"font-src 'self' https://fonts.gstatic.com; "
-                f"img-src 'self' data: https:; "
-                f"connect-src 'self'; "
-                f"frame-ancestors 'none'; "
-                f"base-uri 'self'; "
-                f"object-src 'none'"
-            )
-        else:
-            # Strict CSP for other endpoints
-            return (
-                f"default-src 'self'; "
-                f"script-src 'self' 'nonce-{nonce}' 'unsafe-inline' https://cdn.jsdelivr.net; "
-                f"style-src 'self' 'nonce-{nonce}' 'unsafe-inline' https://fonts.googleapis.com; "
-                f"font-src 'self' https://fonts.gstatic.com; "
-                f"img-src 'self' data: https:; "
-                f"connect-src 'self' wss: ws:; "
-                f"frame-ancestors 'none'; "
-                f"base-uri 'self'; "
-                f"object-src 'none'"
-            )
+        return (
+            f"default-src 'self'; "
+            f"script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+            f"style-src 'self' 'nonce-{nonce}' https://fonts.googleapis.com; "
+            f"font-src 'self' https://fonts.gstatic.com; "
+            f"img-src 'self' data: https:; "
+            f"connect-src 'self'; "
+            f"frame-ancestors 'none'; "
+            f"base-uri 'self'; "
+            f"object-src 'none'"
+        )
     
     def _is_production(self) -> bool:
         """Check if running in production"""
@@ -109,5 +87,5 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     
     def _is_sensitive_endpoint(self, request: Request) -> bool:
         """Check if endpoint handles sensitive data"""
-        sensitive_paths = ["/auth/", "/api/v1/auth/", "/security/"]
+        sensitive_paths = ["/auth/", "/api/v1/auth/", "/security/", "/api/v1/sessions", "/api/v1/cars"]
         return any(sensitive_path in str(request.url.path) for sensitive_path in sensitive_paths)

@@ -1,359 +1,174 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse, PlainTextResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.security import HTTPBearer
-from app.api.v1.routes import router as v1_router
-from app.utils.websocket import manager as websocket_manager
-from app.utils.logger import Logger as AppLogger, get_logger_instance
-from app.db.base import SupabaseDBHandler as AppDBHandler
-from app.utils.redis_cache import get_redis_cache, RedisCache
-from app.utils.startup_checks import check_milvus_connection, check_supabase_connection, check_redis_connection
-from app.core.interfaces import ILogger, IDBHandler, IWebSocketManager
-from typing import Any
-from pydantic import BaseModel
-from app.utils.limiter import limiter, rate_limit_middleware
-from app.utils.validation_middleware import validation_middleware, input_validator
-from app.utils.audit_logging import audit_middleware, audit_logger, AuditEventType
-from app.utils.security_middleware import SecurityHeadersMiddleware
-from app.utils.exceptions import BaseAPIException, SystemException
-from slowapi.middleware import SlowAPIMiddleware
-from slowapi.errors import RateLimitExceeded
+"""AutoCare backend entrypoint."""
 import asyncio
+import logging
 import os
-from app.agents.global_agents import orchestrator_agent
+from contextlib import asynccontextmanager
+from pathlib import Path
 
-# Concrete implementations (adapters)
-logger: ILogger = get_logger_instance()
-db_handler: IDBHandler = AppDBHandler()
-websocket_manager: IWebSocketManager = websocket_manager
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-app = FastAPI(
-    title="AutoCare API",
-    description="""
-    AutoCare API provides intelligent automotive diagnostics, chat-based assistance, and car data management. 
-    Features include:
-    - User authentication and management
-    - Car CRUD operations
-    - Chat sessions with AI assistant for troubleshooting and advice
-    - Real-time WebSocket communication
-    - Enhanced security with rate limiting, input validation, and audit logging
-    - Integration with external services (Milvus, Supabase, Redis)
-    """,
-    version="1.0.0",
-    docs_url="/docs",  # Enable default docs
-    redoc_url="/redoc",  # Enable default redoc
-    openapi_url="/openapi.json"
+from app.api.v1.routes import router as v1_router
+from app.core.config import get_settings
+from app.db import pool
+from app.db.pool import DatabaseUnavailable
+from app.services import llm
+from app.utils.body_limit import BodySizeLimitMiddleware
+from app.utils.correlation import CorrelationIdMiddleware
+from app.utils.exceptions import ErrorCode, ServiceUnavailableException, error_body, http_error_body
+from app.utils.limiter import limiter
+from app.utils.security_middleware import SecurityHeadersMiddleware
+
+settings = get_settings()
+logger = logging.getLogger("autocare")
+
+
+def media_dir_writable(path: str) -> bool:
+    """True if uploads can be stored: MEDIA_DIR, or its nearest existing parent (uploads create the rest), is writable."""
+    current = Path(path).absolute()
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    return current.is_dir() and os.access(current, os.W_OK | os.X_OK)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if not media_dir_writable(settings.MEDIA_DIR):
+        logger.warning("MEDIA_DIR %s is not writable by this process; media uploads will fail", settings.MEDIA_DIR)
+    await pool.init_pool()
+    try:
+        yield
+    finally:
+        await pool.close_pool()
+
+
+app = FastAPI(title="AutoCare API", debug=settings.DEBUG, lifespan=lifespan)
+
+app.state.limiter = limiter
+# Bodies are capped before FastAPI reads them (multipart files would otherwise be spooled to disk before auth).
+# Only the chat route takes uploads: the largest legal payload plus 1 MB for the form fields. JSON routes get 1 MB.
+_MB = 1024 * 1024
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=_MB,
+    upload_max_bytes=(max(settings.MAX_IMAGES * settings.MAX_IMAGE_MB, settings.MAX_MEDIA_MB) + 1) * _MB,
+    upload_path=r"/api/v1/sessions/[^/]+/messages",
 )
-
-# Configure security-first CORS
-allowed_origins = [
-    "http://localhost:3000",  # React dev server
-    "http://localhost:8080",  # Local frontend
-    "https://autocare.yourdomain.com",  # Production frontend
-]
-
-# Get additional origins from environment
-if os.getenv("ALLOWED_ORIGINS"):
-    additional_origins = os.getenv("ALLOWED_ORIGINS").split(",")
-    allowed_origins.extend([origin.strip() for origin in additional_origins])
-
+app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=settings.get_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    allow_headers=[
-        "Accept",
-        "Accept-Language",
-        "Content-Language",
-        "Content-Type",
-        "Authorization",
-        "X-Requested-With",
-        "X-CSRF-Token",
-    ],
-    expose_headers=["X-Total-Count", "X-Rate-Limit-Remaining"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Correlation-ID"],
 )
+app.add_middleware(CorrelationIdMiddleware)  # outermost: every response and log line of a request share the id
 
-# Add trusted host middleware for additional security
-app.add_middleware(
-    TrustedHostMiddleware, 
-    allowed_hosts=["localhost", "127.0.0.1", "autocare.yourdomain.com", "*.yourdomain.com"]
-)
 
-# Add security headers middleware
-app.add_middleware(SecurityHeadersMiddleware)
+# Every error response has the same body: {"error_code", "message", "correlation_id", "timestamp", ...}
+# (app.utils.exceptions.error_body). None of them echoes request data. correlation_id is the request's
+# (app.utils.correlation), and each error is logged with it: method, route, status, code and class names only.
 
-app.state.limiter = limiter
+MAX_REPORTED_FIELDS = 20
+_SOURCES = {"body", "query", "path", "header", "cookie"}
+MAX_LOGGED_PATH_CHARS = 100
 
-# Add security middleware (order matters!)
-app.add_middleware(SlowAPIMiddleware)  # Rate limiting (legacy support)
 
-# Add custom middleware
-@app.middleware("http")
-async def security_middleware_stack(request: Request, call_next):
-    """Combined security middleware stack"""
-    try:
-        # 1. Input validation
-        if not await input_validator.validate_request(request):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid or potentially malicious input detected"
-            )
-        
-        # 2. Rate limiting and audit logging combined
-        response = await rate_limit_middleware(request, call_next)
-        
-        return response
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions (like rate limiting)
-        raise
-    except Exception as e:
-        # Log unexpected errors
-        await audit_logger.log_event(
-            event_type=AuditEventType.SYSTEM_ERROR,
-            ip_address=request.client.host if request.client else None,
-            endpoint=request.url.path,
-            method=request.method,
-            risk_level="high",
-            details={"error": str(e)}
-        )
-        raise HTTPException(status_code=500, detail="Internal server error")
+def _route(request: Request) -> str:
+    """The matched route's template (no ids from the URL), else the raw path, truncated."""
+    return getattr(request.scope.get("route"), "path", None) or request.url.path[:MAX_LOGGED_PATH_CHARS]
 
-class ErrorResponse(BaseModel):
-    detail: str
-    code: int
 
-# Enhanced error handlers with structured error responses
-@app.exception_handler(BaseAPIException)
-async def api_exception_handler(request: Request, exc: BaseAPIException):
-    """Handle custom API exceptions"""
-    await audit_logger.log_event(
-        event_type=AuditEventType.API_REQUEST,
-        ip_address=request.client.host if request.client else None,
-        endpoint=request.url.path,
-        method=request.method,
-        status_code=exc.status_code,
-        risk_level="medium" if exc.status_code >= 400 else "low",
-        details={
-            "error_code": exc.error_code.value,
-            "correlation_id": exc.correlation_id
-        }
+def _error_response(request: Request, status_code: int, body: dict, cause: str, headers=None) -> JSONResponse:
+    cid = getattr(request.state, "correlation_id", None)
+    if cid:
+        body = {**body, "correlation_id": cid}
+    log = logger.error if status_code >= 500 else logger.info
+    log(
+        "%s %s answered %d %s (%s) [ID: %s]",
+        request.method, _route(request), status_code, body["error_code"], cause, body["correlation_id"],
     )
-    
-    await logger.error(f"API Exception: {exc.error_code.value} - {exc.detail}")
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=exc.detail
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # BaseAPIException, FastAPI's and Starlette's HTTPExceptions (unknown route 404, wrong method 405), media 413/415.
+    if exc.status_code in (204, 304):
+        return Response(status_code=exc.status_code, headers=exc.headers)
+    return _error_response(
+        request, exc.status_code, http_error_body(exc.status_code, exc.detail), type(exc).__name__, exc.headers
     )
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """Enhanced HTTP exception handler with audit logging"""
-    await audit_logger.log_event(
-        event_type=AuditEventType.API_REQUEST,
-        ip_address=request.client.host if request.client else None,
-        endpoint=request.url.path,
-        method=request.method,
-        status_code=exc.status_code,
-        risk_level="medium" if exc.status_code >= 400 else "low",
-        details={"error": exc.detail}
-    )
-    
-    await logger.error(f"HTTPException: {exc.detail}")
-    
-    # Return structured error response
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error_code": f"HTTP_{exc.status_code}",
-            "message": exc.detail,
-            "status_code": exc.status_code
-        }
-    )
 
-@app.exception_handler(RateLimitExceeded)
-async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded):
-    """Rate limit exception handler with enhanced logging"""
-    await audit_logger.log_event(
-        event_type=AuditEventType.RATE_LIMIT_EXCEEDED,
-        ip_address=request.client.host if request.client else None,
-        endpoint=request.url.path,
-        method=request.method,
-        risk_level="medium",
-        details={
-            "rate_limit": str(exc.detail),
-            "retry_after": "60"
-        }
-    )
-    
-    return JSONResponse(
-        status_code=429,
-        content={"detail": f"Rate limit exceeded: {exc.detail}"},
-        headers={"Retry-After": "60"}
-    )
+def invalid_fields(errors) -> list[str]:
+    """The names of the invalid fields ("make", "files"), without the request source, list indexes or the
+    rejected values themselves."""
+    names: list[str] = []
+    for error in errors:
+        loc = list(error.get("loc", ()))
+        source = str(loc.pop(0)) if loc and loc[0] in _SOURCES else "body"
+        name = ".".join(part for part in loc if isinstance(part, str))[:64] or source
+        if name not in names:
+            names.append(name)
+    return names[:MAX_REPORTED_FIELDS]
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    body = error_body(ErrorCode.INVALID_INPUT.value, "Invalid request", fields=invalid_fields(exc.errors()))
+    return _error_response(request, 422, body, type(exc).__name__)
+
+
+def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
+    # Sync on purpose: SlowAPIMiddleware calls the registered handler only when it is not a coroutine.
+    body = error_body(ErrorCode.RATE_LIMIT_EXCEEDED.value, f"Rate limit exceeded: {exc.detail}")
+    response = _error_response(request, 429, body, type(exc).__name__)
+    return request.app.state.limiter._inject_headers(response, request.state.view_rate_limit)  # as slowapi's own
+
+
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+
+
+@app.exception_handler(DatabaseUnavailable)
+async def database_unavailable_handler(request: Request, exc: DatabaseUnavailable):
+    # The same 503 as a token check during an outage: clients keep their tokens and retry.
+    unavailable = ServiceUnavailableException()
+    return _error_response(request, unavailable.status_code, unavailable.detail, f"DatabaseUnavailable: {exc}")
+
 
 @app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
-    """General exception handler for unexpected errors"""
-    correlation_id = getattr(request.state, 'correlation_id', None)
-    
-    await audit_logger.log_event(
-        event_type=AuditEventType.SYSTEM_ERROR,
-        ip_address=request.client.host if request.client else None,
-        endpoint=request.url.path,
-        method=request.method,
-        risk_level="high",
-        details={
-            "error_type": type(exc).__name__,
-            "correlation_id": correlation_id
-        }
-    )
-    
-    await logger.error(f"Unhandled exception: {type(exc).__name__}: {str(exc)}")
-    
-    # Return safe error message without exposing internal details
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error_code": "SYS_001",
-            "message": "Internal server error",
-            "correlation_id": correlation_id,
-            "status_code": 500
-        }
-    )
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    # Log type and route only; no request data, headers or stack trace in the response. Starlette sends this
+    # one from outside every middleware, so the correlation header is added here.
+    body = error_body(ErrorCode.INTERNAL_SERVER_ERROR.value, "Internal server error")
+    cid = getattr(request.state, "correlation_id", None)
+    headers = {"X-Correlation-ID": cid} if cid else None
+    return _error_response(request, 500, body, f"unhandled {type(exc).__name__}", headers)
 
-app.state.limiter = limiter
 
-class ErrorResponse(BaseModel):
-    detail: str
-    code: int
+app.include_router(v1_router, prefix="/api/v1")
 
-# Dependency injection (async only, DRY)
-async def get_logger_dep() -> ILogger:
-    return logger
 
-async def get_websocket_manager_dep() -> IWebSocketManager:
-    return websocket_manager
-
-async def get_db_handler_dep() -> IDBHandler:
-    return db_handler
-
-# SOLID: Startup checks as a single-responsibility class
-class StartupChecker:
-    def __init__(self, logger: ILogger):
-        self.logger = logger
-        self.checks = [
-            (check_milvus_connection, "Milvus"),
-            (check_supabase_connection, "Supabase"),
-            (check_redis_connection, "Redis"),
-        ]
-
-    async def run_all(self):
-        results = await asyncio.gather(
-            *(check() for check, _ in self.checks),
-            return_exceptions=True
-        )
-        for i, (result, (_, name)) in enumerate(zip(results, self.checks)):
-            ok, err = (result if not isinstance(result, Exception) else (False, str(result)))
-            if not ok:
-                await self.logger.error(f"{name} connection failed: {err}")
-                raise RuntimeError(f"{name} connection failed: {err}")
-            await self.logger.info(f"{name} connection successful.")
-        await self.logger.info("WebSocket manager is ready.")
-
-# SOLID: WebSocketHandler depends on abstractions
-class WebSocketHandler:
-    """
-    Handles WebSocket connections and messaging.
-    """
-    def __init__(self, manager: IWebSocketManager, logger: ILogger):
-        self.manager = manager
-        self.logger = logger
-
-    async def handle(self, websocket: WebSocket) -> None:
-        await self.manager.connect(websocket)
-        try:
-            while True:
-                data = await websocket.receive_text()
-                # Echo back the raw JSON string, not a wrapped message
-                await self.manager.send_personal_message(data, websocket)
-        except WebSocketDisconnect:
-            await self.manager.disconnect(websocket)
-            await self.logger.info("WebSocket disconnected.")
-        except Exception as exc:
-            await self.logger.error(f"WebSocket error: {str(exc)}")
-            await self.manager.disconnect(websocket)
-            await websocket.close(code=1011)
-
-@app.on_event("startup")
-async def startup_event():
-    checker = StartupChecker(logger)
-    await checker.run_all()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await logger.info("Application shutting down...")
-    
+async def check_database() -> bool:
     try:
-        # Cleanup resources in proper order
-        if hasattr(websocket_manager, "close") and callable(getattr(websocket_manager, "close")):
-            await websocket_manager.close()
-            await logger.info("WebSocket manager closed")
+        return await asyncio.wait_for(pool.fetchval("select 1"), 5) == 1
+    except Exception:
+        return False
 
-        # Close Redis connections
-        redis_cache = await get_redis_cache()
-        if hasattr(redis_cache, "close") and callable(getattr(redis_cache, "close")):
-            await redis_cache.close()
-            await logger.info("Redis connections closed")
 
-        # Close database connections
-        if hasattr(db_handler, "close") and callable(getattr(db_handler, "close")):
-            await db_handler.close()
-            await logger.info("Database connections closed")
-
-        # Close orchestrator agent
-        if hasattr(orchestrator_agent, "close") and callable(getattr(orchestrator_agent, "close")):
-            orchestrator_agent.close()
-            await logger.info("Orchestrator agent closed")
-
-        # Close logger last
-        if hasattr(logger, "close") and callable(getattr(logger, "close")):
-            await logger.close()
-            
-    except Exception as e:
-        print(f"Error during shutdown: {str(e)}")  # Use print since logger might be closed
-
-app.include_router(
-    v1_router,
-    prefix="/api/v1",
-    tags=["API v1"],
-    responses={404: {"description": "Not found"}},
-)
-
-@app.get(
-    "/",
-    tags=["Root"],
-    summary="API Root Endpoint",
-    description="Welcome endpoint for the AutoCare API. Returns a welcome message.",
-)
-@limiter.limit("10/minute")
-async def read_root(request: Request):
-    return {"message": "Welcome to AutoCare API"}
-
-@app.websocket(
-    "/ws",
-    name="WebSocket Endpoint",
-)
-async def websocket_endpoint(
-    websocket: WebSocket,
-    websocket_manager: IWebSocketManager = Depends(get_websocket_manager_dep),
-    logger: ILogger = Depends(get_logger_dep),
-):
-    """
-    WebSocket endpoint for real-time communication.
-    Accepts and echoes messages. Used for chat and live features.
-    """
-    handler = WebSocketHandler(websocket_manager, logger)
-    await handler.handle(websocket)
+@app.get("/health")
+async def health():
+    database, deepseek = await asyncio.gather(check_database(), llm.ping())
+    # 503 without the database, so the compose healthcheck reports it; DeepSeek being down alone keeps 200.
+    return JSONResponse(
+        status_code=200 if database else 503,
+        content={"status": "ok" if database else "unavailable", "database": database, "deepseek": deepseek},
+    )

@@ -1,0 +1,82 @@
+# Quality cases for scripts/run_cases.py. Fields:
+#   id, car_id, text, must_mention, must_not, expects_citation,
+#   media (optional): paths under tests/fixtures/e2e/. Media cases are skipped while the files are missing.
+# The must_not list is the same for every case, so it is anchored once here.
+- id: overheat-fan-cycling
+  car_id: toyota-echo-2001
+  text: >-
+    My car is overheating and the cooling fan keeps clicking on and off. The temperature
+    gauge climbs in traffic and drops when I drive faster. What could be wrong?
+  must_mention: ["temperature sensor", "relay", "coolant level"]
+  must_not: &must_not ["check your owner's manual", "refer to your manual", "here's a message"]
+  expects_citation: true
+
+- id: reservoir-steam
+  car_id: toyota-echo-2001
+  text: >-
+    I see steam coming out of the coolant reservoir after a drive and the coolant level
+    keeps dropping. What is happening and is it safe to keep driving?
+  must_mention: ["radiator cap", "head gasket"]
+  must_not: *must_not
+  expects_citation: true
+
+- id: brake-grinding
+  car_id: toyota-echo-2001
+  text: >-
+    There is a grinding noise from the front wheels every time I press the brake pedal,
+    and the car pulls slightly to one side when I stop.
+  must_mention: ["brake pad", "rotor"]
+  must_not: *must_not
+  expects_citation: false
+
+- id: no-start-clicking
+  car_id: toyota-echo-2001
+  text: >-
+    The car will not start. When I turn the key I only hear a fast clicking sound and the
+    dashboard lights dim.
+  must_mention: ["battery", "starter"]
+  must_not: *must_not
+  expects_citation: false
+
+- id: rough-idle
+  car_id: toyota-echo-2001
+  text: >-
+    The engine idles roughly and shakes at traffic lights, and sometimes the RPM needle
+    bounces. It runs fine once I am driving.
+  must_mention: ["spark plug", "vacuum"]
+  must_not: *must_not
+  expects_citation: false
+
+- id: check-engine-light
+  car_id: toyota-echo-2001
+  text: >-
+    The check engine light came on and stays on. The car drives normally. What should I
+    do and how serious is it?
+  must_mention: ["code", "gas cap"]
+  must_not: *must_not
+  expects_citation: false
+
+# Media cases. The files are not in the repo: supply real clips (generated tones only
+# check the pipeline and say nothing about quality).
+- id: photo-coolant-reservoir
+  car_id: toyota-echo-2001
+  text: This is the coolant reservoir after a drive. Is the level and colour normal?
+  media: [tests/fixtures/e2e/coolant-reservoir.jpg]
+  must_mention: ["coolant"]
+  must_not: *must_not
+  expects_citation: false
+
+- id: audio-engine-noise
+  car_id: toyota-echo-2001
+  text: This is the noise my engine makes when I start it cold.
+  media: [tests/fixtures/e2e/engine-noise.m4a]
+  must_mention: ["belt"]
+  must_not: *must_not
+  expects_citation: false
+
+- id: video-engine-bay
+  car_id: toyota-echo-2001
+  media: [tests/fixtures/e2e/engine-bay.mp4]
+  must_mention: ["engine"]
+  must_not: *must_not
+  expects_citation: false

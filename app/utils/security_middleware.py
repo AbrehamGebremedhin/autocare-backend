@@ -1,4 +1,5 @@
 from fastapi import Request, Response
+from app.core.config import get_settings
 from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Callable
 import secrets
@@ -26,8 +27,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         
         # Determine CSP policy based on endpoint
-        # Swagger UI / ReDoc pages need inline scripts and CDN assets, so only they skip the CSP
-        is_docs_endpoint = request.url.path in DOCS_PATHS
+        # Swagger UI / ReDoc pages need inline scripts and CDN assets, so only they skip the CSP (and only when ENABLE_DOCS serves them)
+        is_docs_endpoint = get_settings().ENABLE_DOCS and request.url.path in DOCS_PATHS
         
         # Security headers
         headers = {

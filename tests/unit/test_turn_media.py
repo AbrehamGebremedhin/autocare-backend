@@ -488,6 +488,7 @@ async def test_tmpdir_removed_if_stream_never_starts(existing_session, car, make
 
 # --- ceiling on concurrent media turns -------------------------------------------
 
+OTHER_USER = "33333333-3333-4333-8333-333333333333"
 BUSY_MEDIA = "The server is busy processing other media. Try again shortly."
 
 
@@ -507,7 +508,7 @@ def test_media_turn_with_no_free_slot_is_429_before_anything_is_claimed_or_store
 ):
     from app.services import usage_limits
 
-    usage_limits.take_media_slot()  # another media turn is running
+    usage_limits.take_media_slot(OTHER_USER)  # another account's media turn is running
     sid = existing_session["id"]
     claims = []
     real = fake_all.store.claim
@@ -522,13 +523,13 @@ def test_media_turn_with_no_free_slot_is_429_before_anything_is_claimed_or_store
     assert r.json()["error_code"] == "EXT_003" and r.json()["message"] == BUSY_MEDIA
     assert claims == [] and turn_dirs == [] and fake_all.llm.calls == 0
     assert fake_all.store.messages(sid) == [] and not fake_all.store.busy(sid)
-    assert usage_limits._media_turns == 1  # the refused request took nothing
+    assert usage_limits._media_users == {OTHER_USER}  # the refused request took nothing
 
 
 def test_text_turns_are_not_limited_by_media_slots(client, auth_headers, existing_session, fake_all, one_media_slot):
     from app.services import usage_limits
 
-    usage_limits.take_media_slot()
+    usage_limits.take_media_slot(OTHER_USER)
     r = client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
     assert r.status_code == 200 and _parse(r.text)[-1][0] == "done"
 
@@ -539,7 +540,7 @@ def test_zero_turns_off_the_media_ceiling(client, auth_headers, existing_session
 
     monkeypatch.setattr(get_settings(), "MAX_CONCURRENT_MEDIA_TURNS", 0)
     assert _photo_turn(client, auth_headers, existing_session["id"]).status_code == 200
-    assert usage_limits._media_turns == 0
+    assert usage_limits._media_users == set()
 
 
 def test_slot_is_free_after_a_media_turn(client, auth_headers, existing_session, fake_all, one_media_slot):
@@ -547,7 +548,7 @@ def test_slot_is_free_after_a_media_turn(client, auth_headers, existing_session,
 
     sid = existing_session["id"]
     assert _photo_turn(client, auth_headers, sid).status_code == 200
-    assert usage_limits._media_turns == 0
+    assert usage_limits._media_users == set()
     assert _photo_turn(client, auth_headers, sid).status_code == 200  # a one-slot ceiling serves turns in turn
 
 
@@ -556,14 +557,14 @@ def test_slot_is_free_after_a_model_error(client, auth_headers, existing_session
 
     fake_all.llm.fail_stream_after = 1
     assert _parse(_photo_turn(client, auth_headers, existing_session["id"]).text)[-1][0] == "error"
-    assert usage_limits._media_turns == 0
+    assert usage_limits._media_users == set()
 
 
 def test_slot_is_free_after_a_rejected_upload(client, auth_headers, existing_session, fake_all, fake_mp4, one_media_slot):
     from app.services import usage_limits
 
     r = client.post(_url(existing_session["id"]), files={"files": fake_mp4}, headers=auth_headers)
-    assert r.status_code == 415 and usage_limits._media_turns == 0
+    assert r.status_code == 415 and usage_limits._media_users == set()
 
 
 def test_slot_is_free_when_the_session_is_busy(client, auth_headers, existing_session, fake_all, one_media_slot):
@@ -571,7 +572,7 @@ def test_slot_is_free_when_the_session_is_busy(client, auth_headers, existing_se
 
     fake_all.store.hold(existing_session["id"])  # another worker's turn owns the session
     assert _photo_turn(client, auth_headers, existing_session["id"]).status_code == 409
-    assert usage_limits._media_turns == 0
+    assert usage_limits._media_users == set()
 
 
 def test_slot_is_free_when_the_daily_cap_refuses(client, auth_headers, existing_session, fake_all, one_media_slot, monkeypatch):
@@ -582,43 +583,43 @@ def test_slot_is_free_when_the_daily_cap_refuses(client, auth_headers, existing_
     sid = existing_session["id"]
     assert _photo_turn(client, auth_headers, sid).status_code == 200
     assert _photo_turn(client, auth_headers, sid).status_code == 429
-    assert usage_limits._media_turns == 0
+    assert usage_limits._media_users == set()
 
 
 async def test_slot_is_free_after_a_dropped_stream(existing_session, car, fake_all, one_media_slot):
     from app.services import usage_limits
 
-    usage_limits.take_media_slot()
+    usage_limits.take_media_slot(existing_session["user_id"])
     sid = existing_session["id"]
     lease = Lease(sid, await fake_all.store.claim(sid, existing_session["user_id"]))
-    stream, _ = session_route._events(lease, existing_session, car, "fan clicks", media_slot=True)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks", media_user=existing_session["user_id"])
     assert (await anext(stream)).startswith("event: stage")
-    assert usage_limits._media_turns == 1
+    assert usage_limits._media_users == {existing_session["user_id"]}
     await stream.aclose()  # the client went away
-    assert usage_limits._media_turns == 0
+    assert usage_limits._media_users == set()
 
 
 async def test_slot_is_free_if_the_stream_never_starts(existing_session, car, fake_all, one_media_slot):
     from app.services import usage_limits
 
-    usage_limits.take_media_slot()
+    usage_limits.take_media_slot(existing_session["user_id"])
     sid = existing_session["id"]
     lease = Lease(sid, await fake_all.store.claim(sid, existing_session["user_id"]))
-    stream, _ = session_route._events(lease, existing_session, car, "fan clicks", media_slot=True)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks", media_user=existing_session["user_id"])
     del stream
     gc.collect()
     await asyncio.sleep(0.05)
-    assert usage_limits._media_turns == 0
+    assert usage_limits._media_users == set()
 
 
 async def test_slot_is_free_when_the_turn_loses_its_lease(existing_session, car, slow_llm, fake_all, one_media_slot, monkeypatch):
     from app.services import usage_limits
 
     monkeypatch.setattr(diagnosis, "RENEW_EVERY_SECONDS", 0.01)
-    usage_limits.take_media_slot()
+    usage_limits.take_media_slot(existing_session["user_id"])
     sid = existing_session["id"]
     lease = Lease(sid, await fake_all.store.claim(sid, existing_session["user_id"]))
-    stream, _ = session_route._events(lease, existing_session, car, "fan clicks", media_slot=True)
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks", media_user=existing_session["user_id"])
     assert (await anext(stream)).startswith("event: stage")
     rest = asyncio.ensure_future(_collect(stream))
     await asyncio.wait_for(_until(lambda: slow_llm.calls == 1), 2)
@@ -626,7 +627,7 @@ async def test_slot_is_free_when_the_turn_loses_its_lease(existing_session, car,
     await asyncio.wait_for(_until(lambda: lease.lost), 2)
     slow_llm.gate.set()
     assert (await asyncio.wait_for(rest, 2))[-1] == diagnosis.sse("error", {"message": diagnosis.LEASE_LOST})
-    assert usage_limits._media_turns == 0
+    assert usage_limits._media_users == set()
 
 
 async def _collect(stream):
@@ -636,3 +637,61 @@ async def _collect(stream):
 async def _until(predicate):
     while not predicate():
         await asyncio.sleep(0.01)
+
+
+async def test_slot_is_free_when_the_stream_is_cancelled(existing_session, car, slow_llm, fake_all, one_media_slot):
+    import anyio
+
+    from app.services import usage_limits
+
+    uid = existing_session["user_id"]
+    usage_limits.take_media_slot(uid)
+    lease = Lease(existing_session["id"], await fake_all.store.claim(existing_session["id"], uid))
+    stream, _ = session_route._events(lease, existing_session, car, "fan clicks", media_user=uid)
+
+    async def consume():
+        async for _ in stream:
+            pass
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(consume)
+        await asyncio.wait_for(_until(lambda: slow_llm.calls == 1), 2)
+        tg.cancel_scope.cancel()
+    await asyncio.wait_for(_until(lambda: usage_limits._media_users == set()), 2)
+
+
+def test_one_account_cannot_run_two_media_turns_at_once(client, auth_headers, existing_session, fake_all, turn_dirs):
+    from app.services import usage_limits
+
+    usage_limits.take_media_slot(existing_session["user_id"])  # its first media turn is running (the ceiling is 2)
+    claims = []
+    real = fake_all.store.claim
+
+    async def spy(*args):
+        claims.append(args)
+        return await real(*args)
+
+    fake_all.store.claim = spy
+    r = _photo_turn(client, auth_headers, existing_session["id"])
+    assert r.status_code == 429 and r.headers["retry-after"] == "15" and r.json()["message"] == BUSY_MEDIA
+    assert claims == [] and turn_dirs == [] and usage_limits._media_users == {existing_session["user_id"]}
+    text = client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
+    assert text.status_code == 200  # text turns are not media turns
+
+
+def test_different_accounts_each_get_a_media_slot(client, auth_headers, existing_session, fake_all):
+    from app.services import usage_limits
+
+    usage_limits.take_media_slot(OTHER_USER)
+    assert _photo_turn(client, auth_headers, existing_session["id"]).status_code == 200
+    assert usage_limits._media_users == {OTHER_USER}
+
+
+def test_freeing_a_slot_twice_or_one_never_taken_is_harmless():
+    from app.services import usage_limits
+
+    usage_limits.take_media_slot("a")
+    usage_limits.free_media_slot("a")
+    usage_limits.free_media_slot("a")
+    usage_limits.free_media_slot("b")
+    assert usage_limits._media_users == set()

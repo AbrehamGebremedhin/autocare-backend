@@ -526,7 +526,7 @@ def test_register_with_the_right_code(client, fake_users, invite_only):
     assert len(fake_users.rows) == 1
 
 
-@pytest.mark.parametrize("code", [None, "", "wrong", "open-sesame ", "open-sesamé"])
+@pytest.mark.parametrize("code", [None, "", "   ", "wrong", "open-sesam", "open-sesame-and-more", "open-sesamé"])
 def test_register_with_a_missing_or_wrong_code_gets_one_generic_403(client, fake_users, invite_only, code):
     r = _register_with(client, invite_code=code)
     assert r.status_code == 403
@@ -569,3 +569,31 @@ def test_google_still_signs_in_and_links_existing_accounts_while_registration_is
     assert _google(client).status_code == 200
     [row] = fake_users.rows.values()
     assert row["google_sub"] == "google-sub-1"
+
+
+@pytest.mark.parametrize("code", ["open-sesame ", " open-sesame", "open-sesame\n"])
+def test_whitespace_around_the_client_code_is_ignored(client, fake_users, invite_only, code):
+    assert _register_with(client, invite_code=code).status_code == 200
+
+
+def test_whitespace_around_the_configured_code_is_ignored(client, fake_users, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "REGISTRATION_CODE", "  open-sesame\n")
+    assert _register_with(client, invite_code="open-sesame").status_code == 200
+    assert _register_with(client, invite_code="wrong", email="two@example.com").status_code == 403
+
+
+def test_a_blank_configured_code_leaves_registration_open(client, fake_users, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "REGISTRATION_CODE", "   ")
+    assert _register_with(client).status_code == 200
+
+
+def test_codes_are_compared_as_equal_length_digests(client, fake_users, invite_only, mocker):
+    import hmac
+
+    compare = mocker.spy(hmac, "compare_digest")
+    _register_with(client, invite_code="x")
+    assert [(len(c.args[0]), len(c.args[1])) for c in compare.call_args_list] == [(32, 32)]

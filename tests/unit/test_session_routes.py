@@ -352,19 +352,47 @@ def test_refused_requests_do_not_use_up_the_cap(client, auth_headers, auth_heade
     assert [_send(client, auth_headers, sid).status_code for _ in range(2)] == [200, 200]
 
 
-def test_the_cap_is_checked_before_the_lease_is_claimed(client, auth_headers, existing_session, fake_store, fake_llm, daily_cap):
+def test_a_refusal_by_the_cap_frees_the_lease_and_does_no_model_work(client, auth_headers, existing_session, fake_store, fake_llm, daily_cap):
     sid = existing_session["id"]
     for _ in range(2):
         _send(client, auth_headers, sid)
-    claims = []
-    real = fake_store.claim
+    calls, messages = fake_llm.calls, len(fake_store.messages(sid))
+    assert _send(client, auth_headers, sid).status_code == 429
+    assert not fake_store.busy(sid) and fake_llm.calls == calls and len(fake_store.messages(sid)) == messages
+    assert _send(client, auth_headers, sid).status_code == 429  # and again: the first refusal left no lease behind
 
-    async def spy(*args):
-        claims.append(args)
-        return await real(*args)
 
-    fake_store.claim = spy
-    assert _send(client, auth_headers, sid).status_code == 429 and claims == []
+def _counted(user_id) -> int:
+    from app.services import usage_limits
+
+    return sum(n for (uid, _), n in usage_limits._counts.items() if uid == user_id)
+
+
+def test_a_session_busy_with_another_turn_does_not_use_up_the_cap(client, auth_headers, existing_session, fake_store, fake_llm, daily_cap, user_id):
+    fake_store.hold(existing_session["id"])
+    assert _send(client, auth_headers, existing_session["id"]).status_code == 409
+    assert _counted(user_id) == 0
+
+
+def test_a_database_outage_at_the_claim_does_not_use_up_the_cap(client, auth_headers, existing_session, fake_store, fake_llm, daily_cap, user_id):
+    from app.db.pool import DatabaseUnavailable
+
+    async def down(*args):
+        raise DatabaseUnavailable("down")
+
+    fake_store.claim = down
+    assert _send(client, auth_headers, existing_session["id"]).status_code == 503
+    assert _counted(user_id) == 0
+
+
+def test_a_rejected_upload_does_not_use_up_the_cap(client, auth_headers, existing_session, fake_llm, daily_cap, user_id):
+    r = client.post(_url(existing_session["id"]), files={"files": ("x.bin", b"not media", "application/octet-stream")}, headers=auth_headers)
+    assert r.status_code == 415 and _counted(user_id) == 0
+
+
+def test_an_accepted_message_counts_once(client, auth_headers, existing_session, fake_llm, daily_cap, user_id):
+    assert _send(client, auth_headers, existing_session["id"]).status_code == 200
+    assert _counted(user_id) == 1
 
 
 # --- session lease ----------------------------------------------------------------

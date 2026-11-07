@@ -136,7 +136,7 @@ def _reset_rate_limits():
 
     limiter.reset()
     usage_limits._counts.clear()
-    usage_limits._media_turns = 0
+    usage_limits._media_users.clear()
 
 
 class FakeUserStore:

@@ -53,6 +53,26 @@ async def test_main_skips_missing_media_and_writes_report(tmp_path, monkeypatch,
     assert "SKIP m" in capsys.readouterr().out
 
 
+@pytest.mark.asyncio
+async def test_main_opens_the_pool_for_the_cases_and_closes_it(tmp_path, monkeypatch, mocker, fake_pool):
+    """kb.search needs the pool; without it every case would answer ungrounded."""
+    from app.db import pool
+
+    init = mocker.patch.object(pool, "init_pool", wraps=pool.init_pool)
+    seen = []
+
+    async def run_case(case):
+        seen.append(init.await_count == 1 and not fake_pool.closed)
+        return "reply", {}, None
+
+    monkeypatch.setattr(run_cases, "run_case", run_case)
+    monkeypatch.setattr(run_cases, "load_cases", lambda: [{"id": "t", "car_id": "c", "must_mention": [],
+                                                           "must_not": [], "expects_citation": False}])
+    await run_cases.main(None, tmp_path / "r.md")
+    assert seen == [True]
+    assert fake_pool.closed
+
+
 def test_only_filters_and_rejects_unknown():
     cases = run_cases.load_cases()
     assert [c["id"] for c in run_cases.select_cases(cases, "rough-idle, brake-grinding")] == ["brake-grinding", "rough-idle"]

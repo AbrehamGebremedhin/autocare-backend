@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import yaml  # noqa: E402
 
+from app.db import pool  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 CASES_FILE = ROOT / "tests" / "cases" / "diagnosis_cases.yaml"
 REQUIRED_FIELDS = ("id", "car_id", "must_mention", "must_not", "expects_citation")
@@ -130,15 +132,19 @@ async def run_case(case: dict) -> tuple[str, dict | None, str | None]:
 async def main(only: str | None, out: Path | None) -> Path:
     cases = select_cases(load_cases(), only)
     sections = []
-    for case in cases:
-        missing = missing_media(case)
-        if missing:
-            print(f"SKIP {case['id']}: missing media {', '.join(missing)}")
-            sections.append(render_skipped(case, missing))
-            continue
-        print(f"RUN {case['id']}", flush=True)
-        reply, state, error = await run_case(case)
-        sections.append(render_case(case, reply, state, error))
+    await pool.init_pool()  # kb.search runs on the pool; without it every case would answer ungrounded
+    try:
+        for case in cases:
+            missing = missing_media(case)
+            if missing:
+                print(f"SKIP {case['id']}: missing media {', '.join(missing)}")
+                sections.append(render_skipped(case, missing))
+                continue
+            print(f"RUN {case['id']}", flush=True)
+            reply, state, error = await run_case(case)
+            sections.append(render_case(case, reply, state, error))
+    finally:
+        await pool.close_pool()
     if out is None:
         out = ROOT / "reports" / f"cases-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.md"
     out.parent.mkdir(parents=True, exist_ok=True)

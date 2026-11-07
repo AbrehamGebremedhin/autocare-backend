@@ -1,6 +1,7 @@
 """app.db.pool against a fake asyncpg pool: no database."""
 import asyncio
 
+import asyncpg
 import pytest
 
 from app.db import pool
@@ -135,4 +136,33 @@ async def test_close_pool_closes_and_forgets_the_pool(fake_pool):
     assert fake_pool.closed
     await pool.close_pool()  # a second close is a no-op
     with pytest.raises(RuntimeError):
+        await pool.fetch("select 1")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionRefusedError("connect refused"),
+        TimeoutError(),
+        OSError("no route to host"),
+        asyncpg.ConnectionDoesNotExistError("connection was closed in the middle of operation"),
+        asyncpg.CannotConnectNowError("the database system is starting up"),
+        asyncpg.AdminShutdownError("terminating connection due to administrator command"),
+        asyncpg.TooManyConnectionsError("too many clients already"),
+    ],
+)
+async def test_connectivity_failures_become_database_unavailable(fake_pool, error):
+    fake_pool.error = error
+    for call in (pool.fetch, pool.fetchrow, pool.fetchval, pool.execute):
+        with pytest.raises(pool.DatabaseUnavailable) as raised:
+            await call("select 1")
+        assert raised.value.__cause__ is error and str(raised.value) == type(error).__name__  # no driver text
+
+
+@pytest.mark.parametrize(
+    "error", [asyncpg.UniqueViolationError("duplicate key"), asyncpg.DataError("out of range"), RuntimeError("bug")]
+)
+async def test_query_errors_are_not_reported_as_an_outage(fake_pool, error):
+    fake_pool.error = error
+    with pytest.raises(type(error)):
         await pool.fetch("select 1")

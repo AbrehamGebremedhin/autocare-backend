@@ -60,3 +60,20 @@ async def test_remove_car_not_in_garage(fake_pool):
     fake_pool.status = "UPDATE 0"
     result = await _service().remove_car_from_user(USER, "c1")
     assert result["success"] is False
+
+
+async def test_an_outage_is_never_an_empty_garage(fake_pool):
+    import pytest
+
+    from app.db.pool import DatabaseUnavailable
+    from app.utils.exceptions import DatabaseException
+
+    service = UserProfileService()
+    fake_pool.error = ConnectionRefusedError()
+    for call in (service.get_user_cars(USER), service.add_car_to_user(USER, "Toyota", "Echo", 2001),
+                 service.remove_car_from_user(USER, "toyota-echo-2001")):
+        with pytest.raises(DatabaseUnavailable):
+            await call
+    fake_pool.error = RuntimeError("bug")
+    with pytest.raises(DatabaseException):  # any other failure is a 500, not [] either
+        await service.get_user_cars(USER)

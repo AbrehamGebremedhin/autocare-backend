@@ -16,9 +16,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.v1.routes import router as v1_router
 from app.core.config import get_settings
 from app.db import pool
+from app.db.pool import DatabaseUnavailable
 from app.services import llm
 from app.utils.body_limit import BodySizeLimitMiddleware
-from app.utils.exceptions import ErrorCode, error_body, http_error_body
+from app.utils.exceptions import ErrorCode, ServiceUnavailableException, error_body, http_error_body
 from app.utils.limiter import limiter
 from app.utils.security_middleware import SecurityHeadersMiddleware
 
@@ -115,6 +116,14 @@ def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
 
 
 app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+
+
+@app.exception_handler(DatabaseUnavailable)
+async def database_unavailable_handler(request: Request, exc: DatabaseUnavailable):
+    # The same 503 as a token check during an outage: clients keep their tokens and retry.
+    logger.error("Database unavailable (%s) on %s %s", exc, request.method, request.url.path)
+    unavailable = ServiceUnavailableException()
+    return JSONResponse(status_code=unavailable.status_code, content=unavailable.detail)
 
 
 @app.exception_handler(Exception)

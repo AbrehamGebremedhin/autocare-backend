@@ -2,6 +2,7 @@ from app.services.base_service import BaseService
 from app.CRUD.car_crud import CarCRUD, log_id
 from app.db import pool
 from app.db.crud import BaseCRUD
+from app.db.pool import DatabaseUnavailable
 from app.utils.exceptions import DatabaseException
 from app.utils.logger import get_logger_instance
 from typing import List, Dict, Any, Optional
@@ -86,6 +87,8 @@ class UserProfileService(BaseService):
             
         except ValueError:
             return {"success": False, "error": "Make, model, and year are required.", "car_id": None}
+        except DatabaseUnavailable:
+            raise  # 503, not "could not add"
         except Exception as e:
             await self.logger.error(f"Error adding car to user {user_id}: {type(e).__name__}")
             raise DatabaseException("Could not add car") from e
@@ -110,10 +113,12 @@ class UserProfileService(BaseService):
             
             await self.logger.info(f"Retrieved {len(cars)} cars for user {user_id}")
             return cars
-            
+
+        except DatabaseUnavailable:
+            raise  # 503: an outage must not read as "no cars" (or "car not found" when opening a session)
         except Exception as e:
             await self.logger.error(f"Error getting cars for user {user_id}: {type(e).__name__}")
-            return []
+            raise DatabaseException("Could not load cars") from e
 
     async def remove_car_from_user(self, user_id: str, car_id: str) -> Dict[str, Any]:
         """Remove a car from user's profile"""
@@ -128,7 +133,9 @@ class UserProfileService(BaseService):
                 return {"success": True, "message": "Car removed from your garage"}
             else:
                 return {"success": False, "error": "Car not found in your garage"}
-                
+
+        except DatabaseUnavailable:
+            raise  # 503, not "car not found"
         except Exception as e:
             await self.logger.error(f"Error removing car from user {user_id}: {type(e).__name__}")
             raise DatabaseException("Could not remove car") from e

@@ -107,3 +107,80 @@ def test_http_error_body_maps_plain_statuses(status, detail, code, message):
 def test_http_error_body_passes_api_exception_bodies_through():
     body = {"error_code": "DB_002", "message": "Car not found", "correlation_id": "c", "timestamp": "t"}
     assert http_error_body(404, body) is body
+
+
+# --- database outage: 503 in every route family, never "not found" or an empty list ----------------
+
+SID = "33333333-3333-4333-8333-333333333333"
+LEAK = "password=hunter2 host=10.0.0.5"
+
+
+def _unavailable(r):
+    _error(r, 503, "SYS_002", "Service temporarily unavailable")
+    assert LEAK not in r.text
+
+
+@pytest.fixture
+def db_down(fake_pool):
+    fake_pool.error = ConnectionRefusedError(LEAK)
+    return fake_pool
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("GET", "/api/v1/cars", None),
+        ("POST", "/api/v1/cars", {"make": "Toyota", "model": "Echo", "year": 2001}),
+        ("DELETE", "/api/v1/cars/toyota-echo-2001", None),
+    ],
+)
+def test_cars_answer_503_during_a_database_outage(client, auth_headers, db_down, method, path, body):
+    _unavailable(client.request(method, path, json=body, headers=auth_headers))
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("POST", "/api/v1/sessions", {"car_id": "toyota-echo-2001"}),  # was 404 "Car not found"
+        ("GET", "/api/v1/sessions", None),
+        ("GET", f"/api/v1/sessions/{SID}", None),
+        ("DELETE", f"/api/v1/sessions/{SID}", None),
+    ],
+)
+def test_sessions_answer_503_during_a_database_outage(client, auth_headers, db_down, method, path, body):
+    _unavailable(client.request(method, path, json=body, headers=auth_headers))
+
+
+def test_sending_a_message_answers_503_during_a_database_outage(client, auth_headers, db_down):
+    _unavailable(client.post(f"/api/v1/sessions/{SID}/messages", data={"text": "fan clicks"}, headers=auth_headers))
+
+
+@pytest.mark.parametrize(
+    "path, body",
+    [
+        ("/api/v1/auth/register", {"email": "driver@example.com", "password": "s3cret-pass"}),
+        ("/api/v1/auth/login", {"email": "driver@example.com", "password": "s3cret-pass"}),
+    ],
+)
+def test_sign_in_answers_503_during_a_database_outage(client, db_down, path, body):
+    _unavailable(client.post(path, json=body))
+
+
+def test_google_sign_in_answers_503_during_a_database_outage(client, db_down, mocker, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "GOOGLE_CLIENT_IDS", "client-1")
+    mocker.patch("google.oauth2.id_token.verify_oauth2_token", return_value={
+        "iss": "accounts.google.com", "aud": "client-1", "sub": "s", "email": "d@gmail.com", "email_verified": True,
+    })
+    _unavailable(client.post("/api/v1/auth/google", json={"id_token": "t"}))
+
+
+def test_token_checks_answer_503_during_a_database_outage(client, db_down):
+    from app.utils.auth_middleware import jwt_handler
+
+    token = jwt_handler.create_access_token({"sub": "11111111-1111-4111-8111-111111111111"})
+    _unavailable(client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {token}"}))
+    _unavailable(client.get("/api/v1/cars", headers={"Authorization": f"Bearer {token}"}))
+    refresh = jwt_handler.create_refresh_token({"sub": "11111111-1111-4111-8111-111111111111"})
+    _unavailable(client.post("/api/v1/auth/refresh", json={"refresh_token": refresh}))

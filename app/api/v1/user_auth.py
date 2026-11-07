@@ -3,6 +3,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 from app.core.config import get_settings
+from app.db.pool import DatabaseUnavailable
 from app.services import auth_service
 from app.services.auth_service import EmailTaken, GoogleAuthError
 from app.utils.limiter import limiter
@@ -92,6 +93,8 @@ async def register_user(user: UserCreate, request: Request):
     except EmailTaken:
         await _audit(request, AuditEventType.AUTHENTICATION_FAILED, "medium", reason="registration_duplicate")
         raise DuplicateRecordException("User") from None
+    except DatabaseUnavailable:
+        raise  # 503
     except Exception as e:
         await logger.error(f"Registration error - {type(e).__name__} [ID: {correlation_id}]")
         raise DatabaseException("Registration failed due to database error") from None
@@ -109,6 +112,8 @@ async def login_user(user_login: UserLogin, request: Request):
     issued_at = time.time()  # before the hash is read: a Google link committing during argon2 revokes these tokens
     try:
         account = await auth_service.authenticate(user_login.email, user_login.password)
+    except DatabaseUnavailable:
+        raise  # 503
     except Exception as e:
         await logger.error(f"Login error - {type(e).__name__} [ID: {correlation_id}]")
         raise DatabaseException("Authentication service temporarily unavailable") from None
@@ -138,6 +143,8 @@ async def login_with_google(body: GoogleLogin, request: Request):
     except GoogleAuthError:
         await _audit(request, AuditEventType.AUTHENTICATION_FAILED, "medium", reason="google_token_rejected")
         raise AuthenticationException("Google sign-in failed") from None
+    except DatabaseUnavailable:
+        raise  # 503
     except Exception as e:
         await logger.error(f"Google sign-in error - {type(e).__name__} [ID: {correlation_id}]")
         raise DatabaseException("Authentication service temporarily unavailable") from None

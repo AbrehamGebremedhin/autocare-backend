@@ -7,8 +7,8 @@ and uuid as str, so ids compare and format as plain strings everywhere.
 """
 import asyncio
 import json
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from contextlib import asynccontextmanager, contextmanager
+from typing import Any, AsyncIterator, Iterator
 
 import asyncpg
 
@@ -57,27 +57,57 @@ def _require():
     return _pool
 
 
+class DatabaseUnavailable(Exception):
+    """Postgres cannot be reached or cannot serve: refused, unreachable, timed out, connection lost, shutting
+    down or out of connections. The API answers 503 for it; it is never turned into "not found" or an empty
+    list. Errors of the query itself (bad data, constraint violations, bugs) are not this."""
+
+
+_UNAVAILABLE = (
+    OSError,  # refused, unreachable, DNS, and TimeoutError (asyncio's included)
+    asyncpg.PostgresConnectionError,  # SQLSTATE 08: no connection, or it dropped mid-statement
+    asyncpg.CannotConnectNowError,  # 57P03: starting up or in recovery
+    asyncpg.AdminShutdownError,
+    asyncpg.CrashShutdownError,
+    asyncpg.TooManyConnectionsError,
+)
+
+
+@contextmanager
+def _availability() -> Iterator[None]:
+    try:
+        yield
+    except _UNAVAILABLE as exc:
+        raise DatabaseUnavailable(type(exc).__name__) from exc
+
+
 class Connection:
-    """The four query helpers bound to one connection (or to the pool, one connection per statement)."""
+    """The four query helpers bound to one connection (or to the pool, one connection per statement).
+    Connectivity failures come out as DatabaseUnavailable."""
 
     def __init__(self, target):
         self._target = target
 
     async def fetch(self, sql: str, *args) -> list[dict]:
-        return [dict(r) for r in await self._target.fetch(sql, *args)]
+        with _availability():
+            return [dict(r) for r in await self._target.fetch(sql, *args)]
 
     async def fetchrow(self, sql: str, *args) -> dict | None:
-        row = await self._target.fetchrow(sql, *args)
+        with _availability():
+            row = await self._target.fetchrow(sql, *args)
         return None if row is None else dict(row)
 
     async def fetchval(self, sql: str, *args) -> Any:
-        return await self._target.fetchval(sql, *args)
+        with _availability():
+            return await self._target.fetchval(sql, *args)
 
     async def execute(self, sql: str, *args) -> str:
-        return await self._target.execute(sql, *args)
+        with _availability():
+            return await self._target.execute(sql, *args)
 
     async def executemany(self, sql: str, args_list: list) -> None:
-        await self._target.executemany(sql, args_list)
+        with _availability():
+            await self._target.executemany(sql, args_list)
 
 
 async def fetch(sql: str, *args) -> list[dict]:

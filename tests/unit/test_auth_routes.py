@@ -497,3 +497,75 @@ def test_sign_in_routes_are_rate_limited(client, fake_users, path, body):
     statuses = [client.post(path, json=body).status_code for _ in range(11)]
     assert 429 not in statuses[:10]
     assert statuses[10] == 429
+
+
+# --- invitation-only sign-up --------------------------------------------------
+
+@pytest.fixture
+def invite_only(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "REGISTRATION_CODE", "open-sesame")
+
+
+def _register_with(client, invite_code=None, **extra):
+    body = {"email": "driver@example.com", "password": "s3cret-pass", **extra}
+    if invite_code is not None:
+        body["invite_code"] = invite_code
+    return client.post("/api/v1/auth/register", json=body)
+
+
+def test_registration_is_open_without_a_code_setting(client, fake_users):
+    assert _register_with(client).status_code == 200
+    assert _register_with(client, invite_code="anything", email="two@example.com").status_code == 200
+
+
+def test_register_with_the_right_code(client, fake_users, invite_only):
+    r = _register_with(client, invite_code="open-sesame")
+    assert r.status_code == 200 and set(r.json()) == TOKEN_KEYS
+    assert len(fake_users.rows) == 1
+
+
+@pytest.mark.parametrize("code", [None, "", "wrong", "open-sesame ", "open-sesamé"])
+def test_register_with_a_missing_or_wrong_code_gets_one_generic_403(client, fake_users, invite_only, code):
+    r = _register_with(client, invite_code=code)
+    assert r.status_code == 403
+    body = r.json()
+    assert body["error_code"] == "AUTH_004" and body["message"] == "Registration is by invitation."
+    assert "open-sesame" not in r.text and fake_users.rows == {}
+
+
+def test_the_code_is_checked_before_hashing_or_the_database(client, fake_users, invite_only, mocker, fake_pool):
+    hashed = mocker.patch("app.services.auth_service.hash_password")
+    register = mocker.spy(fake_users, "create_password_user")
+    assert _register_with(client, invite_code="wrong").status_code == 403
+    assert _register_with(client, password="short").status_code == 403
+    hashed.assert_not_called()
+    register.assert_not_called()
+    assert fake_pool.calls == []
+
+
+def test_the_code_is_never_logged(client, fake_users, invite_only, caplog):
+    with caplog.at_level(logging.DEBUG):
+        _register_with(client, invite_code="open-sesame-but-wrong")
+        _register_with(client, invite_code="open-sesame")
+    assert "open-sesame" not in caplog.text
+
+
+def test_google_will_not_create_an_account_while_registration_is_by_invitation(client, fake_users, google, invite_only):
+    r = _google(client)
+    assert r.status_code == 403
+    assert r.json()["message"] == "Registration is by invitation."
+    assert fake_users.rows == {}
+
+
+def test_google_still_signs_in_and_links_existing_accounts_while_registration_is_by_invitation(
+    client, fake_users, google, invite_only
+):
+    fake_users.add("driver@gmail.com", google_sub="google-sub-1")
+    assert _google(client).status_code == 200
+    fake_users.rows.clear()
+    fake_users.add("driver@gmail.com", password_hash="x")
+    assert _google(client).status_code == 200
+    [row] = fake_users.rows.values()
+    assert row["google_sub"] == "google-sub-1"

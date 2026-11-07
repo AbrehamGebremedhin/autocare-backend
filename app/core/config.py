@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     MEDIA_MIN_FREE_MB: int = 2048  # uploads are refused when the media volume has less free space
     MEDIA_USER_QUOTA_MB: int = 500  # per-user cap on stored originals; 0 turns the cap off
 
+    # When set, sign-up needs this code (register's invite_code) and Google sign-in no longer creates accounts.
+    # Empty leaves registration open; a public deployment should set it.
+    REGISTRATION_CODE: str = ""
+
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
     GOOGLE_CLIENT_IDS: str = ""
 

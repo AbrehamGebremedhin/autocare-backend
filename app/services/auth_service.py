@@ -40,6 +40,10 @@ class GoogleAuthError(Exception):
     """The Google ID token was rejected or cannot be tied to one account. Carries no detail by design."""
 
 
+class SignupClosed(Exception):
+    """A Google sign-in would create an account while registration is closed."""
+
+
 def normalise_email(email: str) -> str:
     return email.strip().lower()
 
@@ -135,12 +139,14 @@ async def _google_identity(token: str) -> tuple[str, str, bool]:
     return sub, email, authoritative
 
 
-async def _google_user(sub: str, email: str, authoritative: bool) -> dict:
+async def _google_user(sub: str, email: str, authoritative: bool, allow_signup: bool) -> dict:
     user = await users.get_by_google_sub(sub)
     if user is None and authoritative:
         # A password account with this email and no Google link: link it, drop its password and revoke its
         # tokens (see UserCRUD.link_google). Emails are not verified at registration, so the owner wins.
         user = await users.link_google(email, sub)
+    if user is None and not allow_signup:
+        raise SignupClosed()
     if user is None:
         # Any verified email may open a new account. If the email already has one that Google cannot
         # vouch for (or that is linked to another Google user), the unique index refuses it: no change.
@@ -148,15 +154,16 @@ async def _google_user(sub: str, email: str, authoritative: bool) -> dict:
     return _public(user)
 
 
-async def login_with_google(token: str) -> dict:
-    """The account for a Google ID token, created or linked on first sign-in. Raises GoogleAuthError."""
+async def login_with_google(token: str, allow_signup: bool = True) -> dict:
+    """The account for a Google ID token, created or linked on first sign-in. Raises GoogleAuthError, and
+    SignupClosed when it would have to create an account but `allow_signup` is False."""
     identity = await _google_identity(token)
     try:
-        return await _google_user(*identity)
+        return await _google_user(*identity, allow_signup)
     except asyncpg.UniqueViolationError:
         pass  # a concurrent sign-in created or linked the row first: look again
     try:
-        return await _google_user(*identity)
+        return await _google_user(*identity, allow_signup)
     except asyncpg.UniqueViolationError:
         # The email belongs to another account that this Google user may not take over.
         await logger.warning("Google sign-in conflict: email belongs to an account it cannot link")

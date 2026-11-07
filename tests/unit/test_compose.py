@@ -123,6 +123,7 @@ def test_dockerfile_cmd_runs_one_uvicorn_worker_behind_proxy_headers():
 def test_dockerignore_keeps_scripts_and_drops_car_data():
     ignored = {line.strip() for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()}
     assert "car_data/" in ignored and ".env*" in ignored
+    assert "backups/" in ignored  # database dumps and media tarballs must never reach the image
     assert not any(entry.strip("/") in {"scripts", "scripts/*", "app"} for entry in ignored)
 
 

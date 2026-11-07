@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_app_imports_and_health_route_exists(client):
     paths = {r.path for r in client.app.routes}
     assert "/health" in paths
@@ -86,3 +89,20 @@ def test_startup_warns_when_media_dir_not_writable(mocker, monkeypatch, caplog, 
 
 def test_startup_quiet_when_media_dir_writable(mocker, monkeypatch, caplog, tmp_path, fake_pool):
     assert "MEDIA_DIR" not in _startup_log(mocker, monkeypatch, caplog, str(tmp_path), writable=True)
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+def test_api_docs_are_off_by_default(client, path):
+    r = client.get(path)
+    assert r.status_code == 404
+    assert r.json()["error_code"] == "SYS_004"
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+def test_api_docs_are_served_when_enabled(path):
+    import main
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    assert TestClient(FastAPI(**main.docs_urls(True))).get(path).status_code == 200
+    assert TestClient(FastAPI(**main.docs_urls(False))).get(path).status_code == 404

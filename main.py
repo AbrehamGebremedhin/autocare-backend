@@ -47,7 +47,12 @@ async def lifespan(app: FastAPI):
         await pool.close_pool()
 
 
-app = FastAPI(title="AutoCare API", debug=settings.DEBUG, lifespan=lifespan)
+def docs_urls(enabled: bool) -> dict:
+    """FastAPI's docs settings: the interactive docs and the schema exist only when ENABLE_DOCS is on."""
+    return {} if enabled else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+
+app = FastAPI(title="AutoCare API", debug=settings.DEBUG, lifespan=lifespan, **docs_urls(settings.ENABLE_DOCS))
 
 app.state.limiter = limiter
 # Bodies are capped before FastAPI reads them (multipart files would otherwise be spooled to disk before auth).

@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     # Empty leaves registration open; a public deployment should set it.
     REGISTRATION_CODE: str = ""
 
+    ENABLE_DOCS: bool = False  # serves /docs, /redoc and /openapi.json; off for a public deployment
+
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
     GOOGLE_CLIENT_IDS: str = ""
 

@@ -80,3 +80,8 @@ def test_url_is_https_and_contains_no_query_beyond_exp_sig():
 def test_unset_or_non_https_public_base_url_yields_no_url(monkeypatch, value):
     monkeypatch.setattr(get_settings(), "PUBLIC_BASE_URL", value)
     assert visual_signing.sign_url(SHA, now=NOW) == ("", "")
+
+
+@pytest.mark.parametrize("bad", ["AB" * 32, "a" * 63, "a" * 65, "a/" + "b" * 62, "a?" + "b" * 62, "a#" + "b" * 62, "../" + "b" * 61, "..", ""])
+def test_sign_url_refuses_a_malformed_sha(bad):
+    assert visual_signing.sign_url(bad, now=NOW) == ("", "")

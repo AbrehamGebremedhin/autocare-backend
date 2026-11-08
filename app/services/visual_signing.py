@@ -26,6 +26,8 @@ def _sign(sha256: str, exp: str) -> str:
 
 def sign_url(sha256: str, now: float | None = None) -> tuple[str, str]:
     """Return (url, expires_at_iso), or ("", "") when PUBLIC_BASE_URL is empty or not https."""
+    if not (isinstance(sha256, str) and _SHA_RE.fullmatch(sha256)):
+        return "", ""
     s = get_settings()
     base = s.PUBLIC_BASE_URL.rstrip("/")
     if not base.startswith("https://") or len(base) == len("https://"):
@@ -38,16 +40,14 @@ def sign_url(sha256: str, now: float | None = None) -> tuple[str, str]:
 
 def verify(sha256: str, exp: str, sig: str, now: float | None = None) -> bool:
     """Constant-time check of a signed url's parts; False (never an exception) for anything malformed or out of window."""
-    try:
-        if not (isinstance(sha256, str) and isinstance(exp, str) and isinstance(sig, str)):
-            return False
-        if not _SHA_RE.fullmatch(sha256) or not _SIG_RE.fullmatch(sig):
-            return False
-        if not (1 <= len(exp) <= 12 and exp.isascii() and exp.isdigit()):
-            return False
-        if not hmac.compare_digest(_sign(sha256, exp).encode(), sig.encode()):
-            return False
-        t = time.time() if now is None else now
-        return t <= int(exp) <= t + get_settings().VISUAL_URL_TTL_SECONDS + _SKEW_SECONDS
-    except Exception:
+    # Every hostile-input shape is rejected by the checks below before anything can raise; real faults propagate.
+    if not (isinstance(sha256, str) and isinstance(exp, str) and isinstance(sig, str)):
         return False
+    if not _SHA_RE.fullmatch(sha256) or not _SIG_RE.fullmatch(sig):
+        return False
+    if not (1 <= len(exp) <= 12 and exp.isascii() and exp.isdigit()):
+        return False
+    if not hmac.compare_digest(_sign(sha256, exp).encode(), sig.encode()):
+        return False
+    t = time.time() if now is None else now
+    return t <= int(exp) <= t + get_settings().VISUAL_URL_TTL_SECONDS + _SKEW_SECONDS

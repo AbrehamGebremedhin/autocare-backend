@@ -150,7 +150,12 @@ def _install_stop(stop: asyncio.Event) -> None:
 
 async def _sweep(store: VisualStore) -> None:
     try:
-        keep_drafts = {store.draft_rel(v, s, t) for v, s, t in await crud.referenced_drafts()}
+        keep_drafts = set()
+        for v, s, t in await crud.referenced_drafts():
+            try:
+                keep_drafts.add(store.draft_rel(v, s, t))
+            except ValueError:  # such a row cannot have a valid draft path; the rest of the sweep still runs
+                await logger.warning(f"visual review row has no valid draft path: {v} bad_draft_key")
         removed = await asyncio.to_thread(
             store.sweep, older_than_seconds=SWEEP_GRACE_SECONDS, keep_shas=await crud.referenced_shas(),
             keep_drafts=keep_drafts)

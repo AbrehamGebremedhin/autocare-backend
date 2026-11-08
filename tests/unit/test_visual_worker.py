@@ -190,6 +190,33 @@ async def test_worker_sweep_keeps_review_drafts_and_removes_others(crud, store):
     assert not (store._base() / gone).exists() and not (store._base() / lookalike).exists()
 
 
+async def test_one_bad_review_row_does_not_abort_the_sweep(crud, store, monkeypatch):
+    import os
+
+    kept = store.write_draft("toyota-echo", "workshop-v1", 7, b"d")
+    gone = store.write_draft("other-car", "workshop-v1", 2, b"d")
+    sha = "a" * 64
+    obj_dir = store._base() / "objects"
+    obj_dir.mkdir(parents=True)
+    obj = obj_dir / f"{sha}.webp"
+    obj.write_bytes(b"x")
+    for path in (store._base() / kept, store._base() / gone, obj):
+        os.utime(path, (1, 1))
+    crud.review_drafts = {("bad/../key", "workshop-v1", 1), ("toyota-echo", "workshop-v1", 7)}
+    logged = []
+
+    async def warn(message):
+        logged.append(message)
+
+    monkeypatch.setattr(w.logger, "warning", warn)
+    await w._sweep(store)
+    assert (store._base() / kept).exists()
+    assert not (store._base() / gone).exists() and not obj.exists()
+    bad = [m for m in logged if "bad_draft_key" in m]
+    assert len(bad) == 1 and "bad/../key" in bad[0] and str(store._base()) not in bad[0]
+    assert not any("sweep failed" in m for m in logged)
+
+
 async def test_charged_call_is_recorded_before_generate_and_survives_a_timeout(crud, store, monkeypatch):
     from app.core.config import get_settings
 

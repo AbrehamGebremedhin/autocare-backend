@@ -6,6 +6,7 @@ NO_NUL = r"^[^\x00]*$"
 MAX_CAR_NAME_CHARS = 64  # make and model
 MAX_CAR_ID_CHARS = 200  # ids are "<make>-<model>-<year>"
 MIN_CAR_YEAR = 1900
+TRANSMISSIONS = ("manual", "automatic", "cvt", "dual_clutch")  # the CHECK in user_car_details
 
 class CarGuideLink(BaseModel):
     link: str
@@ -21,6 +22,7 @@ class CarBase(BaseModel):
     car_guide_links: Optional[List[CarGuideLink]] = None  # List of additional car guide links with summaries
     kb_status: str = "pending"  # pending | ready | failed | no_manual
     kb_passage_count: int = 0
+    transmission: Optional[str] = None  # this owner's: manual | automatic | cvt | dual_clutch
 
     class Config:
         from_attributes = True

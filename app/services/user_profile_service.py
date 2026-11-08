@@ -34,6 +34,7 @@ class UserProfileService(BaseService):
         make: str, 
         model: str, 
         year: int,
+        transmission: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Add a car to a user's profile. Creates car if it doesn't exist.
@@ -78,10 +79,12 @@ class UserProfileService(BaseService):
             else:
                 await self.logger.info(f"Car {log_id(car_id)} already in user {user_id}'s profile")
             
+            if transmission:
+                await self.set_transmission(user_id, car_id, transmission)
             return {
                 "success": True, 
                 "car_id": car_id,
-                "car_info": car,
+                "car_info": {**car, "transmission": transmission or await self.get_transmission(user_id, car_id)},
                 "message": f"Added {make} {model} {year} to your garage"
             }
             
@@ -92,6 +95,20 @@ class UserProfileService(BaseService):
         except Exception as e:
             await self.logger.error(f"Error adding car to user {user_id}: {type(e).__name__}")
             raise DatabaseException("Could not add car") from e
+
+    async def set_transmission(self, user_id: str, car_id: str, transmission: str) -> bool:
+        """Set the owner's transmission for a car in their garage; False when the car is not in it."""
+        status = await pool.execute(
+            "INSERT INTO user_car_details (user_id, car_id, transmission)"
+            " SELECT $1::uuid, $2, $3 WHERE EXISTS (SELECT 1 FROM user_profiles WHERE user_id = $1::uuid AND $2 = ANY(cars))"
+            " ON CONFLICT (user_id, car_id) DO UPDATE SET transmission = EXCLUDED.transmission, updated_at = now()",
+            user_id, car_id, transmission,
+        )
+        return status == "INSERT 0 1"
+
+    async def get_transmission(self, user_id: str, car_id: str) -> Optional[str]:
+        return await pool.fetchval(
+            "SELECT transmission FROM user_car_details WHERE user_id = $1::uuid AND car_id = $2", user_id, car_id)
 
     async def get_user_cars(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all cars associated with a user"""
@@ -105,11 +122,13 @@ class UserProfileService(BaseService):
                 return []
             
             # Get full car details
+            details = {r["car_id"]: r["transmission"] for r in await pool.fetch(
+                "SELECT car_id, transmission FROM user_car_details WHERE user_id = $1::uuid", user_id)}
             cars = []
             for car_id in car_ids:
                 car = await self.car_crud.get_car_by_id(car_id)
                 if car:
-                    cars.append(car)
+                    cars.append({**car, "transmission": details.get(car_id)})
             
             await self.logger.info(f"Retrieved {len(cars)} cars for user {user_id}")
             return cars
@@ -129,6 +148,7 @@ class UserProfileService(BaseService):
                 user_id, car_id,
             )
             if status == "UPDATE 1":
+                await pool.execute("DELETE FROM user_car_details WHERE user_id = $1::uuid AND car_id = $2", user_id, car_id)
                 await self.logger.info(f"Removed car {log_id(car_id)} from user {user_id}'s profile")
                 return {"success": True, "message": "Car removed from your garage"}
             else:

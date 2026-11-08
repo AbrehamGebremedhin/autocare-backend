@@ -82,9 +82,13 @@ Keep the language of the conversation."""
 _PASSAGE_CHARS = 1500
 
 
+_TRANSMISSION_WORDS = {"manual": "manual", "automatic": "automatic", "cvt": "CVT", "dual_clutch": "dual-clutch"}
+
+
 def _render_car(car: Mapping) -> str:
     name = " ".join(str(car[k]) for k in ("year", "make", "model") if car.get(k))
-    return name or "unknown"
+    gearbox = _TRANSMISSION_WORDS.get(car.get("transmission"))
+    return (name or "unknown") + (f", {gearbox} transmission" if gearbox else "")
 
 
 def _render_state(state: DiagnosisState) -> str:

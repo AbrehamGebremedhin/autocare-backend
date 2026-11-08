@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Annotated, List
+from typing import Annotated, List, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Path
 from pydantic import BaseModel, Field, field_validator
@@ -19,6 +19,7 @@ class CarCreate(BaseModel):
     make: str = Field(min_length=1, max_length=MAX_CAR_NAME_CHARS, pattern=NO_NUL)
     model: str = Field(min_length=1, max_length=MAX_CAR_NAME_CHARS, pattern=NO_NUL)
     year: int = Field(ge=MIN_CAR_YEAR)
+    transmission: Literal["manual", "automatic", "cvt", "dual_clutch"] | None = None
 
     @field_validator("year")
     @classmethod
@@ -39,7 +40,7 @@ async def add_car(
     car: CarCreate, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)
 ):
     result = await user_profile_service.add_car_to_user(
-        user_id=current_user["id"], make=car.make, model=car.model, year=car.year
+        user_id=current_user["id"], make=car.make, model=car.model, year=car.year, transmission=car.transmission
     )
     if not result["success"]:
         raise ValidationException("Could not add car")
@@ -47,6 +48,21 @@ async def add_car(
     if car_info.get("kb_status", "pending") == "pending":
         background_tasks.add_task(ingest_car_manual, car_info)
     return car_info
+
+
+class CarUpdate(BaseModel):
+    transmission: Literal["manual", "automatic", "cvt", "dual_clutch"]
+
+
+@router.patch("/{car_id}", summary="Set the transmission of one of the current user's cars")
+async def update_car(
+    car_id: Annotated[str, Path(max_length=MAX_CAR_ID_CHARS, pattern=NO_NUL)],
+    update: CarUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    if not await user_profile_service.set_transmission(current_user["id"], car_id, update.transmission):
+        raise RecordNotFoundException("Car")  # not in this garage: 404, never reveal whether it exists
+    return {"id": car_id, "transmission": update.transmission}
 
 
 @router.delete("/{car_id}", summary="Remove a car from the current user")

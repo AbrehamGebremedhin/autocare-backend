@@ -114,4 +114,16 @@ as $$
     limit k;
 $$;
 
+-- What an owner says about their own car. "Car" rows describe the model and are shared by every owner,
+-- so per-owner facts live here; the row goes with the car (removed from the garage) or the account.
+create table if not exists user_car_details (
+    user_id      uuid not null references users (id) on delete cascade,
+    car_id       text not null,
+    transmission text not null
+        constraint user_car_details_transmission_check
+        check (transmission in ('manual', 'automatic', 'cvt', 'dual_clutch')),
+    updated_at   timestamptz not null default now(),
+    primary key (user_id, car_id)
+);
+
 commit;

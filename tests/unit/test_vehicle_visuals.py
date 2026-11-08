@@ -6,6 +6,7 @@ import asyncpg
 import pytest
 
 from app.CRUD import vehicle_visual_crud as crud
+from app.services import body_styles
 from app.services import vehicle_catalog as catalog
 from app.services import vehicle_visuals as vv
 
@@ -32,6 +33,9 @@ class World:
         self.now = 1_000_000.0
         self.settings = SimpleNamespace(VISUAL_PREPARE_PER_HOUR=20, VISUAL_JOBS_PER_HOUR=60)
         self.boom = None
+        self.styles_cache = {}  # what vehicle_body_styles holds: (make, model, year) -> styles
+        self.llm_answer = ["sedan", "hatchback", "suv"]  # what the fake LLM says; None = the call fails
+        self.llm_calls = 0
 
     def row(self, variant_key, state="queued", rev=0, sha=None):
         self.rows[variant_key] = {"variant_key": variant_key, "state": state, "published_revision": rev, "sha256": sha}
@@ -80,6 +84,21 @@ def world(monkeypatch):
 
     for fn in (get_visual, ensure_job, jobs_created_last_hour, get_choice, set_choice, clear_choice, owned_car):
         monkeypatch.setattr(crud, fn.__name__, fn)
+
+    def styles_key(make, model, year):
+        return catalog.normalize(make), catalog.normalize(model), year
+
+    async def cached(make, model, year):
+        return w.styles_cache.get(styles_key(make, model, year))
+
+    async def lookup(make, model, year):
+        w.llm_calls += 1
+        if w.llm_answer:
+            w.styles_cache[styles_key(make, model, year)] = w.llm_answer
+        return w.llm_answer
+
+    monkeypatch.setattr(body_styles, "cached", cached)
+    monkeypatch.setattr(body_styles, "lookup", lookup)
 
     class Store:
         def has_object(self, sha):
@@ -161,11 +180,49 @@ def test_choose_variant_carries_labels_only(world):
     assert d.variant_key is None
 
 
-def test_car_not_in_catalog_asks_for_a_body_style(world):
+def test_get_for_a_car_not_looked_up_yet_is_pending_and_asks_nobody(world):
     d = run(vv.get_descriptor("u1", LADA_CAR))
-    assert (d.state, d.reason, d.variant_key) == ("fallback", "choose_variant", None)
-    assert [o.label for o in d.options][:2] == ["Lada Niva 1990 Sedan", "Lada Niva 1990 Hatchback"]
-    assert len(d.options) == 8
+    assert (d.state, d.variant_key, d.reason) == ("pending", None, None) and d.retry_after_ms
+    assert world.llm_calls == 0 and world.ensure_calls == 0
+
+
+def test_prepare_asks_only_about_the_styles_the_car_really_has(world):
+    d, created = run(vv.prepare("u1", LADA_CAR, None))
+    assert (d.state, d.reason, created) == ("fallback", "choose_variant", False)
+    assert [o.label for o in d.options] == ["Lada Niva 1990 Sedan", "Lada Niva 1990 Hatchback", "Lada Niva 1990 Suv"]
+    run(vv.prepare("u2", {**LADA_CAR, "id": "car-9"}, None))
+    assert world.llm_calls == 1  # asked once, then cached
+    assert [o.label for o in run(vv.get_descriptor("u1", LADA_CAR)).options] == [o.label for o in d.options]
+    assert world.ensure_calls == 0
+
+
+def test_a_car_with_one_body_style_is_not_asked_and_is_generated(world):
+    world.llm_answer = ["sedan"]
+    d, created = run(vv.prepare("u1", LADA_CAR, None))
+    assert (d.state, d.variant_key, created) == ("pending", "auto-lada-niva-1990-sedan", True)
+    d2, created2 = run(vv.prepare("u2", {**LADA_CAR, "id": "car-9"}, None))
+    assert (d2.variant_key, created2) == ("auto-lada-niva-1990-sedan", False)  # one shared job
+    assert run(vv.get_descriptor("u1", LADA_CAR)).variant_key == "auto-lada-niva-1990-sedan"
+    assert world.llm_calls == 1
+
+
+def test_llm_failure_is_temporary_and_stores_nothing(world):
+    world.llm_answer = None
+    d, created = run(vv.prepare("u1", LADA_CAR, None))
+    assert (d.state, d.reason, created) == ("fallback", "temporarily_unavailable", False)
+    assert world.styles_cache == {} and world.ensure_calls == 0
+
+
+def test_a_car_the_llm_does_not_know_is_unknown_variant_and_not_cached(world):
+    world.llm_answer = []
+    d, _ = run(vv.prepare("u1", LADA_CAR, None))
+    assert (d.state, d.reason) == ("fallback", "unknown_variant") and world.styles_cache == {}
+
+
+def test_lookup_plus_job_count_as_one_throttled_attempt(world):
+    world.settings.VISUAL_PREPARE_PER_HOUR = 1
+    world.llm_answer = ["sedan"]
+    assert run(vv.prepare("u1", LADA_CAR, None))[1] is True  # looked up and queued: one hit, not two
 
 
 def test_unusable_car_is_unknown_variant(world):
@@ -239,6 +296,7 @@ def test_prepare_choose_or_unknown_creates_no_job(world):
 
 def test_choosing_a_body_style_queues_one_shared_job(world):
     key = "auto-lada-niva-1990-suv"
+    world.styles_cache[("lada", "niva", 1990)] = ["sedan", "suv"]
     d, created = run(vv.prepare("u1", LADA_CAR, key))
     assert (d.state, d.variant_key, created) == ("pending", key, True)
     assert run(vv.get_descriptor("u1", LADA_CAR)).variant_key == key  # the choice is remembered

@@ -52,14 +52,24 @@ def _slug(value: str) -> str:
     return normalize(value).replace(" ", "-")
 
 
-def _auto_keys(make: str, model: str, year: int) -> list[str]:
-    head = f"auto-{_slug(make)}-{_slug(model)}"
-    if not _slug(make) or not _slug(model):
+def usable(make: str, model: str, year: int) -> bool:
+    """Enough to name a car: a four-digit year and a make and model with some letters or digits."""
+    return (
+        isinstance(year, int) and not isinstance(year, bool) and 1000 <= year <= 9999
+        and bool(_slug(make)) and bool(_slug(model))
+    )
+
+
+def _auto_keys(make: str, model: str, year: int, styles) -> list[str]:
+    if not usable(make, model, year):
         return []
-    return [f"{head}-{year}-{body}" for body in BODY_STYLES]
+    head = f"auto-{_slug(make)}-{_slug(model)}-{year}"
+    return [f"{head}-{body}" for body in BODY_STYLES if body in styles]  # allowlist order, no duplicates
 
 
-def candidates(make: str, model: str, year: int) -> list[str]:
+def candidates(make: str, model: str, year: int, styles=()) -> list[str]:
+    """The catalog's variants for the car; failing that, one generated variant per body style in `styles`
+    (the body styles the car really came in, see body_styles.py)."""
     if not isinstance(year, int) or isinstance(year, bool):
         return []
     known = sorted(
@@ -67,17 +77,17 @@ def candidates(make: str, model: str, year: int) -> list[str]:
         for k, v in _variants().items()
         if _matches_name(v, make, model) and v["years"][0] <= year <= v["years"][1]
     )
-    return known or _auto_keys(make, model, year)
+    return known or _auto_keys(make, model, year, styles)
 
 
-def resolve(make: str, model: str, year: int, choice: str | None = None) -> Resolution:
-    found = candidates(make, model, year)
+def resolve(make: str, model: str, year: int, choice: str | None = None, styles=()) -> Resolution:
+    found = candidates(make, model, year, styles)
     if not found:
         return Resolution("unknown", None, [])
     if choice in found:
         return Resolution("selected", choice, [])
     variants = _variants()
-    if len(found) == 1 and found[0] in variants and not variants[found[0]]["ambiguous"]:
+    if len(found) == 1 and (found[0] not in variants or not variants[found[0]]["ambiguous"]):
         return Resolution("selected", found[0], [])
     return Resolution("choose", None, [(k, label(k)) for k in found])
 

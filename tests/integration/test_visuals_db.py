@@ -494,3 +494,22 @@ async def test_cli_seed_approve_with_draft_changed_under_it(real_pool, operator,
     assert await cli._seed(v, _art(tmp_path, "a.png", (200, 30, 30, 255)), True) == 2
     assert "refused: draft changed" in capsys.readouterr().out
     assert (await real_get(v))["published_revision"] == 0
+
+
+async def test_body_styles_cache_roundtrip_and_constraints(real_pool):
+    import asyncpg
+
+    from app.CRUD import vehicle_visual_crud as crud
+
+    await _apply()
+    model = f"m{uuid4().hex[:8]}"
+    try:
+        assert await crud.get_body_styles("acme", model, 2006) is None
+        await crud.set_body_styles("acme", model, 2006, ["sedan", "hatchback"])
+        await crud.set_body_styles("acme", model, 2006, ["pickup"])  # the first answer stays
+        assert await crud.get_body_styles("acme", model, 2006) == ["sedan", "hatchback"]
+        assert await crud.get_body_styles("acme", model, 2007) is None  # per year
+        with pytest.raises(asyncpg.CheckViolationError):
+            await crud.set_body_styles("acme", model, 2008, [])  # an empty answer is never stored
+    finally:
+        await pool.execute("delete from vehicle_body_styles where model = $1", model)

@@ -11,7 +11,7 @@ from app.CRUD import vehicle_visual_crud as crud
 from app.core.config import get_settings
 from app.db.pool import DatabaseUnavailable
 from app.schemas.visual import Artwork, VisualDescriptor, VisualOption
-from app.services import vehicle_catalog as catalog
+from app.services import body_styles, vehicle_catalog as catalog
 from app.services.visual_signing import sign_url
 from app.services.visual_store import VisualStore
 from app.utils.logger import get_logger_instance
@@ -53,7 +53,7 @@ def _fallback(reason: str, options: list[tuple[str, str]] | None = None) -> Visu
     return VisualDescriptor(state="fallback", preset=None, reason=reason, options=opts)
 
 
-def _pending(variant_key: str, ms: int = _PENDING_MS) -> VisualDescriptor:
+def _pending(variant_key: str | None, ms: int = _PENDING_MS) -> VisualDescriptor:
     return VisualDescriptor(state="pending", variant_key=variant_key, style_version=crud.STYLE_VERSION, retry_after_ms=ms)
 
 
@@ -125,11 +125,23 @@ def _non_selected(res: catalog.Resolution) -> VisualDescriptor:
     return _fallback("choose_variant" if res.kind == "choose" else "unknown_variant", res.options)
 
 
+async def _styles(make: str, model: str, year: int | None):
+    """Body styles to build variants from: () when the catalog already covers the car (or it is unusable), the
+    cached styles, or None when this car has not been looked up yet."""
+    if catalog.candidates(make, model, year) or not catalog.usable(make, model, year):
+        return ()
+    return await _io(body_styles.cached(make, model, year))
+
+
 async def get_descriptor(user_id: str, car: dict) -> VisualDescriptor:
     car_id = await _require_owner(user_id, car)
     make, model, year = car.get("make"), car.get("model"), _year(car)
     try:
-        res = catalog.resolve(make, model, year, await _stored_choice(user_id, car_id, catalog.candidates(make, model, year)))
+        styles = await _styles(make, model, year)
+        if styles is None:
+            return _pending(None)  # not looked up yet; prepare does that
+        cands = catalog.candidates(make, model, year, styles)
+        res = catalog.resolve(make, model, year, await _stored_choice(user_id, car_id, cands), styles)
         if res.kind != "selected":
             return _non_selected(res)
         return await _from_row(res.variant_key, await _io(crud.get_visual(res.variant_key)))
@@ -164,20 +176,29 @@ async def prepare(user_id: str, car: dict, variant_key: str | None) -> tuple[Vis
     make, model, year = car.get("make"), car.get("model"), _year(car)
     if variant_key is not None and not (catalog.is_allowed(variant_key) and catalog.variant_matches_car(variant_key, make, model)):
         raise VariantMismatch(variant_key)
-    cands = catalog.candidates(make, model, year)
     try:
+        throttled = False  # one throttle check per call, whether it asks the LLM, creates a job, or both
+        styles = await _styles(make, model, year)
+        if styles is None:
+            await _check_throttles(user_id)
+            throttled = True
+            styles = await body_styles.lookup(make, model, year)
+            if styles is None:
+                raise _Unavailable()  # the LLM failed: nothing stored, try again later
+        cands = catalog.candidates(make, model, year, styles)
         if variant_key in cands:
             choice = variant_key
             await _io(crud.set_choice(user_id, car_id, variant_key))
         else:
             choice = await _stored_choice(user_id, car_id, cands)
-        res = catalog.resolve(make, model, year, choice)
+        res = catalog.resolve(make, model, year, choice, styles)
         if res.kind != "selected":
             return _non_selected(res), False
         row = await _io(crud.get_visual(res.variant_key))
         created = False
         if row is None:
-            await _check_throttles(user_id)
+            if not throttled:
+                await _check_throttles(user_id)
             row, created = await _io(crud.ensure_job(res.variant_key))
         return await _from_row(res.variant_key, row), created
     except _Unavailable:

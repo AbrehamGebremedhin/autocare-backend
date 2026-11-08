@@ -243,3 +243,20 @@ def test_delete_car_not_in_garage_is_404(client, auth_headers, fake_pool):
     fake_pool.status = "UPDATE 0"
     r = client.delete(f"/api/v1/cars/{CAR['id']}", headers=auth_headers)
     assert r.status_code == 404
+
+
+def test_scrape_client_does_not_advertise_brotli_without_a_decoder():
+    import importlib.util
+
+    from app.services.fetch_car_data_service import FetchCarDataService
+
+    async def build():
+        service = FetchCarDataService()
+        try:
+            return (await service._get_client()).headers["accept-encoding"]
+        finally:
+            await service.cleanup()
+
+    offered = {e.strip() for e in asyncio.run(build()).split(",")}
+    has_brotli = any(importlib.util.find_spec(m) for m in ("brotli", "brotlicffi"))
+    assert has_brotli or "br" not in offered

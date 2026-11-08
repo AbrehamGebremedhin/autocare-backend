@@ -32,15 +32,23 @@ spaces and punctuation), reads the `vehicle_visuals` row and answers with a desc
 signed `download_url`. `POST .../visual/prepare` does the same and, if the variant has no row yet, inserts one queued
 row (`insert ... on conflict do nothing`, so concurrent calls make exactly one) that the worker picks up.
 
-Cars outside the catalog. Instead of giving up, the descriptor is `fallback` / `choose_variant` with one option per body
-style (sedan, hatchback, wagon, suv, coupe, convertible, pickup, van). The owner picks one and the app sends it to
-prepare as `variant_key`. The key is `auto-<make>-<model>-<year>-<body>`, built from the car's normalized text only
-(a-z, 0-9 and hyphens), so a car's free text cannot add words to the provider prompt. It is allowlisted only for a car
-whose own make and model produce that prefix. Each such variant is one shared row like any other: generated once, held
-in `review` until an operator approves it, then served to every owner of that car and year. Cars the catalog does list
-(Echo, Civic) skip the question. `unknown_variant` is now only for unusable input (a missing year or an empty make).
-Since anyone can ask for any make/model/year, the per-user and global prepare limits, the provider's daily budget and
-the operator approval step are what bound the cost; rows for nonsense cars simply stay unapproved.
+Cars outside the catalog. The catalog is small, so for any other car `prepare` asks DeepSeek once which body styles
+that make, model and year were sold in (`app/services/body_styles.py`: first "the United States and Canada under exactly
+that model name", then, only if that is empty, any market) and stores the answer in `vehicle_body_styles`. One style
+(a 2007 Corolla): no question, the variant is queued straight away. Several (a 2019 Corolla: sedan, hatchback):
+`fallback` / `choose_variant` with only those styles as options, and the owner's pick is sent back to prepare as
+`variant_key`. A car the model does not know gets `unknown_variant`; an LLM failure gets `temporarily_unavailable` and
+nothing is stored, so the next prepare asks again. `GET` never asks the LLM: for a car not looked up yet it answers
+`pending` with no `variant_key`, and the app's `prepare` call does the lookup (it counts as one throttled attempt,
+together with the job it may then create).
+
+The generated variant key is `auto-<make>-<model>-<year>-<body>`, built from the car's normalized text only (a-z, 0-9
+and hyphens), and the model sees only those normalized words as data; its answer is cut down to the eight allowlisted
+styles (sedan, hatchback, wagon, suv, coupe, convertible, pickup, van). The key is allowlisted only for a car whose own
+make and model produce that prefix. Each variant is one shared row like any other: generated once, held in `review`
+until an operator approves it, then served to every owner of that car and year. A wrong cached answer is corrected by
+updating its row in `vehicle_body_styles`. Because anyone can ask about any make, the per-user and global prepare limits,
+the provider's daily budget and the approval step bound the cost.
 
 Worker. A separate process from the same image (`visuals-worker` in `docker-compose.yml`). Every `VISUAL_POLL_SECONDS`
 it claims one due row with `claim_due_visual_job` (`for update skip locked`, a 300 s lease, `fencing_token + 1`),

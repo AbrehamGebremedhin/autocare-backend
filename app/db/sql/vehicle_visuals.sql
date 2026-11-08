@@ -47,6 +47,17 @@ create table if not exists user_car_visual_choices (
     primary key (user_id, car_id)
 );
 
+-- The body styles a make/model/year was sold in (asked once from the LLM, then reused). Normalized, lowercase
+-- words only. An operator can correct a wrong answer by updating the row.
+create table if not exists vehicle_body_styles (
+    make       text not null,
+    model      text not null,
+    year       int  not null,
+    styles     text[] not null check (cardinality(styles) > 0),
+    created_at timestamptz not null default now(),
+    primary key (make, model, year)
+);
+
 -- One row per provider call, for the budget ceiling.
 create table if not exists visual_provider_calls (
     id          bigserial primary key,

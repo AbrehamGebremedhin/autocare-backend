@@ -10,6 +10,17 @@ from app.db import pool
 STYLE_VERSION = "workshop-v1"
 
 
+async def get_body_styles(make: str, model: str, year: int) -> list[str] | None:
+    return await pool.fetchval(
+        "select styles from vehicle_body_styles where make = $1 and model = $2 and year = $3", make, model, year)
+
+
+async def set_body_styles(make: str, model: str, year: int, styles: list[str]) -> None:
+    await pool.execute(
+        "insert into vehicle_body_styles (make, model, year, styles) values ($1, $2, $3, $4) on conflict do nothing",
+        make, model, year, styles)
+
+
 async def get_visual(variant_key: str) -> dict | None:
     return await pool.fetchrow(
         "select * from vehicle_visuals where variant_key = $1 and style_version = $2",

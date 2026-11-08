@@ -175,7 +175,7 @@ def test_visuals_sql_is_idempotent_text():
     assert b"\r" not in raw
     sql = re.sub(r"--[^\n]*", "", raw.decode("utf-8"))
     tables = _table_bodies(sql)
-    assert set(tables) == {"vehicle_visuals", "user_car_visual_choices", "visual_provider_calls"}
+    assert set(tables) == {"vehicle_visuals", "user_car_visual_choices", "visual_provider_calls", "vehicle_body_styles"}
     assert not re.search(r"\bcreate\s+table\b(?!\s+if\s+not\s+exists)", sql, re.IGNORECASE)
     assert not re.search(r"\bcreate\s+(?:unique\s+)?index\b(?!\s+if\s+not\s+exists)", sql, re.IGNORECASE)
     assert not re.search(r"\bcreate\s+function\b", sql, re.IGNORECASE)

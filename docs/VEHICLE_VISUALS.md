@@ -32,6 +32,16 @@ spaces and punctuation), reads the `vehicle_visuals` row and answers with a desc
 signed `download_url`. `POST .../visual/prepare` does the same and, if the variant has no row yet, inserts one queued
 row (`insert ... on conflict do nothing`, so concurrent calls make exactly one) that the worker picks up.
 
+Cars outside the catalog. Instead of giving up, the descriptor is `fallback` / `choose_variant` with one option per body
+style (sedan, hatchback, wagon, suv, coupe, convertible, pickup, van). The owner picks one and the app sends it to
+prepare as `variant_key`. The key is `auto-<make>-<model>-<year>-<body>`, built from the car's normalized text only
+(a-z, 0-9 and hyphens), so a car's free text cannot add words to the provider prompt. It is allowlisted only for a car
+whose own make and model produce that prefix. Each such variant is one shared row like any other: generated once, held
+in `review` until an operator approves it, then served to every owner of that car and year. Cars the catalog does list
+(Echo, Civic) skip the question. `unknown_variant` is now only for unusable input (a missing year or an empty make).
+Since anyone can ask for any make/model/year, the per-user and global prepare limits, the provider's daily budget and
+the operator approval step are what bound the cost; rows for nonsense cars simply stay unapproved.
+
 Worker. A separate process from the same image (`visuals-worker` in `docker-compose.yml`). Every `VISUAL_POLL_SECONDS`
 it claims one due row with `claim_due_visual_job` (`for update skip locked`, a 300 s lease, `fencing_token + 1`),
 releases the transaction, then generates the image outside any transaction while renewing the lease every 100 s. The
@@ -171,8 +181,8 @@ rule below.
 `download_url` (https), `expires_at` (ISO-8601, UTC).
 
 States. `ready`: an artwork is published and its object is on disk. `pending`: the row is `queued`, `generating` or
-`review` with nothing published yet, or the variant has no row yet. `fallback`: `unknown_variant` (the catalog has no
-match), `choose_variant` (several variants fit; pick one by sending `variant_key` to prepare),
+`review` with nothing published yet, or the variant has no row yet. `fallback`: `unknown_variant` (unusable car data: no year or no make/model),
+`choose_variant` (several variants fit; pick one by sending `variant_key` to prepare),
 `temporarily_unavailable` (anything else: a `failed` row, a missing object, no signable URL, tables not migrated).
 
 Status codes. GET: always 200 for the three states, 404 for a car that does not exist or is not the caller's (never

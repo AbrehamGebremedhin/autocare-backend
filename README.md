@@ -130,7 +130,7 @@ Interactive reference: `http://localhost:8000/docs`, served only when `ENABLE_DO
 | Area | Routes |
 | --- | --- |
 | Auth | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/google`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout` |
-| Cars | `GET /api/v1/cars`, `POST /api/v1/cars` (`{"make", "model", "year"}`), `DELETE /api/v1/cars/{car_id}` |
+| Cars | `GET /api/v1/cars`, `POST /api/v1/cars` (`{"make", "model", "year", "transmission"?}`, transmission is `manual`, `automatic`, `cvt` or `dual_clutch`), `PATCH /api/v1/cars/{car_id}` (`{"transmission"}`), `DELETE /api/v1/cars/{car_id}` |
 | Vehicle visuals | `GET /api/v1/cars/{car_id}/visual`, `POST /api/v1/cars/{car_id}/visual/prepare` (`{}` or `{"variant_key"}`), `GET /api/v1/visuals/files/{sha256}.webp?exp&sig` (no token; see [docs/VEHICLE_VISUALS.md](docs/VEHICLE_VISUALS.md)) |
 | Sessions | `POST /api/v1/sessions` (`{"car_id"}`), `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
 | Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE) |

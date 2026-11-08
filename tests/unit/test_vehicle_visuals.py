@@ -161,8 +161,15 @@ def test_choose_variant_carries_labels_only(world):
     assert d.variant_key is None
 
 
-def test_unknown_variant_has_no_options_or_variant(world):
+def test_car_not_in_catalog_asks_for_a_body_style(world):
     d = run(vv.get_descriptor("u1", LADA_CAR))
+    assert (d.state, d.reason, d.variant_key) == ("fallback", "choose_variant", None)
+    assert [o.label for o in d.options][:2] == ["Lada Niva 1990 Sedan", "Lada Niva 1990 Hatchback"]
+    assert len(d.options) == 8
+
+
+def test_unusable_car_is_unknown_variant(world):
+    d = run(vv.get_descriptor("u1", {**LADA_CAR, "make": "!!!"}))
     assert (d.state, d.reason, d.options, d.variant_key) == ("fallback", "unknown_variant", None, None)
 
 
@@ -226,8 +233,21 @@ def test_prepare_with_choice_persists_and_queues(world):
 
 def test_prepare_choose_or_unknown_creates_no_job(world):
     assert run(vv.prepare("u1", CIVIC_CAR, None))[1] is False
-    assert run(vv.prepare("u1", LADA_CAR, None))[0].reason == "unknown_variant"
+    assert run(vv.prepare("u1", LADA_CAR, None))[0].reason == "choose_variant"
     assert world.ensure_calls == 0
+
+
+def test_choosing_a_body_style_queues_one_shared_job(world):
+    key = "auto-lada-niva-1990-suv"
+    d, created = run(vv.prepare("u1", LADA_CAR, key))
+    assert (d.state, d.variant_key, created) == ("pending", key, True)
+    assert run(vv.get_descriptor("u1", LADA_CAR)).variant_key == key  # the choice is remembered
+    d2, created2 = run(vv.prepare("u2", {**LADA_CAR, "id": "car-9"}, key))
+    assert d2.variant_key == key and created2 is False  # same variant, no second job
+    with pytest.raises(vv.VariantMismatch):
+        run(vv.prepare("u1", LADA_CAR, "auto-lada-niva-1990-boat"))
+    with pytest.raises(vv.VariantMismatch):
+        run(vv.prepare("u1", LADA_CAR, "auto-lada-2110-1990-suv"))
 
 
 def test_two_users_same_variant_same_sha(world):

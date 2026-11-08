@@ -194,6 +194,7 @@ async def send_message(
     car = await profiles.car_crud.get_car_by_id(session["car_id"])
     if car is None:
         raise RecordNotFoundException("Car")
+    car = {**car, "transmission": await profiles.get_transmission(current_user["id"], session["car_id"])}
 
     # A media turn takes its account's slot before anything is claimed or stored (429 if it is taken).
     media_user = current_user["id"] if files else None

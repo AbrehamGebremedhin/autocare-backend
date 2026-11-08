@@ -185,6 +185,39 @@ async def test_profile_cars_array_append_and_remove(real_pool):
         await pool.execute('delete from "Car" where lower(model) like $1', f"%{tag}%")
 
 
+async def test_transmission_is_per_owner_and_follows_the_car(real_pool):
+    await pool.execute(SCHEMA.read_text(encoding="utf-8"))
+    tag = uuid4().hex[:8]
+    mine, theirs = await _make_user(tag), await _make_user(tag + "b")
+    service = UserProfileService()
+    try:
+        added = await service.add_car_to_user(mine, "Test", f"Gear{tag}", 2006, "manual")
+        car_id = added["car_id"]
+        assert added["car_info"]["transmission"] == "manual"
+        await service.add_car_to_user(theirs, "Test", f"Gear{tag}", 2006)  # same shared car row, no transmission
+        assert [c["transmission"] for c in await service.get_user_cars(mine)] == ["manual"]
+        assert [c["transmission"] for c in await service.get_user_cars(theirs)] == [None]
+        assert await service.set_transmission(mine, car_id, "cvt") is True  # update in place
+        assert await service.get_transmission(mine, car_id) == "cvt"
+        assert await service.get_transmission(theirs, car_id) is None
+        stranger = await _make_user(tag + "c")
+        try:
+            assert await service.set_transmission(stranger, car_id, "manual") is False  # car not in their garage
+            assert await service.get_transmission(stranger, car_id) is None
+        finally:
+            await pool.execute("delete from users where id = $1", stranger)
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute("insert into user_car_details (user_id, car_id, transmission) values ($1::uuid, $2, 'stick')", mine, car_id)
+        assert (await service.remove_car_from_user(mine, car_id))["success"] is True
+        assert await service.get_transmission(mine, car_id) is None  # went with the car
+        await service.add_car_to_user(mine, "Test", f"Gear{tag}", 2006)
+        assert (await service.get_user_cars(mine))[0]["transmission"] is None  # re-adding starts clean
+    finally:
+        await pool.execute("delete from users where id = any($1::uuid[])", [mine, theirs])
+        assert await pool.fetchval("select count(*) from user_car_details where car_id like $1", f"%gear{tag}%") == 0  # cascade
+        await pool.execute('delete from "Car" where lower(model) like $1', f"%{tag}%")
+
+
 async def test_create_or_get_car_survives_concurrent_inserts(real_pool):
     from app.CRUD.car_crud import CarCRUD
 

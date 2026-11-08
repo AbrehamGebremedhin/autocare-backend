@@ -14,7 +14,7 @@ CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", 
 KB_PASSAGE_COLUMNS = {"source_type", "car_id", "title", "page", "content"}  # kb.ingest_pdf rows and its delete filter
 PROFILE_COLUMNS_WRITTEN = {"user_id", "cars", "preferences", "created_at", "updated_at"}  # user_profile_service
 USER_COLUMNS = {"id", "email", "password_hash", "google_sub", "created_at", "tokens_valid_after"}  # accounts (email+password, Google sign-in)
-TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages"}
+TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages", "user_car_details"}
 
 _CONSTRAINT_WORDS = {"constraint", "primary", "unique", "check", "foreign", "exclude"}
 _IDENT = r'("[^"]+"|\w+)'
@@ -119,7 +119,7 @@ def test_user_profiles_reference_users(schema):
 
 
 def test_car_has_every_model_field(schema):
-    assert set(CarBase.model_fields) | {"created_at"} <= schema["Car"]
+    assert (set(CarBase.model_fields) - {"transmission"}) | {"created_at"} <= schema["Car"]  # transmission is per owner
     assert {"is_vectorized", "vector_chunk_count"}.isdisjoint(schema["Car"])
     body = " ".join(_table_bodies(_sql())["Car"].split()).lower()
     assert "check (kb_status in ('pending', 'ready', 'failed', 'no_manual'))" in body

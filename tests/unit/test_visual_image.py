@@ -326,3 +326,43 @@ def test_white_body_on_a_white_background_keeps_its_interior():
     img = Image.open(io.BytesIO(out)).convert("RGBA")
     assert img.getpixel((512, 300))[3] == 255  # inside the outline: still opaque
     assert img.getpixel((5, 5))[3] == 0  # outside: transparent
+
+
+def _shape(size, box, hole=None):
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    draw.rectangle(box, fill=(10, 10, 10, 255))
+    if hole:
+        draw.rectangle(hole, fill=(0, 0, 0, 0))
+    out = io.BytesIO()
+    im.save(out, "WEBP", lossless=True)
+    return out.getvalue()
+
+
+def test_quality_problem_passes_a_car_like_shape():
+    assert vi.quality_problem(_shape((1024, 420), (16, 60, 1008, 366), hole=(300, 100, 700, 200))) is None
+
+
+@pytest.mark.parametrize(
+    "data, code",
+    [
+        (_shape((1024, 420), (400, 100, 600, 366)), "too_small"),  # narrow
+        (_shape((1024, 420), (350, 20, 750, 366)), "too_small"),
+        (_shape((1024, 420), (16, 60, 1008, 366)), "too_solid"),  # a solid block
+        (_shape((1024, 420), (16, 60, 1008, 366), hole=(40, 80, 980, 350)), "too_empty"),  # mostly hollow
+        (_shape((1024, 420), (16, 200, 1008, 366)), "bad_shape"),  # a flat sliver
+        (b"not an image", "not_image"),
+    ],
+)
+def test_quality_problem_codes(data, code):
+    assert vi.quality_problem(data) == code
+
+
+def test_a_blank_canvas_is_too_empty():
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGBA", (1024, 420), (0, 0, 0, 0)).save(out, "WEBP", lossless=True)
+    assert vi.quality_problem(out.getvalue()) == "too_empty"

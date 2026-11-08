@@ -54,6 +54,21 @@ class FakeCrud:
         self.provider_calls = 0
         self.recorded = []
         self.order = []
+        self.row = {"id": "11111111-1111-4111-8111-111111111111", "state": "review", "published_revision": 0,
+                    "fencing_token": 7}
+        self.published = []
+        self.publish_error = None
+
+    async def get_visual(self, variant_key):
+        if self.row is None:
+            return None
+        return {**self.row, "draft_sha256": self.finalized[-1][1]}
+
+    async def publish(self, job_id, expected_revision, sha, width, height):
+        if self.publish_error:
+            raise self.publish_error
+        self.published.append((job_id, expected_revision, sha, width, height))
+        return True
 
     async def claim_job(self, lease_seconds):
         job, self.job = self.job, None
@@ -92,7 +107,7 @@ def _job(attempt=1, token=7, variant="toyota-echo"):
 def crud(monkeypatch):
     fake = FakeCrud(_job())
     for name in ("claim_job", "renew_lease", "finalize_job", "provider_calls_last_day", "record_provider_call",
-                 "referenced_shas", "referenced_drafts"):
+                 "referenced_shas", "referenced_drafts", "get_visual", "publish"):
         monkeypatch.setattr(w.crud, name, getattr(fake, name))
     return fake
 
@@ -349,3 +364,57 @@ async def test_main_stops_on_signal_and_closes_the_pool(monkeypatch, store):
         for sig, handler in saved.items():
             signal.signal(sig, handler)
     assert events == ["init", "run", "close"]
+
+
+def _car_png() -> bytes:
+    """A wide shape with a hole in it on a transparent canvas: passes the car-shape check once normalized."""
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGBA", (900, 500), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    draw.rectangle((50, 150, 850, 400), fill=(200, 60, 60, 255))
+    draw.rectangle((300, 200, 600, 260), fill=(0, 0, 0, 0))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+@pytest.fixture
+def auto(monkeypatch):
+    monkeypatch.setattr(w.get_settings(), "VISUAL_AUTO_APPROVE", True)
+
+
+async def test_auto_approve_publishes_a_good_provider_image(crud, store, auto):
+    assert await w.run_once(FakeGen(_car_png(), charged=True), store) is True
+    (_, sha, _, _), = crud.finalized
+    assert crud.published == [(crud.row["id"], 0, sha, 1024, 420)]
+    assert store.has_object(sha) and _drafts(store) == []  # object stored, draft removed
+
+
+async def test_auto_approve_is_off_by_default(crud, store, monkeypatch):
+    monkeypatch.setattr(w.get_settings(), "VISUAL_AUTO_APPROVE", False)
+    await w.run_once(FakeGen(_car_png(), charged=True), store)
+    assert crud.published == [] and len(_drafts(store)) == 1
+
+
+async def test_curated_images_are_never_auto_published(crud, store, auto):
+    await w.run_once(FakeGen(_car_png(), charged=False), store)
+    assert crud.published == [] and len(_drafts(store)) == 1
+
+
+async def test_a_failing_quality_check_leaves_it_for_a_human(crud, store, auto, caplog):
+    await w.run_once(FakeGen(_png(), charged=True), store)  # a plain square: not a car
+    assert crud.published == [] and len(_drafts(store)) == 1
+    assert "auto-approve declined" in caplog.text
+
+
+async def test_a_row_that_moved_on_is_not_published(crud, store, auto):
+    crud.row["state"] = "queued"  # an operator requeued it meanwhile
+    await w.run_once(FakeGen(_car_png(), charged=True), store)
+    assert crud.published == [] and len(_drafts(store)) == 1
+
+
+async def test_a_publish_error_never_raises_and_keeps_the_draft(crud, store, auto):
+    crud.publish_error = RuntimeError("db")
+    assert await w.run_once(FakeGen(_car_png(), charged=True), store) is True
+    assert len(_drafts(store)) == 1 and crud.finalized[-1][0] == "review"

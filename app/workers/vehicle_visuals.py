@@ -18,7 +18,7 @@ from app.CRUD import vehicle_visual_crud as crud  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.db import pool  # noqa: E402
 from app.services.visual_generators import Generator, GeneratorError, build_generator  # noqa: E402
-from app.services.visual_image import InvalidArtwork, normalize  # noqa: E402
+from app.services.visual_image import InvalidArtwork, normalize, quality_problem  # noqa: E402
 from app.services.visual_store import VisualStore  # noqa: E402
 from app.utils.logger import get_logger_instance  # noqa: E402
 
@@ -107,6 +107,31 @@ async def _process(job: dict, gen: Generator, store: VisualStore, jitter: Callab
     await asyncio.to_thread(store.write_draft, variant, crud.STYLE_VERSION, job["fencing_token"], webp)
     if not await _finalize(job, "review", sha, None, None):
         await logger.warning(f"visual finalize skipped, lease was reclaimed: {variant}")  # draft is swept later
+        return
+    if gen.charged and get_settings().VISUAL_AUTO_APPROVE:
+        await _auto_publish(variant, store, webp, sha)
+
+
+async def _auto_publish(variant: str, store: VisualStore, webp: bytes, sha: str) -> None:
+    """Publish a finished draft like the operator's approve would, if it passes the quality check. Anything else
+    stays in review for a human; this never raises, so a failure here cannot lose the draft."""
+    try:
+        problem = await asyncio.to_thread(quality_problem, webp)
+        if problem:
+            await logger.warning(f"visual auto-approve declined: {variant} {problem}")
+            return
+        row = await crud.get_visual(variant)
+        if row is None or row["state"] != "review" or row["draft_sha256"] != sha:
+            return  # someone (an operator, a requeue) moved it meanwhile
+        await asyncio.to_thread(store.put_object, sha, webp)  # object first, activate second
+        if await crud.publish(row["id"], row["published_revision"], sha, 1024, 420):
+            try:
+                store.delete_draft(store.draft_rel(variant, crud.STYLE_VERSION, row["fencing_token"]))
+            except (ValueError, OSError):
+                pass  # the sweep reclaims it
+            await logger.info(f"visual auto-approved: {variant}")
+    except Exception as exc:
+        await logger.error(f"visual auto-approve failed, left in review: {variant} {type(exc).__name__}")
 
 
 async def run_once(

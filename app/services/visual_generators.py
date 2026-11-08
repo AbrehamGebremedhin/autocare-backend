@@ -18,10 +18,14 @@ from app.services.vehicle_catalog import label
 from app.services.visual_image import MAX_SOURCE_BYTES
 
 PROVIDER_TIMEOUT_SECONDS = 120
-# flux cannot make transparency; a plain background is stripped by visual_image.normalize.
+# The house style matches the reference artwork (assets/vehicles/toyota-echo.webp): pen-and-ink with a light wash,
+# pale cream paint, dark olive tyres, car facing left. flux cannot make transparency and does not strip a textured
+# background, so it is asked for a plain pure white one, which visual_image.normalize removes.
 PROMPT_TEMPLATE = (
-    "A clean side-view illustration of a {label}, flat workshop manual style, "
-    "the whole car in profile on a plain solid white background, no text."
+    "Vintage workshop manual plate: a {label} drawn in fine pen-and-ink with delicate hatching and a subtle "
+    "watercolor wash, pale cream body paint, dark olive-grey tyres with hatched sidewalls, soft earthy colours, "
+    "perfectly flat side elevation view with the front of the car pointing left, whole car visible, wheels on the "
+    "ground, isolated on a plain solid pure white background, no texture, no paper, no shadow, no text, no people."
 )
 MODEL = "@cf/black-forest-labs/flux-1-schnell"
 _KEY = re.compile(r"[A-Za-z0-9_-]+")

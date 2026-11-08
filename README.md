@@ -10,7 +10,9 @@ Settings come from `.env` (`.env.example` lists every name with its default; `ap
 
 Required: `JWT_SECRET_KEY` (32+ chars), `POSTGRES_PASSWORD`, `DATABASE_URL`, `DEEPSEEK_API_KEY`.
 
-Optional: `REGISTRATION_CODE`, `ENABLE_DOCS`, `DAILY_MESSAGE_LIMIT`, `MAX_CONCURRENT_MEDIA_TURNS`, `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`, `MEDIA_USER_QUOTA_MB`.
+Optional: `REGISTRATION_CODE`, `ENABLE_DOCS`, `DAILY_MESSAGE_LIMIT`, `MAX_CONCURRENT_MEDIA_TURNS`, `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`, `MEDIA_USER_QUOTA_MB`, `VISUALS_DIR`, `PUBLIC_BASE_URL`, `VISUAL_URL_TTL_SECONDS`, `VISUAL_PREPARE_PER_HOUR`, `VISUAL_JOBS_PER_HOUR`, `VISUAL_POLL_SECONDS`, `VISUAL_PROVIDER_ENABLED`, `VISUAL_PROVIDER_DAILY_BUDGET`, `VISUAL_CURATED_DIR`.
+
+Vehicle artwork (the `visuals-worker` service, signed download URLs, the operator CLI and the deploy steps, including the migration `app/db/sql/vehicle_visuals.sql`) is documented in [docs/VEHICLE_VISUALS.md](docs/VEHICLE_VISUALS.md).
 
 - `POSTGRES_PASSWORD` is also pasted into the api's `DATABASE_URL`, so it must be URL-safe (letters, digits, `-_.~`). Generate it with `openssl rand -hex 24`.
 - Inside compose, the api's `DATABASE_URL` is set by `docker-compose.yml` (host `db`) and overrides `.env`. The `.env` value is only for running the app or scripts outside compose, e.g. `postgresql://autocare:<password>@localhost:5432/autocare`.

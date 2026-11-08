@@ -313,3 +313,16 @@ def test_validate_rejects_metadata(extra):
     with pytest.raises(InvalidArtwork) as e:
         validate_published(data)
     assert e.value.code == "not_image"
+
+
+def test_white_body_on_a_white_background_keeps_its_interior():
+    from PIL import Image, ImageDraw
+
+    src = Image.new("RGB", (400, 200), "white")
+    ImageDraw.Draw(src).rectangle((50, 60, 350, 160), outline="black", width=6)  # white fill, dark outline
+    buf = io.BytesIO()
+    src.save(buf, "PNG")
+    out, _, _, _ = vi.normalize(buf.getvalue())
+    img = Image.open(io.BytesIO(out)).convert("RGBA")
+    assert img.getpixel((512, 300))[3] == 255  # inside the outline: still opaque
+    assert img.getpixel((5, 5))[3] == 0  # outside: transparent

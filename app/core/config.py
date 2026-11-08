@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     VISUAL_POLL_SECONDS: int = 10
     VISUAL_PROVIDER_ENABLED: bool = False
     VISUAL_PROVIDER_DAILY_BUDGET: int = 20
+    CLOUDFLARE_ACCOUNT_ID: str = ""
+    CLOUDFLARE_API_TOKEN: str = ""
     VISUAL_CURATED_DIR: str = "/data/visuals/curated"
 
     def get_allowed_origins(self) -> List[str]:

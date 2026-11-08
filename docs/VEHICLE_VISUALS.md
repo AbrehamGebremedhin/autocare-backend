@@ -75,7 +75,8 @@ Names only; the defaults are those in `app/core/config.py`. None of these is a s
 | `VISUAL_PREPARE_PER_HOUR` | `20` | Per user: a prepare call that would create a row is refused once the user's count in the last hour has reached this value. `0` turns the limit off. |
 | `VISUAL_JOBS_PER_HOUR` | `60` | Global: rows created in the last hour; over it, prepare answers 429. `0` turns the limit off. |
 | `VISUAL_POLL_SECONDS` | `10` | Worker sleep between polls when nothing is due. |
-| `VISUAL_PROVIDER_ENABLED` | `false` | Build the paid-provider generator instead of the curated one. Leave off (see Behaviours to know). |
+| `VISUAL_PROVIDER_ENABLED` | `false` | Use Cloudflare Workers AI instead of the curated directory (see Behaviours to know, item h). |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | empty | Credentials for the provider; never logged. |
 | `VISUAL_PROVIDER_DAILY_BUDGET` | `20` | Provider calls allowed per rolling day; at the ceiling the worker stops calling and fails the job `budget_exhausted`. |
 | `VISUAL_CURATED_DIR` | `/data/visuals/curated` | Where the curated generator looks for `{variant_key}.webp\|png\|jpg`. |
 
@@ -220,9 +221,11 @@ per client address.
 - (g) The provider budget check and its recording are not atomic across several workers. That is latent while one
   replica runs and the provider call is unwired. Upgrade path before running more replicas: one SQL function that takes
   an advisory lock, counts the day's calls, and inserts the ledger row in the same statement.
-- (h) `ProviderGenerator._call` is intentionally unimplemented: it raises `provider_not_configured`, and the flag
-  `VISUAL_PROVIDER_ENABLED` defaults to off. Turning the flag on today only makes each job record a ledger row and
-  fail; wire a real service into `_call` first. No real provider key or URL is documented because none is used.
+- (h) The provider is Cloudflare Workers AI (`@cf/black-forest-labs/flux-1-schnell`). It needs `VISUAL_PROVIDER_ENABLED=true`,
+  `CLOUDFLARE_ACCOUNT_ID` and an API token with Workers AI access in `CLOUDFLARE_API_TOKEN`; with either missing, a job
+  fails `provider_not_configured`. While enabled it replaces the curated source, so every unseeded variant is generated
+  (the model cannot make transparency; the plain background is stripped in normalization). Output always lands in
+  `review` and needs an operator approve. The free allowance is 10,000 neurons a day (about 40 to 60 per image).
 - (i) The rate limits (including the download route's) and the per-user prepare throttle live in process memory: they
   reset on restart and multiply with the number of api workers. The image runs one.
 - (j) The descriptor service re-checks car ownership when signing, so a car removed mid-flight gives 404.

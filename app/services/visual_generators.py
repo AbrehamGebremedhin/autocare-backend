@@ -1,20 +1,29 @@
 """Sources of raw vehicle artwork for the visuals worker.
 
 A generator turns (variant_key, style_version) into image bytes; the worker validates and normalizes them
-afterwards, so nothing here is trusted to be a good image. The provider generator is off unless
-VISUAL_PROVIDER_ENABLED is set, and its network call is deliberately left unimplemented.
+afterwards, so nothing here is trusted to be a good image. The provider generator (Cloudflare Workers AI,
+flux-1-schnell) is off unless VISUAL_PROVIDER_ENABLED is set and both Cloudflare settings are present.
 """
 import asyncio
+import base64
+import binascii
 import re
 from pathlib import Path
 from typing import Protocol
+
+import httpx
 
 from app.core.config import get_settings
 from app.services.vehicle_catalog import label
 from app.services.visual_image import MAX_SOURCE_BYTES
 
 PROVIDER_TIMEOUT_SECONDS = 120
-PROMPT_TEMPLATE = "A clean side-view illustration of a {label}, flat workshop style, on a transparent background."
+# flux cannot make transparency; a plain background is stripped by visual_image.normalize.
+PROMPT_TEMPLATE = (
+    "A clean side-view illustration of a {label}, flat workshop manual style, "
+    "the whole car in profile on a plain solid white background, no text."
+)
+MODEL = "@cf/black-forest-labs/flux-1-schnell"
 _KEY = re.compile(r"[A-Za-z0-9_-]+")
 _EXTENSIONS = (".webp", ".png", ".jpg")
 
@@ -58,13 +67,32 @@ class CuratedGenerator:
 
 
 class ProviderGenerator:
-    """Paid image provider. Only built when VISUAL_PROVIDER_ENABLED; `_call` is the single place a real
-    service would be wired in, and it is not wired to any."""
+    """Cloudflare Workers AI text-to-image. Charged against the neuron allowance, so counted as a paid call."""
 
     charged = True
 
+    def __init__(self, transport: httpx.AsyncBaseTransport | None = None):
+        self._transport = transport
+
     async def _call(self, prompt: str) -> bytes:
-        raise GeneratorError("provider_not_configured")
+        settings = get_settings()
+        if not (settings.CLOUDFLARE_ACCOUNT_ID and settings.CLOUDFLARE_API_TOKEN):
+            raise GeneratorError("provider_not_configured")
+        url = f"https://api.cloudflare.com/client/v4/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/ai/run/{MODEL}"
+        headers = {"Authorization": f"Bearer {settings.CLOUDFLARE_API_TOKEN}"}
+        try:
+            async with httpx.AsyncClient(transport=self._transport, timeout=PROVIDER_TIMEOUT_SECONDS) as client:
+                resp = await client.post(url, headers=headers, json={"prompt": prompt, "steps": 4})
+        except httpx.HTTPError as exc:
+            raise GeneratorError("provider_network") from exc
+        if resp.status_code != 200:
+            raise GeneratorError(f"provider_http_{resp.status_code}")
+        try:
+            body = resp.json()
+            image = (body.get("result") or body)["image"]
+            return base64.b64decode(image, validate=True)
+        except (ValueError, KeyError, TypeError, AttributeError, binascii.Error) as exc:
+            raise GeneratorError("provider_bad_response") from exc
 
     async def generate(self, variant_key: str, style_version: str) -> bytes:
         prompt = PROMPT_TEMPLATE.format(label=label(variant_key))  # catalog label only, never user data

@@ -364,3 +364,83 @@ async def test_referenced_drafts(real_pool):
     await _insert(b, "ready", fencing_token=2)
     await _insert(c, "failed", fencing_token=1)
     assert await crud.referenced_drafts() == {(a, "s1", 4)}
+
+
+# --- the operator CLI over the real functions ----------------------------------------------------------
+
+import importlib.util  # noqa: E402
+import time  # noqa: E402
+
+_cli_spec = importlib.util.spec_from_file_location(
+    "visuals_admin", Path(__file__).resolve().parents[2] / "scripts" / "visuals_admin.py")
+cli = importlib.util.module_from_spec(_cli_spec)
+_cli_spec.loader.exec_module(cli)
+
+
+@pytest.fixture
+def operator(tmp_path, monkeypatch):
+    store = VisualStore(tmp_path / "visuals")
+    monkeypatch.setattr(cli, "_store", lambda: store)
+    monkeypatch.setattr(cli, "is_allowed", lambda v: True)  # the test variants are not in the catalog
+    return store
+
+
+def _art(tmp_path: Path, name: str, color) -> str:
+    img = Image.new("RGBA", (600, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(img).rectangle((20, 20, 580, 180), fill=color)
+    path = tmp_path / name
+    img.save(path, "PNG")
+    return str(path)
+
+
+async def test_cli_seed_approve_on_empty_db(real_pool, operator, tmp_path):
+    await _fresh()
+    v = _variant()
+    assert await cli._seed(v, _art(tmp_path, "a.png", (200, 30, 30, 255)), True) == 0
+    row = await crud.get_visual(v)
+    assert row["state"] == "ready" and row["published_revision"] == 1 and operator.has_object(row["sha256"])
+
+
+async def test_cli_second_seed_keeps_serving_until_approved(real_pool, operator, tmp_path):
+    await _fresh()
+    v = _variant()
+    assert await cli._seed(v, _art(tmp_path, "a.png", (200, 30, 30, 255)), True) == 0
+    first = await crud.get_visual(v)
+    assert await cli._seed(v, _art(tmp_path, "b.png", (30, 30, 200, 255)), False) == 0
+    parked = await crud.get_visual(v)
+    assert parked["state"] == "review" and parked["published_revision"] == 1 and parked["sha256"] == first["sha256"]
+    assert parked["draft_sha256"] != first["sha256"]
+    assert await cli._approve(v, 5) == 2  # wrong revision: nothing changes
+    after_refusal = await crud.get_visual(v)
+    assert after_refusal["state"] == "review" and after_refusal["published_revision"] == 1
+    assert not operator.has_object(parked["draft_sha256"])
+    assert await cli._approve(v, 1) == 0
+    done = await crud.get_visual(v)
+    assert done["state"] == "ready" and done["published_revision"] == 2 and done["sha256"] == parked["draft_sha256"]
+    assert operator.has_object(first["sha256"]) and operator.has_object(done["sha256"])
+
+
+async def test_cli_crash_between_object_and_publish_is_swept(real_pool, operator, tmp_path, monkeypatch):
+    await _fresh()
+    v = _variant()
+    assert await cli._seed(v, _art(tmp_path, "a.png", (200, 30, 30, 255)), True) == 0
+    first = await crud.get_visual(v)
+    assert await cli._seed(v, _art(tmp_path, "b.png", (30, 30, 200, 255)), False) == 0
+    new_sha = (await crud.get_visual(v))["draft_sha256"]
+
+    async def boom(*a, **k):
+        raise RuntimeError("crash")
+
+    monkeypatch.setattr(cli.crud, "publish", boom)
+    with pytest.raises(RuntimeError):
+        await cli._approve(v, 1)
+    monkeypatch.undo()
+    row = await crud.get_visual(v)
+    assert row["published_revision"] == 1 and row["sha256"] == first["sha256"]
+    assert operator.has_object(new_sha)
+    # the row is still in review, so its sha is referenced; reject it, then the object is an orphan
+    assert await crud.reject(v) is True
+    keep = await crud.referenced_shas()
+    assert first["sha256"] in keep and new_sha not in keep
+    operator.sweep(60, keep, now=time.time() + 3600)
+    assert not operator.has_object(new_sha) and operator.has_object(first["sha256"])

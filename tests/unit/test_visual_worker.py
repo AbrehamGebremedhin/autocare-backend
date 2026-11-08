@@ -418,3 +418,26 @@ async def test_a_publish_error_never_raises_and_keeps_the_draft(crud, store, aut
     crud.publish_error = RuntimeError("db")
     assert await w.run_once(FakeGen(_car_png(), charged=True), store) is True
     assert len(_drafts(store)) == 1 and crud.finalized[-1][0] == "review"
+
+
+class FakeChainGen(FakeGen):
+    """Charged only for some variants, like CuratedThenProvider."""
+
+    def __init__(self, result, free):
+        super().__init__(result, charged=True)
+        self.free = free
+
+    def charged_for(self, variant_key):
+        return variant_key not in self.free
+
+
+async def test_a_curated_variant_in_a_chain_is_not_charged_nor_auto_published(crud, store, auto):
+    crud.job = _job(variant="toyota-echo-2001-sedan")
+    await w.run_once(FakeChainGen(_car_png(), free={"toyota-echo-2001-sedan"}), store)
+    assert crud.recorded == [] and crud.published == [] and len(_drafts(store)) == 1  # a human approves curated art
+
+
+async def test_a_generated_variant_in_a_chain_is_charged_and_auto_published(crud, store, auto):
+    crud.job = _job(variant="auto-toyota-corolla-2007-sedan")
+    await w.run_once(FakeChainGen(_car_png(), free={"toyota-echo-2001-sedan"}), store)
+    assert crud.recorded == ["auto-toyota-corolla-2007-sedan"] and len(crud.published) == 1

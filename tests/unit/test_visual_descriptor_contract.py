@@ -46,7 +46,8 @@ def _all_states(world):  # noqa: F811
     yield run(vv.get_descriptor("u", ECHO_CAR))  # pending, review
     world.row(ECHO, "failed")
     yield run(vv.get_descriptor("u", ECHO_CAR))  # fallback temporarily_unavailable
-    yield run(vv.get_descriptor("u", LADA_CAR))  # unknown_variant
+    yield run(vv.get_descriptor("u", {**LADA_CAR, "make": "!!!"}))  # unknown_variant
+    yield run(vv.get_descriptor("u", LADA_CAR))  # choose_variant with body styles
     yield run(vv.get_descriptor("u", CIVIC_CAR))  # choose_variant
 
 

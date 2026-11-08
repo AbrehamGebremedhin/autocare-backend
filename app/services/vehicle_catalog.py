@@ -13,6 +13,12 @@ from typing import Literal
 
 _CATALOG_PATH = Path(__file__).with_name("vehicle_catalog.json")
 
+# A car the catalog does not know still gets artwork: the owner picks a body style and that choice becomes
+# its own variant, "auto-<make>-<model>-<year>-<body>". Keys are built from normalized text only (a-z, 0-9, -),
+# so nothing the user typed reaches the provider prompt except plain words.
+BODY_STYLES = ("sedan", "hatchback", "wagon", "suv", "coupe", "convertible", "pickup", "van")
+_AUTO_TAIL = re.compile(r"(\d{4})-(" + "|".join(BODY_STYLES) + ")")
+
 
 @dataclass(frozen=True)
 class Resolution:
@@ -42,14 +48,26 @@ def _matches_name(v: dict, make: str, model: str) -> bool:
     return normalize(make) == v["make"] and normalize(model) in v["models"]
 
 
+def _slug(value: str) -> str:
+    return normalize(value).replace(" ", "-")
+
+
+def _auto_keys(make: str, model: str, year: int) -> list[str]:
+    head = f"auto-{_slug(make)}-{_slug(model)}"
+    if not _slug(make) or not _slug(model):
+        return []
+    return [f"{head}-{year}-{body}" for body in BODY_STYLES]
+
+
 def candidates(make: str, model: str, year: int) -> list[str]:
     if not isinstance(year, int) or isinstance(year, bool):
         return []
-    return sorted(
+    known = sorted(
         k
         for k, v in _variants().items()
         if _matches_name(v, make, model) and v["years"][0] <= year <= v["years"][1]
     )
+    return known or _auto_keys(make, model, year)
 
 
 def resolve(make: str, model: str, year: int, choice: str | None = None) -> Resolution:
@@ -59,19 +77,43 @@ def resolve(make: str, model: str, year: int, choice: str | None = None) -> Reso
     if choice in found:
         return Resolution("selected", choice, [])
     variants = _variants()
-    if len(found) == 1 and not variants[found[0]]["ambiguous"]:
+    if len(found) == 1 and found[0] in variants and not variants[found[0]]["ambiguous"]:
         return Resolution("selected", found[0], [])
-    return Resolution("choose", None, [(k, variants[k]["label"]) for k in found])
+    return Resolution("choose", None, [(k, label(k)) for k in found])
+
+
+def _auto_parts(variant_key: str) -> tuple[str, str, str] | None:
+    """(make-and-model slug, year, body) of an auto key, or None."""
+    if not isinstance(variant_key, str) or not variant_key.startswith("auto-") or len(variant_key) > 200:
+        return None
+    for body in BODY_STYLES:
+        m = re.fullmatch(r"auto-([a-z0-9]+(?:-[a-z0-9]+)*)-(\d{4})-" + body, variant_key)
+        if m:
+            return m.group(1), m.group(2), body
+    return None
 
 
 def is_allowed(variant_key: str) -> bool:
-    return isinstance(variant_key, str) and variant_key in _variants()
+    return isinstance(variant_key, str) and (variant_key in _variants() or _auto_parts(variant_key) is not None)
 
 
 def variant_matches_car(variant_key: str, make: str, model: str) -> bool:
     v = _variants().get(variant_key) if isinstance(variant_key, str) else None
-    return v is not None and _matches_name(v, make, model)
+    if v is not None:
+        return _matches_name(v, make, model)
+    if _auto_parts(variant_key) is None or not _slug(make) or not _slug(model):
+        return False
+    return variant_key.startswith(f"auto-{_slug(make)}-{_slug(model)}-") and bool(
+        _AUTO_TAIL.fullmatch(variant_key[len(f"auto-{_slug(make)}-{_slug(model)}-"):])
+    )
 
 
 def label(variant_key: str) -> str:
-    return _variants()[variant_key]["label"]
+    v = _variants().get(variant_key)
+    if v is not None:
+        return v["label"]
+    parts = _auto_parts(variant_key)
+    if parts is None:
+        raise KeyError(variant_key)
+    name, year, body = parts
+    return f"{name.replace('-', ' ').title()} {year} {body.title()}"

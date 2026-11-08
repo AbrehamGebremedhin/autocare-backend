@@ -103,12 +103,12 @@ async def test_renew_lease_reports_whether_a_row_changed(fake_pool):
     assert args == ("j1", 2, 90)
 
 
-@pytest.mark.parametrize("seconds", [None, 30])
+@pytest.mark.parametrize("seconds", [None, 30, 12.5])
 async def test_finalize_job_passes_seconds_or_null(fake_pool, seconds):
     fake_pool.value = True
     assert await crud.finalize_job("j1", 3, "failed", None, "boom", seconds) is True
     _, sql, args = _only(fake_pool)
-    assert "finalize_visual_job(" in sql and "make_interval" in sql
+    assert "finalize_visual_job(" in sql and "make_interval(secs => $6::float8)" in sql
     assert args == ("j1", 3, "failed", None, "boom", seconds)
 
 
@@ -135,6 +135,7 @@ async def test_reject_and_requeue_report_changed_rows(fake_pool):
     assert await crud.requeue("v1") is False
     reject_sql, requeue_sql = fake_pool.calls[0][1], fake_pool.calls[1][1]
     assert "state = 'review'" in reject_sql and "'rejected'" in reject_sql
+    assert "published_revision > 0 then 'ready'" in " ".join(reject_sql.split())
     assert "state in ('failed', 'review')" in requeue_sql
 
 
@@ -151,6 +152,7 @@ async def test_referenced_shas(fake_pool):
     assert await crud.referenced_shas() == {"a", "b"}
     sql = fake_pool.calls[0][1]
     assert "sha256" in sql and "draft_sha256" in sql and "is not null" in sql.lower()
+    assert "'ready'" not in sql  # any state's published sha counts
 
 
 async def test_seed_review_refuses_live_generating_lease(fake_pool):
@@ -165,9 +167,19 @@ async def test_seed_review_upserts(fake_pool):
     assert row["state"] == "review"
     _, sql, args = _only(fake_pool)
     assert args == ("v1", crud.STYLE_VERSION, "sha", 10, 20)
-    assert "published_revision" not in sql.split("do update")[1]
+    update = " ".join(sql.split("do update")[1].split())
+    assert "published_revision = " not in update.replace("when vehicle_visuals.published_revision = 0", "")
+    assert "sha256 = excluded" not in update.replace("draft_sha256 = excluded", "")
+    assert "when vehicle_visuals.published_revision = 0 then excluded.width" in update
 
 
 def test_no_string_built_sql():
     src = open(crud.__file__, encoding="utf-8").read()
     assert not re.search(r"\bf[\"']", src) and ".format(" not in src and "% (" not in src
+
+
+@pytest.mark.parametrize("raw", [f"urn:uuid:{UID}", "{" + UID.upper() + "}", UID.replace("-", "")])
+async def test_owned_car_binds_the_normalised_uuid(fake_pool, raw):
+    assert await crud.owned_car(raw, "c1") is None
+    _, _, args = _only(fake_pool)
+    assert args == (UID, "c1")

@@ -236,13 +236,29 @@ async def test_reject_only_from_review(real_pool):
     assert (await crud.get_visual(v))["sha256"] == "pub"
 
 
+async def test_reject_of_a_published_row_restores_ready(real_pool):
+    await _fresh()
+    v = _variant()
+    row, _ = await crud.ensure_job(v)
+    await crud.seed_review(v, "d1", 10, 20)
+    assert await crud.publish(row["id"], 0, "pub", 10, 20) is True
+    await crud.seed_review(v, "d2", 99, 99)
+    assert await crud.reject(v) is True
+    got = await crud.get_visual(v)
+    assert (got["state"], got["sha256"], got["draft_sha256"], got["last_error_code"], got["published_revision"]) == (
+        "ready", "pub", None, None, 1)
+    assert (got["width"], got["height"]) == (10, 20)
+
+
 async def test_referenced_shas(real_pool):
     await _fresh()
     await _insert(_variant(), "ready", sha256="r1", draft_sha256="ignored-draft-of-ready")
     await _insert(_variant(), "review", draft_sha256="d1")
     await _insert(_variant(), "queued")
     await _insert(_variant(), "failed", draft_sha256=None)
-    assert await crud.referenced_shas() == {"r1", "d1"}
+    await _insert(_variant(), "review", sha256="p2", draft_sha256="d2")  # re-seeded: published sha stays referenced
+    await _insert(_variant(), "failed", sha256="p3", draft_sha256="ignored-failed-draft")
+    assert await crud.referenced_shas() == {"r1", "d1", "p2", "d2", "p3"}
 
 
 async def test_seed_review_does_not_touch_published_revision(real_pool):
@@ -253,6 +269,7 @@ async def test_seed_review_does_not_touch_published_revision(real_pool):
     assert await crud.publish(row["id"], 0, "pub", 10, 20) is True
     seeded = await crud.seed_review(v, "d2", 11, 21)
     assert (seeded["state"], seeded["draft_sha256"], seeded["published_revision"], seeded["sha256"]) == ("review", "d2", 1, "pub")
+    assert (seeded["width"], seeded["height"]) == (10, 20)  # they describe the published image
     assert await crud.publish(row["id"], 1, "pub2", 11, 21) is True
     await pool.execute(
         "update vehicle_visuals set state = 'generating', lease_expires_at = now() + interval '1 minute' where variant_key = $1", v)
@@ -260,3 +277,23 @@ async def test_seed_review_does_not_touch_published_revision(real_pool):
         await crud.seed_review(v, "d3", 1, 1)
     await pool.execute("update vehicle_visuals set lease_expires_at = now() - interval '1 minute' where variant_key = $1", v)
     assert (await crud.seed_review(v, "d3", 1, 1))["state"] == "review"
+
+
+async def test_finalize_without_seconds_keeps_next_attempt_at(real_pool):
+    await _fresh()
+    v = _variant()
+    await crud.ensure_job(v)
+    job = await crud.claim_job(60)
+    before = (await crud.get_visual(v))["next_attempt_at"]
+    assert await crud.finalize_job(job["id"], job["fencing_token"], "review", "d", None, None) is True
+    assert (await crud.get_visual(v))["next_attempt_at"] == before
+
+
+async def test_finalize_accepts_float_seconds(real_pool):
+    await _fresh()
+    v = _variant()
+    await crud.ensure_job(v)
+    job = await crud.claim_job(60)
+    assert await crud.finalize_job(job["id"], job["fencing_token"], "queued", None, "x", 90.5) is True
+    assert await pool.fetchval(
+        "select next_attempt_at > now() + interval '85 seconds' from vehicle_visuals where variant_key = $1", v)

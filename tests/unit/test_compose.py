@@ -67,6 +67,18 @@ def test_named_volumes_back_postgres_data_and_media(compose):
     assert _mounts(compose["services"]["api"])["/data/media"][0] == "media"
 
 
+def test_visuals_schema_mounted_after_the_main_schema(compose):
+    source, read_only = _mounts(compose["services"]["db"])["/docker-entrypoint-initdb.d/02-vehicle_visuals.sql"]
+    assert read_only
+    assert (ROOT / source).is_file()
+    assert Path(source).as_posix().endswith("app/db/sql/vehicle_visuals.sql")
+
+
+def test_visuals_volume_is_declared_and_mounted_on_api(compose):
+    assert "visuals" in compose["volumes"]
+    assert _mounts(compose["services"]["api"])["/data/visuals"][0] == "visuals"
+
+
 def test_api_waits_for_healthy_db(compose):
     api = compose["services"]["api"]
     assert api["depends_on"]["db"]["condition"] == "service_healthy"

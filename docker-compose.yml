@@ -10,6 +10,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       # Runs only when pgdata is empty (first start); later schema changes are applied by hand with psql.
       - ./app/db/sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./app/db/sql/vehicle_visuals.sql:/docker-entrypoint-initdb.d/02-vehicle_visuals.sql:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "autocare", "-d", "autocare"]
       interval: 10s
@@ -30,6 +31,7 @@ services:
         condition: service_healthy
     volumes:
       - media:/data/media
+      - visuals:/data/visuals
     # Caddy on the host terminates TLS and proxies to this port. To expose the API directly (plain HTTP),
     # change the mapping to "8000:8000".
     ports:
@@ -45,3 +47,4 @@ services:
 volumes:
   pgdata:
   media:
+  visuals:

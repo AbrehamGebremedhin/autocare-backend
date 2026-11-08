@@ -164,3 +164,23 @@ async def test_search_kb_args_match_kb_search_params(fake_pool):
 def test_search_kb_returns_every_passage_field():
     _, returned = _search_kb_signature()
     assert set(kb.Passage.__annotations__) <= returned
+
+
+VISUALS = SCHEMA.with_name("vehicle_visuals.sql")
+
+
+def test_visuals_sql_is_idempotent_text():
+    assert VISUALS.is_file()
+    raw = VISUALS.read_bytes()
+    assert b"\r" not in raw
+    sql = re.sub(r"--[^\n]*", "", raw.decode("utf-8"))
+    tables = _table_bodies(sql)
+    assert set(tables) == {"vehicle_visuals", "user_car_visual_choices", "visual_provider_calls"}
+    assert not re.search(r"\bcreate\s+table\b(?!\s+if\s+not\s+exists)", sql, re.IGNORECASE)
+    assert not re.search(r"\bcreate\s+(?:unique\s+)?index\b(?!\s+if\s+not\s+exists)", sql, re.IGNORECASE)
+    assert not re.search(r"\bcreate\s+function\b", sql, re.IGNORECASE)
+    for name in ("claim_due_visual_job", "finalize_visual_job", "publish_visual_revision"):
+        assert re.search(rf"\bcreate\s+or\s+replace\s+function\s+{name}\b", sql, re.IGNORECASE)
+    assert not re.search(r"\b(?:drop|truncate)\b", sql, re.IGNORECASE)
+    statements = [s.strip().lower() for s in sql.split(";") if s.strip()]
+    assert statements[0] == "begin" and statements[-1] == "commit"

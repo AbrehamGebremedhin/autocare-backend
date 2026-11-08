@@ -2,7 +2,7 @@
 
 Usage: uv run python scripts/visuals_admin.py {list-review | approve VARIANT --revision N | reject VARIANT |
        requeue VARIANT | seed VARIANT --image PATH [--approve]}
-Exit codes: 0 done, 1 usage / not found / nothing changed, 2 refused. One short line per result; shas, signed URLs
+Exit codes: 0 done, 1 usage / not found / nothing changed, 2 refused, 3 internal error (class name only). One short line per result; shas, signed URLs
 and filesystem paths are never printed. Approve writes the object first and activates the revision second, so a
 crash in between leaves only an unreferenced object that the sweep removes after its grace period.
 """
@@ -123,12 +123,15 @@ async def _seed(variant: str, image: str, approve: bool) -> int:
     if row is None:
         print("not found")
         return 1
+    if row["state"] == "generating":  # the worker's draft lives at this very token; touch nothing
+        print("refused: job running")
+        return 2
     store = _store()
     token = row["fencing_token"]  # a row in review keeps its draft at its current token
     store.write_draft(variant, crud.STYLE_VERSION, token, webp)
     try:
         row = await crud.seed_review(variant, sha, width, height)
-    except ValueError:
+    except ValueError:  # a worker claimed the row after the check, so its token moved on and ours is ours to drop
         _delete_draft(store, variant, token)
         print("refused: job running")
         return 2
@@ -136,6 +139,9 @@ async def _seed(variant: str, image: str, approve: bool) -> int:
     if not approve:
         return 0
     row = await crud.get_visual(variant)
+    if row is None or row["draft_sha256"] != sha:
+        print("refused: draft changed")
+        return 2
     return await _approve(variant, row["published_revision"])
 
 
@@ -176,7 +182,11 @@ def main(argv: list[str] | None = None) -> int:
         args = _parser().parse_args(argv)
     except SystemExit as exc:  # argparse exits 2 for usage errors; here 2 means refused
         return 0 if exc.code == 0 else 1
-    return asyncio.run(_run(args))
+    try:
+        return asyncio.run(_run(args))
+    except Exception as exc:  # never str(exc): it can carry shas, paths or connection details
+        print(f"error: {type(exc).__name__}")
+        return 3
 
 
 if __name__ == "__main__":

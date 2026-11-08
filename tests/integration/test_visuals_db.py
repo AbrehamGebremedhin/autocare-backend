@@ -72,11 +72,12 @@ async def test_claim_finalize_publish_cycle(real_pool):
         done = await pool.fetchrow("select * from vehicle_visuals where id = $1", row["id"])
         assert done["state"] == "review" and done["draft_sha256"] == "abc" and done["lease_expires_at"] is None
 
-        assert await pool.fetchval("select publish_visual_revision($1, 5, 'f' , 1024, 420)", row["id"]) is False
-        assert await pool.fetchval("select publish_visual_revision($1, 0, 'f', 1024, 420)", row["id"]) is True
-        assert await pool.fetchval("select publish_visual_revision($1, 0, 'f', 1024, 420)", row["id"]) is False
+        assert await pool.fetchval("select publish_visual_revision($1, 5, 'abc', 1024, 420)", row["id"]) is False
+        assert await pool.fetchval("select publish_visual_revision($1, 0, 'f', 1024, 420)", row["id"]) is False  # not the reviewed draft
+        assert await pool.fetchval("select publish_visual_revision($1, 0, 'abc', 1024, 420)", row["id"]) is True
+        assert await pool.fetchval("select publish_visual_revision($1, 0, 'abc', 1024, 420)", row["id"]) is False
         pub = await pool.fetchrow("select * from vehicle_visuals where id = $1", row["id"])
-        assert (pub["state"], pub["sha256"], pub["width"], pub["height"], pub["published_revision"]) == ("ready", "f", 1024, 420, 1)
+        assert (pub["state"], pub["sha256"], pub["width"], pub["height"], pub["published_revision"]) == ("ready", "abc", 1024, 420, 1)
     finally:
         await pool.execute("delete from vehicle_visuals where variant_key = $1", variant)
 
@@ -166,12 +167,13 @@ async def test_publish_requires_review_and_expected_revision(real_pool):
     await _fresh()
     v = _variant()
     row, _ = await crud.ensure_job(v)
-    assert await crud.publish(row["id"], 0, "s", 10, 20) is False  # still queued
+    assert await crud.publish(row["id"], 0, "draft", 10, 20) is False  # still queued
     await crud.seed_review(v, "draft", 10, 20)
-    assert await crud.publish(row["id"], 3, "s", 10, 20) is False  # stale revision
-    assert await crud.publish(row["id"], 0, "s", 10, 20) is True
+    assert await crud.publish(row["id"], 3, "draft", 10, 20) is False  # stale revision
+    assert await crud.publish(row["id"], 0, "other", 10, 20) is False  # not the reviewed draft
+    assert await crud.publish(row["id"], 0, "draft", 10, 20) is True
     got = await crud.get_visual(v)
-    assert (got["state"], got["published_revision"], got["sha256"]) == ("ready", 1, "s")
+    assert (got["state"], got["published_revision"], got["sha256"]) == ("ready", 1, "draft")
 
 
 async def test_choice_is_per_user_car(real_pool):
@@ -241,12 +243,12 @@ async def test_reject_of_a_published_row_restores_ready(real_pool):
     v = _variant()
     row, _ = await crud.ensure_job(v)
     await crud.seed_review(v, "d1", 10, 20)
-    assert await crud.publish(row["id"], 0, "pub", 10, 20) is True
+    assert await crud.publish(row["id"], 0, "d1", 10, 20) is True
     await crud.seed_review(v, "d2", 99, 99)
     assert await crud.reject(v) is True
     got = await crud.get_visual(v)
     assert (got["state"], got["sha256"], got["draft_sha256"], got["last_error_code"], got["published_revision"]) == (
-        "ready", "pub", None, None, 1)
+        "ready", "d1", None, None, 1)
     assert (got["width"], got["height"]) == (10, 20)
 
 
@@ -266,11 +268,11 @@ async def test_seed_review_does_not_touch_published_revision(real_pool):
     v = _variant()
     row, _ = await crud.ensure_job(v)
     await crud.seed_review(v, "d1", 10, 20)
-    assert await crud.publish(row["id"], 0, "pub", 10, 20) is True
+    assert await crud.publish(row["id"], 0, "d1", 10, 20) is True
     seeded = await crud.seed_review(v, "d2", 11, 21)
-    assert (seeded["state"], seeded["draft_sha256"], seeded["published_revision"], seeded["sha256"]) == ("review", "d2", 1, "pub")
+    assert (seeded["state"], seeded["draft_sha256"], seeded["published_revision"], seeded["sha256"]) == ("review", "d2", 1, "d1")
     assert (seeded["width"], seeded["height"]) == (10, 20)  # they describe the published image
-    assert await crud.publish(row["id"], 1, "pub2", 11, 21) is True
+    assert await crud.publish(row["id"], 1, "d2", 11, 21) is True
     await pool.execute(
         "update vehicle_visuals set state = 'generating', lease_expires_at = now() + interval '1 minute' where variant_key = $1", v)
     with pytest.raises(ValueError):
@@ -444,3 +446,51 @@ async def test_cli_crash_between_object_and_publish_is_swept(real_pool, operator
     assert first["sha256"] in keep and new_sha not in keep
     operator.sweep(60, keep, now=time.time() + 3600)
     assert not operator.has_object(new_sha) and operator.has_object(first["sha256"])
+
+
+async def test_publish_requires_the_reviewed_draft_sha(real_pool):
+    await _fresh()
+    v = _variant()
+    row, _ = await crud.ensure_job(v)
+    await crud.seed_review(v, "reviewed", 10, 20)
+    before = await crud.get_visual(v)
+    assert await crud.publish(row["id"], 0, "swapped", 10, 20) is False
+    assert await crud.get_visual(v) == before
+
+
+async def test_cli_reseed_between_read_and_publish_is_refused(real_pool, operator, tmp_path, monkeypatch, capsys):
+    await _fresh()
+    v = _variant()
+    assert await cli._seed(v, _art(tmp_path, "a.png", (200, 30, 30, 255)), False) == 0
+    old_sha = (await crud.get_visual(v))["draft_sha256"]
+    real_publish = crud.publish
+
+    async def reseed_then_publish(*a, **k):
+        assert await cli._seed(v, _art(tmp_path, "b.png", (30, 30, 200, 255)), False) == 0
+        return await real_publish(*a, **k)
+
+    monkeypatch.setattr(cli.crud, "publish", reseed_then_publish)
+    capsys.readouterr()
+    assert await cli._approve(v, 0) == 2
+    assert "refused: stale revision" in capsys.readouterr().out
+    row = await crud.get_visual(v)
+    assert row["state"] == "review" and row["published_revision"] == 0 and row["sha256"] is None
+    assert row["draft_sha256"] != old_sha
+
+
+async def test_cli_seed_approve_with_draft_changed_under_it(real_pool, operator, tmp_path, monkeypatch, capsys):
+    await _fresh()
+    v = _variant()
+    real_get = crud.get_visual
+
+    async def changed(variant):
+        row = await real_get(variant)
+        if row is not None and row["state"] == "review":
+            await pool.execute("update vehicle_visuals set draft_sha256 = 'changed' where id = $1", row["id"])
+            row = await real_get(variant)
+        return row
+
+    monkeypatch.setattr(cli.crud, "get_visual", changed)
+    assert await cli._seed(v, _art(tmp_path, "a.png", (200, 30, 30, 255)), True) == 2
+    assert "refused: draft changed" in capsys.readouterr().out
+    assert (await real_get(v))["published_revision"] == 0

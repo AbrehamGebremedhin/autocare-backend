@@ -238,9 +238,21 @@ def test_seed_refusals(env, capsys):
     assert not fake.calls
 
 
-def test_seed_job_running_deletes_draft(env, capsys):
+def test_seed_on_generating_row_never_touches_the_workers_draft(env, capsys):
     fake, store, tmp = env
     fake.add(state="generating", fencing_token=3)
+    worker_rel = store.write_draft(V, STYLE, 3, b"worker draft")
+    img = tmp / "a.png"
+    img.write_bytes(_png())
+    assert va.main(["seed", V, "--image", str(img)]) == 2
+    assert "refused: job running" in _clean(capsys, store)
+    assert store.read_draft(worker_rel) == b"worker draft"
+    assert not [c for c in fake.calls if c[0] == "seed_review"]
+
+
+def test_seed_claimed_after_precheck_deletes_only_its_own_draft(env, capsys):
+    fake, store, tmp = env
+    fake.add(state="failed", fencing_token=3)
     fake.seed_error = ValueError("live lease")
     img = tmp / "a.png"
     img.write_bytes(_png())
@@ -248,6 +260,72 @@ def test_seed_job_running_deletes_draft(env, capsys):
     assert "refused: job running" in _clean(capsys, store)
     with pytest.raises(FileNotFoundError):
         store.read_draft(store.draft_rel(V, STYLE, 3))
+
+
+def test_seed_approve_refuses_when_draft_changed(env, capsys):
+    fake, store, tmp = env
+    img = tmp / "a.png"
+    img.write_bytes(_png())
+    orig = fake.seed_review
+
+    async def seed_then_swap(*a):
+        row = await orig(*a)
+        row["draft_sha256"] = "1" * 64
+        return row
+
+    fake.seed_review = seed_then_swap
+    assert va.main(["seed", V, "--image", str(img), "--approve"]) == 2
+    assert "refused: draft changed" in _clean(capsys, store)
+    assert not [c for c in fake.calls if c[0] == "publish"]
+
+
+SECRET = "ab" * 32
+
+
+def _quiet(capsys, name):
+    captured = capsys.readouterr()
+    text = captured.out + captured.err
+    assert name in text and SECRET not in text and "secret" not in text
+
+
+def test_put_object_oserror_is_quiet_exit_3(env, capsys, monkeypatch):
+    fake, store, _ = env
+    webp, sha = _webp()
+    _draft(fake, store, webp, sha)
+
+    def boom(*a):
+        raise OSError(f"/secret/objects/.{SECRET}.webp.tmp")
+
+    monkeypatch.setattr(store, "put_object", boom)
+    assert va.main(["approve", V, "--revision", "0"]) == 3
+    _quiet(capsys, "OSError")
+    assert not [c for c in fake.calls if c[0] == "publish"]
+
+
+def test_write_draft_oserror_is_quiet_exit_3(env, capsys, monkeypatch):
+    fake, store, tmp = env
+    img = tmp / "a.png"
+    img.write_bytes(_png())
+
+    def boom(*a):
+        raise OSError(f"/secret/drafts/{SECRET}")
+
+    monkeypatch.setattr(store, "write_draft", boom)
+    assert va.main(["seed", V, "--image", str(img)]) == 3
+    _quiet(capsys, "OSError")
+
+
+def test_database_outage_mid_approve_is_exit_3(env, capsys, monkeypatch):
+    fake, store, _ = env
+    webp, sha = _webp()
+    _draft(fake, store, webp, sha)
+
+    async def down(*a):
+        raise RuntimeError(f"connection to secret-host failed {SECRET}")
+
+    monkeypatch.setattr(fake, "publish", down)
+    assert va.main(["approve", V, "--revision", "0"]) == 3
+    _quiet(capsys, "RuntimeError")
 
 
 def test_seed_approve_end_to_end(env, capsys):

@@ -133,7 +133,7 @@ begin
         height             = p_height,
         published_revision = published_revision + 1,
         updated_at         = now()
-    where id = p_id and published_revision = p_expected_revision and state = 'review';
+    where id = p_id and published_revision = p_expected_revision and state = 'review' and draft_sha256 = p_sha;
     return found;
 end;
 $$;

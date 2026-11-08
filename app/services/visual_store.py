@@ -4,10 +4,14 @@
   objects/{sha256}.webp                                published, immutable, checksum-addressed
 
 Callers hand in ids and hashes that may originate from a URL, so every path is built from validated parts and
-symlinks/junctions are refused along the way. Methods are synchronous file I/O; async callers use asyncio.to_thread.
+symlinks/junctions are refused at each component when checked. There is no O_NOFOLLOW, so a check-then-use race on
+link components remains; exploiting it needs write access to VISUALS_DIR. Methods are synchronous file I/O; async
+callers use asyncio.to_thread.
 """
 
+import collections
 import hashlib
+import logging
 import os
 import re
 import stat
@@ -17,6 +21,8 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.services.media_store import _component
+
+logger = logging.getLogger("visual_store")  # sync class, so the stdlib logger rather than the async wrapper
 
 _SHA = re.compile(r"[0-9a-f]{64}")
 _DRAFT = re.compile(r"drafts/([A-Za-z0-9_-]+)/([A-Za-z0-9_-]+)/(0|[1-9][0-9]*)\.webp")
@@ -46,15 +52,20 @@ class VisualStore:
 
     def _dir(self, *parts: str, create: bool = False) -> Path:
         """base/parts as a directory; raises ValueError if any existing component is a symlink or junction."""
-        current = self._base()
+        base = self._base()
+        if create:
+            base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        current = base
         for part in parts:
             current = current / part
             if _is_link(current):
                 raise ValueError("refusing to use a symlinked directory")
-        if create:
-            current.mkdir(mode=0o700, parents=True, exist_ok=True)
-            if _is_link(current) or not current.resolve().is_relative_to(self._base()):
-                raise ValueError("path escapes the visuals directory")
+            if create:  # one level at a time: mkdir(parents=True) gives intermediate dirs the default mode
+                current.mkdir(mode=0o700, exist_ok=True)
+                if _is_link(current):
+                    raise ValueError("refusing to use a symlinked directory")
+        if create and not current.resolve().is_relative_to(base):
+            raise ValueError("path escapes the visuals directory")
         return current
 
     @staticmethod
@@ -102,12 +113,17 @@ class VisualStore:
         return path.read_bytes()
 
     def delete_draft(self, rel: str) -> None:
-        """Remove one draft and prune emptied parents; refuses invalid paths and never raises."""
+        """Remove one draft and prune emptied parents.
+
+        Raises ValueError for an invalid `rel` (nothing touches disk); a missing file is not an error; an OSError
+        while removing is logged by class name and swallowed.
+        """
+        path = self._draft_file(rel)
         try:
-            path = self._draft_file(rel)
             if _is_regular(path):
                 os.unlink(path)
-        except (ValueError, OSError):
+        except OSError as exc:
+            logger.warning("draft delete failed: %s", type(exc).__name__)
             return
         for parent in (path.parent, path.parent.parent):
             try:
@@ -123,6 +139,10 @@ class VisualStore:
         if _is_link(dest):
             raise ValueError("destination is a symlink")
         if _is_regular(dest) and dest.stat().st_size == len(data):
+            try:
+                os.utime(dest)  # refresh mtime so sweep's grace period restarts for a re-upload
+            except OSError as exc:
+                logger.warning("object mtime refresh failed: %s", type(exc).__name__)
             return  # content-addressed and immutable: already stored
         self._atomic_write(folder, dest.name, data)
 
@@ -141,17 +161,19 @@ class VisualStore:
     def sweep(self, older_than_seconds: int, keep_shas: set[str], now: float | None = None) -> int:
         """Delete drafts and unreferenced objects older than the grace period; returns files removed, never raises."""
         cutoff = (time.time() if now is None else now) - older_than_seconds
-        removed = 0
+        removed, skipped = 0, collections.Counter()
         try:
-            removed += self._sweep_dir("drafts", cutoff, lambda name: True)
+            removed += self._sweep_dir("drafts", cutoff, lambda name: True, skipped)
             removed += self._sweep_dir(
-                "objects", cutoff, lambda name: name.endswith(".webp") and name[:-5] not in keep_shas
+                "objects", cutoff, lambda name: name.endswith(".webp") and name[:-5] not in keep_shas, skipped
             )
-        except Exception:  # best effort by contract
-            pass
+        except Exception as exc:  # best effort by contract
+            skipped[type(exc).__name__] += 1
+        if skipped:
+            logger.warning("visuals sweep skipped entries: %s (removed %d)", dict(skipped), removed)
         return removed
 
-    def _sweep_dir(self, top: str, cutoff: float, doomed) -> int:
+    def _sweep_dir(self, top: str, cutoff: float, doomed, skipped: collections.Counter) -> int:
         try:
             folder = self._dir(top)
         except ValueError:
@@ -167,8 +189,8 @@ class VisualStore:
                     if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff and doomed(name):
                         os.unlink(path)
                         removed += 1
-                except OSError:
-                    continue
+                except OSError as exc:
+                    skipped[type(exc).__name__] += 1
         for d in sorted(dirs, key=lambda p: len(p.parts), reverse=True):
             try:
                 os.rmdir(d)  # only succeeds when empty

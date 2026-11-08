@@ -101,10 +101,10 @@ def test_put_object_failure_leaves_no_file(store, root, monkeypatch):
 def test_private_modes(store, root):
     store.put_object(SHA, DATA)
     rel = store.write_draft("v1", "s1", 1, DATA)
-    assert stat.S_IMODE((root / "objects" / f"{SHA}.webp").stat().st_mode) == 0o600
-    assert stat.S_IMODE((root / "objects").stat().st_mode) == 0o700
-    assert stat.S_IMODE((root / rel).stat().st_mode) == 0o600
-    assert stat.S_IMODE((root / "drafts/v1").stat().st_mode) == 0o700
+    for d in [root, root / "objects", root / "drafts", root / "drafts/v1", root / "drafts/v1/s1"]:
+        assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
+    for f in [root / "objects" / f"{SHA}.webp", root / rel]:
+        assert stat.S_IMODE(f.stat().st_mode) == 0o600, f
 
 
 def test_default_root_comes_from_settings(tmp_path, monkeypatch):
@@ -214,7 +214,8 @@ def test_read_draft_and_delete_draft_refuse_bad_paths(store, root, tmp_path, rel
     before = _tree(root)
     with pytest.raises(ValueError):
         store.read_draft(rel)
-    store.delete_draft(rel)  # silently refuses
+    with pytest.raises(ValueError):
+        store.delete_draft(rel)
     assert _tree(root) == before
 
 
@@ -243,7 +244,8 @@ def test_symlinked_drafts_dir_is_refused(store, root, tmp_path):
         store.write_draft("v2", "s1", 1, DATA)
     with pytest.raises(ValueError):
         store.read_draft("drafts/v1/s1/1.webp")
-    store.delete_draft("drafts/v1/s1/1.webp")
+    with pytest.raises(ValueError):
+        store.delete_draft("drafts/v1/s1/1.webp")  # refused via link: nothing deleted
     assert (outside / "v1/s1/1.webp").read_bytes() == DATA
     assert _tree(outside) == ["v1", "v1/s1", "v1/s1/1.webp"]
 
@@ -328,3 +330,45 @@ def test_sweep_does_not_follow_links(store, root, tmp_path):
     _link_dir(root / "drafts/v1", outside)
     store.sweep(0, set())
     assert (outside / "keep.webp").exists()
+
+
+def test_reput_of_an_old_object_refreshes_its_grace_period(store, root):
+    store.put_object(SHA, DATA)
+    _age(root / "objects" / f"{SHA}.webp", 7200)
+    store.put_object(SHA, DATA)
+    assert store.sweep(3600, set()) == 0
+    assert store.has_object(SHA)
+
+
+def test_delete_draft_logs_and_swallows_oserror(store, monkeypatch, caplog):
+    rel = store.write_draft("v1", "s1", 1, DATA)
+
+    def boom(*a, **k):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr("app.services.visual_store.os.unlink", boom)
+    with caplog.at_level("WARNING", logger="visual_store"):
+        store.delete_draft(rel)
+    assert "PermissionError" in caplog.text and "v1" not in caplog.text
+
+
+def test_sweep_logs_one_summary_with_class_names(store, root, monkeypatch, caplog):
+    for n in (1, 2):
+        _age(root / store.write_draft("v1", "s1", n, DATA), 7200)
+
+    def boom(*a, **k):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr("app.services.visual_store.os.unlink", boom)
+    with caplog.at_level("WARNING", logger="visual_store"):
+        assert store.sweep(3600, set()) == 0
+    records = [r for r in caplog.records if r.name == "visual_store"]
+    assert len(records) == 1 and "PermissionError" in records[0].getMessage() and "2" in records[0].getMessage()
+    assert "v1" not in records[0].getMessage()
+
+
+def test_sweep_logs_nothing_when_clean(store, root, caplog):
+    _age(root / store.write_draft("v1", "s1", 1, DATA), 7200)
+    with caplog.at_level("WARNING", logger="visual_store"):
+        assert store.sweep(3600, set()) == 1
+    assert caplog.records == []

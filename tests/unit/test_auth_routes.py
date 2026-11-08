@@ -4,6 +4,7 @@ import jwt
 import pytest
 
 PUBLIC = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
+SIGNED_DOWNLOAD = "/api/v1/visuals/files/{name:path}"  # public on purpose: the url's HMAC is the credential
 TOKEN_KEYS = {"access_token", "refresh_token", "token_type", "expires_in", "user_id"}
 CLIENT_ID = "client-1.apps.googleusercontent.com"
 
@@ -11,7 +12,7 @@ CLIENT_ID = "client-1.apps.googleusercontent.com"
 def test_every_non_auth_route_requires_token(client):
     for route in client.app.routes:
         path = getattr(route, "path", "")
-        if path in PUBLIC or path.startswith("/api/v1/auth"):
+        if path in PUBLIC or path == SIGNED_DOWNLOAD or path.startswith("/api/v1/auth"):
             continue
         for method in route.methods - {"HEAD", "OPTIONS"}:
             r = client.request(method, path.replace("{", "").replace("}", ""))

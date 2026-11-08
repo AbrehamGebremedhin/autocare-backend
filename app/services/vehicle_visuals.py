@@ -30,6 +30,14 @@ class VariantMismatch(Exception):
     """The requested variant belongs to a different make/model than the car, or is not allowlisted."""
 
 
+class CarNotOwned(Exception):
+    """The car is not (or no longer) the user's; the route answers it like an inaccessible car."""
+
+
+class _Unavailable(Exception):
+    """An I/O call on the visuals tables, the store or signing failed; the caller degrades to a fallback."""
+
+
 class Throttled(Exception):
     def __init__(self, retry_after: int):
         super().__init__(f"throttled, retry after {retry_after}s")
@@ -49,17 +57,36 @@ def _pending(variant_key: str, ms: int = _PENDING_MS) -> VisualDescriptor:
     return VisualDescriptor(state="pending", variant_key=variant_key, style_version=crud.STYLE_VERSION, retry_after_ms=ms)
 
 
+async def _degraded(exc: Exception) -> _Unavailable:
+    await logger.warning(f"vehicle visuals unavailable: {type(exc).__name__}")
+    return _Unavailable()
+
+
+async def _io(awaitable):
+    """Await one visuals-table call. Pool outages and cancellation propagate; any other failure becomes _Unavailable."""
+    try:
+        return await awaitable
+    except DatabaseUnavailable:
+        raise
+    except Exception as exc:
+        raise await _degraded(exc) from None
+
+
 async def _from_row(variant_key: str, row: dict | None) -> VisualDescriptor:
     if row is None:
         return _pending(variant_key)
     sha = row["sha256"]
     if row["published_revision"] >= 1 and sha:
-        if VisualStore().has_object(sha):
-            url, expires = sign_url(sha)
-            if url:
-                return VisualDescriptor(
-                    state="ready", variant_key=variant_key, style_version=crud.STYLE_VERSION,
-                    artwork=Artwork(sha256=sha, download_url=url, expires_at=expires))
+        try:
+            present = VisualStore().has_object(sha)
+            url, expires = sign_url(sha) if present else ("", "")
+        except Exception as exc:
+            raise await _degraded(exc) from None
+        if url:
+            return VisualDescriptor(
+                state="ready", variant_key=variant_key, style_version=crud.STYLE_VERSION,
+                artwork=Artwork(sha256=sha, download_url=url, expires_at=expires))
+        if present:
             await logger.warning(f"visual {variant_key}: could not sign a download url")
         else:
             await logger.warning(f"visual {variant_key}: published artwork is missing from the store")
@@ -71,11 +98,6 @@ async def _from_row(variant_key: str, row: dict | None) -> VisualDescriptor:
     return _fallback("temporarily_unavailable")
 
 
-async def _unavailable(exc: Exception) -> VisualDescriptor:
-    await logger.warning(f"vehicle visuals unavailable: {type(exc).__name__}")
-    return _fallback("temporarily_unavailable")
-
-
 def _year(car: dict) -> int | None:
     try:
         return int(car.get("year"))
@@ -83,65 +105,80 @@ def _year(car: dict) -> int | None:
         return None
 
 
-async def _stored_choice(user_id: str, car: dict, cands: list[str]) -> str | None:
-    """The stored choice if the user still owns the car and it is still a candidate; otherwise cleared and None."""
-    car_id = str(car.get("id"))
-    owned = await crud.owned_car(user_id, car_id)  # outside any catch: a pool outage is the route's to handle
-    stored = await crud.get_choice(user_id, car_id)
-    if stored is None:
-        return None
-    if owned is None or stored not in cands:
-        await crud.clear_choice(user_id, car_id)
+async def _require_owner(user_id: str, car: dict) -> str:
+    """One ownership check per request, before anything that could sign a url or write. Pool outages propagate."""
+    car_id = str(car["id"])
+    if await crud.owned_car(user_id, car_id) is None:
+        raise CarNotOwned(car_id)
+    return car_id
+
+
+async def _stored_choice(user_id: str, car_id: str, cands: list[str]) -> str | None:
+    stored = await _io(crud.get_choice(user_id, car_id))
+    if stored is not None and stored not in cands:
+        await _io(crud.clear_choice(user_id, car_id))
         return None
     return stored
 
 
+def _non_selected(res: catalog.Resolution) -> VisualDescriptor:
+    return _fallback("choose_variant" if res.kind == "choose" else "unknown_variant", res.options)
+
+
 async def get_descriptor(user_id: str, car: dict) -> VisualDescriptor:
+    car_id = await _require_owner(user_id, car)
     make, model, year = car.get("make"), car.get("model"), _year(car)
     try:
-        res = catalog.resolve(make, model, year, await _stored_choice(user_id, car, catalog.candidates(make, model, year)))
+        res = catalog.resolve(make, model, year, await _stored_choice(user_id, car_id, catalog.candidates(make, model, year)))
         if res.kind != "selected":
-            return _fallback("choose_variant" if res.kind == "choose" else "unknown_variant", res.options)
-        return await _from_row(res.variant_key, await crud.get_visual(res.variant_key))
-    except DatabaseUnavailable:
-        raise
-    except Exception as exc:
-        return await _unavailable(exc)
+            return _non_selected(res)
+        return await _from_row(res.variant_key, await _io(crud.get_visual(res.variant_key)))
+    except _Unavailable:
+        return _fallback("temporarily_unavailable")
 
 
 async def _check_throttles(user_id: str) -> None:
+    """Record the attempt synchronously (no await between the read and the append), then check the global cap."""
     now = _now()
-    for uid in [u for u, hits in _prepare_hits.items() if not [h for h in hits if h > now - _WINDOW]]:
+    for uid in [u for u, hits in _prepare_hits.items() if all(h <= now - _WINDOW for h in hits)]:
         del _prepare_hits[uid]
-    hits = [h for h in _prepare_hits.get(user_id, []) if h > now - _WINDOW]
-    _prepare_hits[user_id] = hits
     s = get_settings()
-    if s.VISUAL_PREPARE_PER_HOUR > 0 and len(hits) >= s.VISUAL_PREPARE_PER_HOUR:
-        raise Throttled(math.ceil(hits[0] + _WINDOW - now))
-    if s.VISUAL_JOBS_PER_HOUR > 0 and await crud.jobs_created_last_hour() >= s.VISUAL_JOBS_PER_HOUR:
-        raise Throttled(_GLOBAL_RETRY_AFTER)
-    hits.append(now)
+    hits = None
+    if s.VISUAL_PREPARE_PER_HOUR > 0:
+        hits = _prepare_hits.setdefault(user_id, [])
+        hits[:] = [h for h in hits if h > now - _WINDOW]
+        if len(hits) >= s.VISUAL_PREPARE_PER_HOUR:
+            raise Throttled(math.ceil(min(hits) + _WINDOW - now))
+        hits.append(now)
+    try:
+        if s.VISUAL_JOBS_PER_HOUR > 0 and await _io(crud.jobs_created_last_hour()) >= s.VISUAL_JOBS_PER_HOUR:
+            raise Throttled(_GLOBAL_RETRY_AFTER)
+    except BaseException:
+        if hits is not None and now in hits:
+            hits.remove(now)  # this attempt created nothing
+        raise
 
 
 async def prepare(user_id: str, car: dict, variant_key: str | None) -> tuple[VisualDescriptor, bool]:
+    car_id = await _require_owner(user_id, car)
     make, model, year = car.get("make"), car.get("model"), _year(car)
     if variant_key is not None and not (catalog.is_allowed(variant_key) and catalog.variant_matches_car(variant_key, make, model)):
         raise VariantMismatch(variant_key)
     cands = catalog.candidates(make, model, year)
     try:
-        choice = variant_key if variant_key in cands else await _stored_choice(user_id, car, cands)
-        if variant_key is not None and choice == variant_key:
-            await crud.set_choice(user_id, str(car.get("id")), variant_key)
+        if variant_key in cands:
+            choice = variant_key
+            await _io(crud.set_choice(user_id, car_id, variant_key))
+        else:
+            choice = await _stored_choice(user_id, car_id, cands)
         res = catalog.resolve(make, model, year, choice)
         if res.kind != "selected":
-            return _fallback("choose_variant" if res.kind == "choose" else "unknown_variant", res.options), False
-        row = await crud.get_visual(res.variant_key)
+            return _non_selected(res), False
+        row = await _io(crud.get_visual(res.variant_key))
         created = False
         if row is None:
             await _check_throttles(user_id)
-            row, created = await crud.ensure_job(res.variant_key)
+            row, created = await _io(crud.ensure_job(res.variant_key))
         return await _from_row(res.variant_key, row), created
-    except (DatabaseUnavailable, Throttled):
-        raise
-    except Exception as exc:
-        return await _unavailable(exc), False
+    except _Unavailable:
+        return _fallback("temporarily_unavailable"), False

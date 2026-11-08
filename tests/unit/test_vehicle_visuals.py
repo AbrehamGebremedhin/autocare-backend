@@ -63,6 +63,7 @@ def world(monkeypatch):
         return w.rows[k], True
 
     async def jobs_created_last_hour():
+        await asyncio.sleep(0)  # a real query yields; this is where concurrent calls interleave
         return w.jobs_last_hour
 
     async def get_choice(u, c):
@@ -121,10 +122,13 @@ def test_missing_object_is_fallback_and_logs_without_sha_or_url(world, caplog):
     assert SHA not in caplog.text and "https://" not in caplog.text
 
 
-def test_unsignable_url_is_fallback(world, monkeypatch):
+def test_unsignable_url_is_fallback(world, monkeypatch, caplog):
     world.row(ECHO, "ready", 1, SHA)
     monkeypatch.setattr(vv, "sign_url", lambda sha: ("", ""))
-    assert run(vv.get_descriptor("u1", ECHO_CAR)).reason == "temporarily_unavailable"
+    with caplog.at_level(logging.INFO):
+        d = run(vv.get_descriptor("u1", ECHO_CAR))
+    assert d.reason == "temporarily_unavailable" and d.artwork is None
+    assert "could not sign" in caplog.text and "unavailable:" not in caplog.text
 
 
 @pytest.mark.parametrize("state,ms", [("queued", 5000), ("generating", 5000), ("review", 30000)])
@@ -141,9 +145,12 @@ def test_no_row_is_pending_and_get_creates_no_job(world):
     assert world.ensure_calls == 0 and ECHO not in world.rows
 
 
-def test_never_published_failed_is_fallback(world):
+def test_never_published_failed_is_fallback(world, caplog):
     world.row(ECHO, "failed")
-    assert run(vv.get_descriptor("u1", ECHO_CAR)).reason == "temporarily_unavailable"
+    with caplog.at_level(logging.INFO):
+        d = run(vv.get_descriptor("u1", ECHO_CAR))
+    assert d.reason == "temporarily_unavailable" and d.variant_key is None
+    assert "unavailable:" not in caplog.text and "missing from the store" not in caplog.text
 
 
 def test_choose_variant_carries_labels_only(world):
@@ -271,14 +278,150 @@ def test_global_cap(world):
     assert run(vv.prepare("u1", ECHO_CAR, None))[1] is True
 
 
-def test_stored_choice_cleared_when_not_owned(world):
-    world.choices[("u1", "car-2")] = COUPE
-    world.owned = False
-    d = run(vv.get_descriptor("u1", CIVIC_CAR))
-    assert d.reason == "choose_variant" and ("u1", "car-2") not in world.choices
-
-
 def test_stored_choice_cleared_when_no_longer_candidate(world):
     world.choices[("u1", "car-2")] = FUTURE
     d = run(vv.get_descriptor("u1", CIVIC_CAR))
     assert d.reason == "choose_variant" and ("u1", "car-2") not in world.choices
+
+
+def test_programming_error_in_pure_logic_propagates(world, monkeypatch):
+    world.row(ECHO, "queued")
+
+    def typo(*a, **k):
+        raise AttributeError("typo")
+
+    monkeypatch.setattr(catalog, "resolve", typo)
+    with pytest.raises(AttributeError):
+        run(vv.get_descriptor("u1", ECHO_CAR))
+    with pytest.raises(AttributeError):
+        run(vv.prepare("u1", ECHO_CAR, None))
+
+
+def test_programming_error_in_descriptor_construction_propagates(world, monkeypatch):
+    world.row(ECHO, "queued")
+    monkeypatch.setattr(vv, "_pending", lambda *a, **k: {}["boom"])
+    with pytest.raises(KeyError):
+        run(vv.get_descriptor("u1", ECHO_CAR))
+
+
+def test_store_and_sign_failures_degrade(world, monkeypatch, caplog):
+    world.row(ECHO, "ready", 1, SHA)
+
+    def bad(sha):
+        raise OSError("disk")
+
+    monkeypatch.setattr(vv, "sign_url", bad)
+    with caplog.at_level(logging.INFO):
+        d = run(vv.get_descriptor("u1", ECHO_CAR))
+    assert d.reason == "temporarily_unavailable" and "unavailable: OSError" in caplog.text
+
+
+def _spy_writes(world, monkeypatch):
+    calls = []
+    monkeypatch.setattr(vv, "sign_url", lambda sha: calls.append("sign") or ("https://x/y", "t"))
+    orig_set = crud.set_choice
+
+    async def set_choice(*a):
+        calls.append("set_choice")
+        await orig_set(*a)
+
+    monkeypatch.setattr(crud, "set_choice", set_choice)
+    return calls
+
+
+def test_get_for_unowned_car_raises_and_signs_nothing(world, monkeypatch):
+    world.row(ECHO, "ready", 1, SHA)
+    world.owned = False
+    calls = _spy_writes(world, monkeypatch)
+    with pytest.raises(vv.CarNotOwned):
+        run(vv.get_descriptor("u1", ECHO_CAR))
+    assert calls == []
+
+
+@pytest.mark.parametrize("key", [None, ECHO])
+def test_prepare_for_unowned_car_raises_before_any_write(world, monkeypatch, key):
+    world.row(ECHO, "ready", 1, SHA)
+    world.owned = False
+    calls = _spy_writes(world, monkeypatch)
+    with pytest.raises(vv.CarNotOwned):
+        run(vv.prepare("u1", ECHO_CAR, key))
+    with pytest.raises(vv.CarNotOwned):
+        run(vv.prepare("u1", CIVIC_CAR, COUPE))
+    assert calls == [] and world.ensure_calls == 0 and world.choices == {}
+
+
+def test_owner_check_runs_once_per_request_even_with_a_variant_key(world, monkeypatch):
+    seen = []
+    orig = crud.owned_car
+
+    async def counting(u, c):
+        seen.append(c)
+        return await orig(u, c)
+
+    monkeypatch.setattr(crud, "owned_car", counting)
+    run(vv.prepare("u1", CIVIC_CAR, COUPE))
+    run(vv.get_descriptor("u1", CIVIC_CAR))
+    assert seen == ["car-2", "car-2"]
+
+
+def test_owner_pool_outage_propagates(world, monkeypatch):
+    from app.db.pool import DatabaseUnavailable
+
+    async def down(u, c):
+        raise DatabaseUnavailable("down")
+
+    monkeypatch.setattr(crud, "owned_car", down)
+    with pytest.raises(DatabaseUnavailable):
+        run(vv.get_descriptor("u1", ECHO_CAR))
+    with pytest.raises(DatabaseUnavailable):
+        run(vv.prepare("u1", ECHO_CAR, ECHO))
+
+
+def test_concurrent_throttle_checks_admit_exactly_the_limit(world):
+    world.settings.VISUAL_PREPARE_PER_HOUR = 1
+
+    async def many():
+        return await asyncio.gather(*[vv._check_throttles("u1") for _ in range(10)], return_exceptions=True)
+
+    out = run(many())
+    throttled = [r for r in out if isinstance(r, vv.Throttled)]
+    assert sum(r is None for r in out) == 1 and len(throttled) == 9
+    assert all(t.retry_after >= 1 for t in throttled)
+
+
+def test_attempt_rolled_back_when_global_cap_throws(world):
+    world.settings.VISUAL_PREPARE_PER_HOUR = 1
+    world.settings.VISUAL_JOBS_PER_HOUR = 5
+    world.jobs_last_hour = 5
+    with pytest.raises(vv.Throttled) as exc:
+        run(vv._check_throttles("u1"))
+    assert exc.value.retry_after == 300 and vv._prepare_hits.get("u1", []) == []
+    world.jobs_last_hour = 0
+    run(vv._check_throttles("u1"))  # the user's one slot was not consumed
+
+
+def test_attempt_rolled_back_when_global_count_fails(world, monkeypatch):
+    world.settings.VISUAL_PREPARE_PER_HOUR = 1
+
+    async def broken():
+        raise OSError("db")
+
+    monkeypatch.setattr(crud, "jobs_created_last_hour", broken)
+    with pytest.raises(vv._Unavailable):
+        run(vv._check_throttles("u1"))
+    assert vv._prepare_hits.get("u1", []) == []
+
+
+def test_stale_entries_of_other_users_are_pruned(world):
+    for n in range(5):
+        run(vv._check_throttles(f"old{n}"))
+    assert len(vv._prepare_hits) == 5
+    world.now += 3601
+    run(vv._check_throttles("fresh"))
+    assert list(vv._prepare_hits) == ["fresh"]
+
+
+def test_zero_user_limit_records_nothing(world):
+    world.settings.VISUAL_PREPARE_PER_HOUR = 0
+    run(vv._check_throttles("u1"))
+    assert "u1" not in vv._prepare_hits

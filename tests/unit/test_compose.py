@@ -32,7 +32,7 @@ def _mounts(service: dict) -> dict:
 
 
 def test_services(compose):
-    assert set(compose["services"]) == {"db", "api"}
+    assert set(compose["services"]) == {"db", "api", "visuals-worker"}
 
 
 def test_db_is_not_published_and_restarts(compose):
@@ -77,6 +77,18 @@ def test_visuals_schema_mounted_after_the_main_schema(compose):
 def test_visuals_volume_is_declared_and_mounted_on_api(compose):
     assert "visuals" in compose["volumes"]
     assert _mounts(compose["services"]["api"])["/data/visuals"][0] == "visuals"
+
+
+def test_visuals_worker_service(compose):
+    worker = compose["services"]["visuals-worker"]
+    assert worker["build"] == "." and worker["env_file"] == ".env"
+    assert worker["command"][-3:] == ["python", "-m", "app.workers.vehicle_visuals"]
+    assert worker["command"][:2] == ["uv", "run"]  # bare python is not the venv's
+    assert worker["depends_on"]["db"]["condition"] == "service_healthy"
+    assert worker["restart"] == "unless-stopped"
+    assert "ports" not in worker
+    assert _mounts(worker)["/data/visuals"][0] == "visuals"
+    assert _env(worker)["DATABASE_URL"] == _env(compose["services"]["api"])["DATABASE_URL"]
 
 
 def test_api_waits_for_healthy_db(compose):
@@ -145,6 +157,12 @@ def test_dockerfile_creates_media_dir_before_dropping_root():
     lines = _dockerfile()
     media = _index(lines, r"^RUN mkdir -p /data/media && chown autocare:autocare /data/media$")
     assert media < _index(lines, r"^USER autocare$")
+
+
+def test_dockerfile_creates_visuals_dir_owned_by_the_app_user():
+    lines = _dockerfile()
+    visuals = _index(lines, r"^RUN mkdir -p /data/visuals && chown autocare:autocare /data/visuals$")
+    assert visuals < _index(lines, r"^USER autocare$")
 
 
 def test_dockerfile_bake_step_placeholders():

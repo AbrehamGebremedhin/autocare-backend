@@ -297,3 +297,61 @@ async def test_finalize_accepts_float_seconds(real_pool):
     assert await crud.finalize_job(job["id"], job["fencing_token"], "queued", None, "x", 90.5) is True
     assert await pool.fetchval(
         "select next_attempt_at > now() + interval '85 seconds' from vehicle_visuals where variant_key = $1", v)
+
+
+# --- the worker over the real functions ----------------------------------------------------------------
+
+import io  # noqa: E402
+
+from PIL import Image, ImageDraw  # noqa: E402
+
+from app.services.visual_generators import CuratedGenerator  # noqa: E402
+from app.services.visual_store import VisualStore  # noqa: E402
+from app.workers import vehicle_visuals as worker  # noqa: E402
+
+
+def _artwork_png(path: Path) -> None:
+    img = Image.new("RGBA", (600, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(img).rectangle((20, 20, 580, 180), fill=(200, 30, 30, 255))
+    img.save(path, "PNG")
+
+
+async def test_worker_end_to_end_reaches_review(real_pool, tmp_path):
+    await _fresh()
+    v = _variant()
+    await crud.ensure_job(v)
+    (tmp_path / "curated").mkdir()
+    _artwork_png(tmp_path / "curated" / f"{v}.png")
+    store = VisualStore(tmp_path / "visuals")
+    assert await worker.run_once(CuratedGenerator(str(tmp_path / "curated")), store) is True
+    row = await crud.get_visual(v)
+    assert row["state"] == "review" and row["draft_sha256"] and row["lease_expires_at"] is None
+    assert (store._base() / "drafts" / v / crud.STYLE_VERSION / f"{row['fencing_token']}.webp").is_file()
+    assert await worker.run_once(CuratedGenerator(str(tmp_path / "curated")), store) is False
+
+
+async def test_worker_reclaims_after_crash(real_pool, tmp_path):
+    await _fresh()
+    v = _variant()
+    await crud.ensure_job(v)
+    crashed = await crud.claim_job(60)  # a worker that dies here never finalizes
+    await pool.execute("update vehicle_visuals set lease_expires_at = now() - interval '1 minute' where variant_key = $1", v)
+    (tmp_path / "curated").mkdir()
+    _artwork_png(tmp_path / "curated" / f"{v}.png")
+    assert await worker.run_once(CuratedGenerator(str(tmp_path / "curated")), VisualStore(tmp_path / "visuals")) is True
+    row = await crud.get_visual(v)
+    assert row["state"] == "review" and row["fencing_token"] > crashed["fencing_token"]
+    assert row["attempt_count"] == 2
+
+
+async def test_stale_worker_cannot_finalize_after_reclaim(real_pool):
+    await _fresh()
+    v = _variant()
+    await crud.ensure_job(v)
+    first = await crud.claim_job(60)
+    await pool.execute("update vehicle_visuals set lease_expires_at = now() - interval '1 minute' where variant_key = $1", v)
+    second = await crud.claim_job(60)
+    assert second["fencing_token"] > first["fencing_token"]
+    assert await crud.finalize_job(first["id"], first["fencing_token"], "review", "stale", None, None) is False
+    assert (await crud.get_visual(v))["state"] == "generating"
+    assert await crud.finalize_job(second["id"], second["fencing_token"], "review", "ok", None, None) is True

@@ -136,7 +136,7 @@ async def test_reject_and_requeue_report_changed_rows(fake_pool):
     reject_sql, requeue_sql = fake_pool.calls[0][1], fake_pool.calls[1][1]
     assert "state = 'review'" in reject_sql and "'rejected'" in reject_sql
     assert "published_revision > 0 then 'ready'" in " ".join(reject_sql.split())
-    assert "state in ('failed', 'review')" in requeue_sql
+    assert "state in ('failed', 'review', 'ready')" in requeue_sql
 
 
 async def test_provider_ledger(fake_pool):

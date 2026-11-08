@@ -206,7 +206,7 @@ async def test_owned_car_is_none_for_other_user(real_pool):
         await pool.execute('delete from "Car" where id = any($1)', [car, f"{car}-z"])
 
 
-async def test_requeue_only_from_failed_or_review(real_pool):
+async def test_requeue_from_failed_review_or_ready(real_pool):
     await _fresh()
     v = _variant()
     await crud.ensure_job(v)
@@ -218,8 +218,11 @@ async def test_requeue_only_from_failed_or_review(real_pool):
     assert (row["state"], row["attempt_count"], row["last_error_code"]) == ("queued", 0, None)
     await pool.execute("update vehicle_visuals set state = 'review' where variant_key = $1", v)
     assert await crud.requeue(v) is True
-    await pool.execute("update vehicle_visuals set state = 'ready' where variant_key = $1", v)
-    assert await crud.requeue(v) is False
+    await pool.execute(
+        "update vehicle_visuals set state = 'ready', published_revision = 2, sha256 = $2 where variant_key = $1", v, "b" * 64)
+    assert await crud.requeue(v) is True  # regenerate a published image
+    row = await crud.get_visual(v)
+    assert (row["state"], row["published_revision"], row["sha256"]) == ("queued", 2, "b" * 64)  # still published meanwhile
     await pool.execute("update vehicle_visuals set state = 'generating' where variant_key = $1", v)
     assert await crud.requeue(v) is False
 

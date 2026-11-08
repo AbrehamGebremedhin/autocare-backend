@@ -106,7 +106,7 @@ async def requeue(variant_key: str) -> bool:
     row = await pool.fetchrow(
         "update vehicle_visuals set state = 'queued', attempt_count = 0, next_attempt_at = now(),"
         " lease_expires_at = null, last_error_code = null, updated_at = now()"
-        " where variant_key = $1 and style_version = $2 and state in ('failed', 'review') returning id",
+        " where variant_key = $1 and style_version = $2 and state in ('failed', 'review', 'ready') returning id",
         variant_key, STYLE_VERSION)
     return row is not None
 

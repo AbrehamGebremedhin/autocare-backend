@@ -148,7 +148,7 @@ Output is one short line per result (`seed --approve` prints two: `seeded ...` t
 | `list-review` | One line per row in `review`: `variant revision=N state=review attempts=N`. Exit 0. |
 | `approve VARIANT --revision N` | Publishes the draft of a row in `review`, if `N` is its current `published_revision`. Prints `approved VARIANT revision=N+1`. |
 | `reject VARIANT` | Discards the draft of a row in `review` and deletes the draft file. A row that was published before returns to `ready` and keeps serving its old artwork; a never-published row becomes `failed` (`rejected`). |
-| `requeue VARIANT` | Resets a `failed` or `review` row to `queued` with zero attempts so the worker tries again. |
+| `requeue VARIANT` | Resets a `failed`, `review` or `ready` row to `queued` with zero attempts so the worker generates again. A published image keeps being served until its replacement is approved (or auto-approved). |
 | `seed VARIANT --image PATH [--approve]` | Puts a curated image into `review` for an allowlisted variant (see above). |
 
 Exit codes: 0 success, 1 usage error / not found / nothing changed, 2 refused, 3 internal error (the output is
@@ -159,7 +159,7 @@ Exit codes: 0 success, 1 usage error / not found / nothing changed, 2 refused, 3
 | `not found` | 1 | approve or seed found no row for that variant. |
 | `unknown variant` | 1 | seed: the key is not in the catalog allowlist. |
 | `unreadable image: need a regular file of at most 20 MB` | 1 | seed: the path is missing, not a regular file (a symlink is refused), or too large. |
-| `nothing to reject` / `nothing to requeue` | 1 | The row is not in a state the command applies to (reject needs `review`; requeue needs `failed` or `review`). |
+| `nothing to reject` / `nothing to requeue` | 1 | The row is not in a state the command applies to (reject needs `review`; requeue needs `failed`, `review` or `ready`). |
 | `refused: not in review` | 2 | approve: the row is not in `review`. |
 | `refused: stale revision` | 2 | approve: `--revision` is not the row's current revision, or the row changed between the check and the publish. Run `list-review` again. |
 | `refused: draft missing` | 2 | approve: the draft file is not on disk (swept, or never written). Reject or requeue, or seed again. |
@@ -228,7 +228,7 @@ per client address.
 - (c) Approve is fenced on the reviewed draft (R12): `publish_visual_revision` requires `draft_sha256 = p_sha` and
   `published_revision = N`, so a re-seed between review and approve makes approve refuse (`stale revision`).
 - (d) Seed refuses every `generating` row (`refused: job running`), even one whose worker died. `requeue` only applies to
-  `failed` or `review` rows, so an orphaned `generating` row cannot be requeued by hand: keep the worker running; it
+  `failed`, `review` or `ready` rows, so an orphaned `generating` row cannot be requeued by hand: keep the worker running; it
   reclaims the row once the lease (300 s) has expired, after which the row is `review`, `queued` or `failed` and can be
   seeded.
 - (e) A review draft lives at `drafts/{variant}/workshop-v1/{fencing_token}.webp`, and the sweep (at startup, then at

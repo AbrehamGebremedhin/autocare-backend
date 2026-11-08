@@ -10,12 +10,13 @@ services:
       - pgdata:/var/lib/postgresql/data
       # Runs only when pgdata is empty (first start); later schema changes are applied by hand with psql.
       - ./app/db/sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./app/db/sql/vehicle_visuals.sql:/docker-entrypoint-initdb.d/02-vehicle_visuals.sql:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "autocare", "-d", "autocare"]
       interval: 10s
       timeout: 5s
       retries: 5
-    # No published ports: only the api service reaches Postgres, over the compose network.
+    # No published ports: only the api and visuals-worker services reach Postgres, over the compose network.
     restart: unless-stopped
 
   api:
@@ -30,6 +31,7 @@ services:
         condition: service_healthy
     volumes:
       - media:/data/media
+      - visuals:/data/visuals
     # Caddy on the host terminates TLS and proxies to this port. To expose the API directly (plain HTTP),
     # change the mapping to "8000:8000".
     ports:
@@ -42,6 +44,24 @@ services:
       retries: 5
       start_period: 90s
 
+  # Generates vehicle artwork drafts (state review) from the same image; an operator approves them later.
+  visuals-worker:
+    build: .
+    # Through uv like the api's CMD: the dependencies live in /app/.venv, which bare `python` does not use.
+    command: ["uv", "run", "--no-sync", "python", "-m", "app.workers.vehicle_visuals"]
+    env_file: .env
+    # An in-flight provider job can run up to 120 s; the default 10 s grace would SIGKILL it.
+    stop_grace_period: 130s
+    environment:
+      DATABASE_URL: postgresql://autocare:${POSTGRES_PASSWORD}@db:5432/autocare
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - visuals:/data/visuals
+    restart: unless-stopped
+
 volumes:
   pgdata:
   media:
+  visuals:

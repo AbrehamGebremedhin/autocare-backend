@@ -18,6 +18,7 @@ RUN useradd --create-home --uid 10001 autocare \
 
 # A fresh named volume mounted here copies this owner, so the non-root app can write uploads.
 RUN mkdir -p /data/media && chown autocare:autocare /data/media
+RUN mkdir -p /data/visuals && chown autocare:autocare /data/visuals
 
 WORKDIR /app
 USER autocare

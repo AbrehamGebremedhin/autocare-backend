@@ -1,0 +1,21 @@
+{
+  "catalog_version": "2026-11-08.1",
+  "variants": [
+    {
+      "key": "toyota-echo-2001-sedan",
+      "label": "Toyota Echo sedan (2000-2005)",
+      "make": "toyota",
+      "models": ["echo", "yaris sedan"],
+      "years": [2000, 2005],
+      "ambiguous": false
+    },
+    {
+      "key": "honda-civic-2008-sedan",
+      "label": "Honda Civic sedan (2006-2011)",
+      "make": "honda",
+      "models": ["civic"],
+      "years": [2006, 2011],
+      "ambiguous": false
+    }
+  ]
+}

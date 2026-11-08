@@ -2,7 +2,7 @@
 
 FastAPI backend for an AI car-diagnosis assistant. A user signs up, adds a car, opens a diagnosis session and chats about a problem with text, photos, audio or video. Each turn streams back as Server-Sent Events. Answers are grounded in a Postgres full-text knowledge base (car manuals and books) and use DeepSeek as the LLM (at most 2 LLM calls per turn: one streamed reply, one state update). Audio is transcribed with faster-whisper and engine sounds are tagged with CLAP.
 
-It runs as two containers from `docker-compose.yml`: `db` (Postgres 16, not published to the host) and `api` (this app, published on `127.0.0.1:8000` only, for a reverse proxy on the same host). Uploaded media lives on a Docker volume.
+It runs as three containers from `docker-compose.yml`: `db` (Postgres 16, not published to the host), `api` (this app, published on `127.0.0.1:8000` only, for a reverse proxy on the same host) and `visuals-worker` (vehicle artwork jobs, same image, no published port). Uploaded media lives on a Docker volume.
 
 ## Configuration
 
@@ -10,7 +10,9 @@ Settings come from `.env` (`.env.example` lists every name with its default; `ap
 
 Required: `JWT_SECRET_KEY` (32+ chars), `POSTGRES_PASSWORD`, `DATABASE_URL`, `DEEPSEEK_API_KEY`.
 
-Optional: `REGISTRATION_CODE`, `ENABLE_DOCS`, `DAILY_MESSAGE_LIMIT`, `MAX_CONCURRENT_MEDIA_TURNS`, `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`, `MEDIA_USER_QUOTA_MB`.
+Optional: `REGISTRATION_CODE`, `ENABLE_DOCS`, `DAILY_MESSAGE_LIMIT`, `MAX_CONCURRENT_MEDIA_TURNS`, `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`, `MEDIA_USER_QUOTA_MB`, `VISUALS_DIR`, `PUBLIC_BASE_URL`, `VISUAL_URL_TTL_SECONDS`, `VISUAL_PREPARE_PER_HOUR`, `VISUAL_JOBS_PER_HOUR`, `VISUAL_POLL_SECONDS`, `VISUAL_PROVIDER_ENABLED`, `VISUAL_PROVIDER_DAILY_BUDGET`, `VISUAL_CURATED_DIR`.
+
+Vehicle artwork (the `visuals-worker` service, signed download URLs, the operator CLI and the deploy steps, including the migration `app/db/sql/vehicle_visuals.sql`) is documented in [docs/VEHICLE_VISUALS.md](docs/VEHICLE_VISUALS.md).
 
 - `POSTGRES_PASSWORD` is also pasted into the api's `DATABASE_URL`, so it must be URL-safe (letters, digits, `-_.~`). Generate it with `openssl rand -hex 24`.
 - Inside compose, the api's `DATABASE_URL` is set by `docker-compose.yml` (host `db`) and overrides `.env`. The `.env` value is only for running the app or scripts outside compose, e.g. `postgresql://autocare:<password>@localhost:5432/autocare`.
@@ -123,12 +125,13 @@ Accounts have no delete route. Deleting one by hand (`delete from users where id
 
 ## API
 
-Interactive reference: `http://localhost:8000/docs`, served only when `ENABLE_DOCS=true` (off by default: `/docs`, `/redoc` and `/openapi.json` answer `404`). When on, they are public. Every route except `/api/v1/auth/register|login|google|refresh`, `/health` and the docs needs `Authorization: Bearer <access_token>`; the user id always comes from the token.
+Interactive reference: `http://localhost:8000/docs`, served only when `ENABLE_DOCS=true` (off by default: `/docs`, `/redoc` and `/openapi.json` answer `404`). When on, they are public. Every route except `/api/v1/auth/register|login|google|refresh`, `/health`, the docs and `GET /api/v1/visuals/files/{sha256}.webp` (public on purpose: its HMAC-signed `exp`/`sig` URL is the credential) needs `Authorization: Bearer <access_token>`; the user id always comes from the token.
 
 | Area | Routes |
 | --- | --- |
 | Auth | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/google`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout` |
 | Cars | `GET /api/v1/cars`, `POST /api/v1/cars` (`{"make", "model", "year"}`), `DELETE /api/v1/cars/{car_id}` |
+| Vehicle visuals | `GET /api/v1/cars/{car_id}/visual`, `POST /api/v1/cars/{car_id}/visual/prepare` (`{}` or `{"variant_key"}`), `GET /api/v1/visuals/files/{sha256}.webp?exp&sig` (no token; see [docs/VEHICLE_VISUALS.md](docs/VEHICLE_VISUALS.md)) |
 | Sessions | `POST /api/v1/sessions` (`{"car_id"}`), `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
 | Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE) |
 

@@ -22,10 +22,12 @@ from app.utils.body_limit import BodySizeLimitMiddleware
 from app.utils.correlation import CorrelationIdMiddleware
 from app.utils.exceptions import ErrorCode, ServiceUnavailableException, error_body, http_error_body
 from app.utils.limiter import limiter
+from app.utils.log_redaction import install_redaction
 from app.utils.security_middleware import SecurityHeadersMiddleware
 
 settings = get_settings()
 logger = logging.getLogger("autocare")
+install_redaction()  # uvicorn's access log prints the query string; signed artwork urls must not reach it
 
 
 def media_dir_writable(path: str) -> bool:

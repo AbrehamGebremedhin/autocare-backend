@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
     GOOGLE_CLIENT_IDS: str = ""
 
+    # Vehicle visuals: stored artwork, the public https origin used in signed download urls, and worker limits.
+    VISUALS_DIR: str = "/data/visuals"
+    PUBLIC_BASE_URL: str = ""  # e.g. https://api.example.com; empty or non-https means no signed urls are issued
+    VISUAL_URL_TTL_SECONDS: int = 900
+    VISUAL_PREPARE_PER_HOUR: int = 20
+    VISUAL_JOBS_PER_HOUR: int = 60
+    VISUAL_POLL_SECONDS: int = 10
+    VISUAL_PROVIDER_ENABLED: bool = False
+    VISUAL_PROVIDER_DAILY_BUDGET: int = 20
+    VISUAL_CURATED_DIR: str = "/data/visuals/curated"
+
     def get_allowed_origins(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
 

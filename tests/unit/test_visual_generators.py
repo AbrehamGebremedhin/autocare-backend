@@ -1,5 +1,7 @@
 """Generators: the curated file source, the (unconfigured) provider, and build_generator. No network."""
 
+import io
+
 import pytest
 
 from app.services import visual_generators as vg
@@ -139,8 +141,12 @@ async def test_provider_prompt_is_the_catalog_label_only(monkeypatch):
         prompts.append(prompt)
         return b"img"
 
+    async def restyle(self, car):
+        return b"styled:" + car
+
     monkeypatch.setattr(vg.ProviderGenerator, "_call", call)
-    assert await vg.ProviderGenerator().generate("toyota-echo", "workshop-v1") == b"img"
+    monkeypatch.setattr(vg.ProviderGenerator, "_restyle", restyle)
+    assert await vg.ProviderGenerator().generate("toyota-echo", "workshop-v1") == b"styled:img"
     assert prompts == [vg.PROMPT_TEMPLATE.format(label="Toyota Echo 2001")]
 
 
@@ -175,4 +181,103 @@ def test_build_generator_provider_only_when_enabled(monkeypatch):
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "VISUAL_PROVIDER_ENABLED", True)
-    assert isinstance(vg.build_generator(), vg.ProviderGenerator)
+    assert isinstance(vg.build_generator(), vg.CuratedThenProvider)
+
+
+def _two_step_transport(seen, restyle_status=200):
+    import httpx
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("flux-1-schnell"):
+            seen.append(("step1", request.read()))
+            return httpx.Response(200, json={"result": {"image": "Y2Fy"}})  # b"car"
+        seen.append(("step2", request.read(), request.headers["content-type"]))
+        if restyle_status != 200:
+            return httpx.Response(restyle_status)
+        return httpx.Response(200, json={"result": {"image": "c3R5bGVk"}})  # b"styled"
+
+    return httpx.MockTransport(handler)
+
+
+async def test_generate_draws_the_car_then_restyles_that_exact_car(monkeypatch):
+    _configured(monkeypatch)
+    monkeypatch.setattr(vg, "label", lambda key: "2007 Toyota Corolla Sedan")
+    seen = []
+    out = await vg.ProviderGenerator(_two_step_transport(seen)).generate("auto-toyota-corolla-2007-sedan", "workshop-v1")
+    assert out == b"styled"
+    (_, step1), (_, step2, content_type) = seen
+    assert b"2007 Toyota Corolla Sedan" in step1
+    assert content_type.startswith("multipart/form-data")
+    assert b'name="input_image_0"' in step2 and b"car" in step2  # image 1: the car step 1 drew
+    assert b'name="input_image_1"' in step2 and b"\x89PNG" in step2  # image 2: the style reference
+    assert step2.index(b'name="input_image_0"') < step2.index(b'name="input_image_1"')
+    assert vg.RESTYLE_PROMPT.encode() in step2 and b'name="width"' in step2
+
+
+async def test_a_failed_restyle_is_an_error_not_an_unstyled_image(monkeypatch):
+    _configured(monkeypatch)
+    monkeypatch.setattr(vg, "label", lambda key: "x")
+    with pytest.raises(vg.GeneratorError) as err:
+        await vg.ProviderGenerator(_two_step_transport([], restyle_status=500)).generate("k", "s")
+    assert err.value.code == "provider_http_500"
+
+
+async def test_a_missing_style_reference_is_a_stable_code(monkeypatch, tmp_path):
+    _configured(monkeypatch)
+    monkeypatch.setattr(vg, "label", lambda key: "x")
+    monkeypatch.setattr(vg, "STYLE_REFERENCE", tmp_path / "nope.webp")
+    vg._style_reference_png.cache_clear()
+    try:
+        with pytest.raises(vg.GeneratorError) as err:
+            await vg.ProviderGenerator(_two_step_transport([])).generate("k", "s")
+        assert err.value.code == "style_reference_missing"
+    finally:
+        vg._style_reference_png.cache_clear()
+
+
+def test_the_shipped_style_reference_loads_as_an_opaque_png():
+    from PIL import Image
+
+    vg._style_reference_png.cache_clear()
+    png = vg._style_reference_png()
+    im = Image.open(io.BytesIO(png))
+    assert im.format == "PNG" and im.mode == "RGB" and im.size == (1024, 420)
+
+
+class _Fake:
+    def __init__(self, result=b"", error=None):
+        self.result, self.error, self.calls = result, error, []
+
+    async def generate(self, variant_key, style_version):
+        self.calls.append(variant_key)
+        if self.error:
+            raise self.error
+        return self.result
+
+
+def _chain(tmp_path, provider):
+    return vg.CuratedThenProvider(vg.CuratedGenerator(str(tmp_path)), provider)
+
+
+async def test_a_curated_image_wins_and_the_provider_is_not_called(tmp_path):
+    (tmp_path / "toyota-echo-2001-sedan.webp").write_bytes(b"reviewed")
+    provider = _Fake(b"generated")
+    chain = _chain(tmp_path, provider)
+    assert chain.charged_for("toyota-echo-2001-sedan") is False
+    assert await chain.generate("toyota-echo-2001-sedan", "s") == b"reviewed"
+    assert provider.calls == []
+
+
+async def test_a_variant_without_a_curated_image_is_generated(tmp_path):
+    provider = _Fake(b"generated")
+    chain = _chain(tmp_path, provider)
+    assert chain.charged_for("auto-toyota-corolla-2007-sedan") is True
+    assert await chain.generate("auto-toyota-corolla-2007-sedan", "s") == b"generated"
+
+
+async def test_a_broken_curated_image_is_an_error_not_a_silent_generation(tmp_path):
+    (tmp_path / "toyota-echo-2001-sedan.webp").write_bytes(b"x" * (vg.MAX_SOURCE_BYTES + 1))
+    provider = _Fake(b"generated")
+    with pytest.raises(vg.GeneratorError) as err:
+        await _chain(tmp_path, provider).generate("toyota-echo-2001-sedan", "s")
+    assert err.value.code == "too_large" and provider.calls == []

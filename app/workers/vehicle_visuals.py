@@ -85,7 +85,8 @@ async def _process(job: dict, gen: Generator, store: VisualStore, jitter: Callab
     if job["attempt_count"] > MAX_ATTEMPTS:  # the SQL claim has no attempt cap
         await _finalize(job, "failed", None, "max_attempts", None)
         return
-    if gen.charged:
+    charged = gen.charged_for(variant) if hasattr(gen, "charged_for") else gen.charged
+    if charged:
         if await crud.provider_calls_last_day() >= get_settings().VISUAL_PROVIDER_DAILY_BUDGET:
             await logger.warning(f"visual provider budget exhausted: {variant} budget_exhausted")
             await _finalize(job, "failed", None, "budget_exhausted", None)
@@ -108,7 +109,7 @@ async def _process(job: dict, gen: Generator, store: VisualStore, jitter: Callab
     if not await _finalize(job, "review", sha, None, None):
         await logger.warning(f"visual finalize skipped, lease was reclaimed: {variant}")  # draft is swept later
         return
-    if gen.charged and get_settings().VISUAL_AUTO_APPROVE:
+    if charged and get_settings().VISUAL_AUTO_APPROVE:
         await _auto_publish(variant, store, webp, sha)
 
 

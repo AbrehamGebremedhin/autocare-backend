@@ -240,18 +240,19 @@ per client address.
 - (g) The provider budget check and its recording are not atomic across several workers. That is latent while one
   replica runs and the provider call is unwired. Upgrade path before running more replicas: one SQL function that takes
   an advisory lock, counts the day's calls, and inserts the ledger row in the same statement.
-- (h) The provider is Cloudflare Workers AI (`@cf/black-forest-labs/flux-1-schnell`). It needs `VISUAL_PROVIDER_ENABLED=true`,
+- (h) The provider is Cloudflare Workers AI, in two calls per image. `@cf/black-forest-labs/flux-1-schnell` draws the
+  car from text (make, model, year, body style only); then `@cf/black-forest-labs/flux-2-klein-4b` redraws that exact
+  car in the style of the reference artwork shipped at `app/assets/style_reference.webp` (the Echo drawing): pen-and-ink
+  with hatching, pale cream paint, dark olive tyres, front pointing left. The reference only steers the style, so
+  results resemble the reference car somewhat; they are not exact likenesses. It needs `VISUAL_PROVIDER_ENABLED=true`,
   `CLOUDFLARE_ACCOUNT_ID` and an API token with Workers AI access in `CLOUDFLARE_API_TOKEN`; with either missing, a job
-  fails `provider_not_configured`. While enabled it replaces the curated source, so every unseeded variant is generated
-  (the model cannot make transparency; the plain white background is stripped in normalization; the prompt in `visual_generators.PROMPT_TEMPLATE` asks for the reference look: pen-and-ink with a light wash, cream paint, dark olive tyres, front pointing left). Output always lands in
-  `review` and needs an operator approve. The free allowance is 10,000 neurons a day (about 40 to 60 per image).
-- (k) `VISUAL_AUTO_APPROVE=true` makes the worker publish provider images without an operator, but only those that
-  pass `visual_image.quality_problem`: at least 700 px wide, not a flat sliver, and between 40% and 97% filled (a
-  car-shaped silhouette, not a blank, a solid block or a thin strip). Anything else stays in `review` with a log line
-  `auto-approve declined: <code>`. This is a shape check, not a judgement of the picture: a wrong car, odd colours or
-  stray text with a car-like outline will publish. Curated and seeded images are never auto-published. To replace a
-  bad published image: `requeue` the variant; with the flag on the new image replaces the old one the same way. Turn
-  the flag off again to go back to reviewing everything.
+  fails `provider_not_configured`. Both calls use the free 10,000 neurons a day; the pair counts as one provider call
+  against `VISUAL_PROVIDER_DAILY_BUDGET`. Cloudflare's output filter sometimes refuses a harmless picture
+  (`provider_http_400`); the job then retries (up to 3 attempts), each retry drawing a new car. The plain white
+  background is stripped in normalization.
+  A reviewed image in `VISUAL_CURATED_DIR` (named `<variant_key>.webp|png|jpg`) always wins over generation, costs no
+  provider call and is never auto-published; only variants without one are generated. Seeded images (`seed`) are
+  published rows and are never overwritten by a generated one unless an operator requeues them.
 - (i) The rate limits (including the download route's) and the per-user prepare throttle live in process memory: they
   reset on restart and multiply with the number of api workers. The image runs one.
 - (j) The descriptor service re-checks car ownership when signing, so a car removed mid-flight gives 404.

@@ -16,7 +16,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # No published ports: only the api service reaches Postgres, over the compose network.
+    # No published ports: only the api and visuals-worker services reach Postgres, over the compose network.
     restart: unless-stopped
 
   api:
@@ -50,6 +50,8 @@ services:
     # Through uv like the api's CMD: the dependencies live in /app/.venv, which bare `python` does not use.
     command: ["uv", "run", "--no-sync", "python", "-m", "app.workers.vehicle_visuals"]
     env_file: .env
+    # An in-flight provider job can run up to 120 s; the default 10 s grace would SIGKILL it.
+    stop_grace_period: 130s
     environment:
       DATABASE_URL: postgresql://autocare:${POSTGRES_PASSWORD}@db:5432/autocare
     depends_on:

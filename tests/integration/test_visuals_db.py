@@ -355,3 +355,12 @@ async def test_stale_worker_cannot_finalize_after_reclaim(real_pool):
     assert await crud.finalize_job(first["id"], first["fencing_token"], "review", "stale", None, None) is False
     assert (await crud.get_visual(v))["state"] == "generating"
     assert await crud.finalize_job(second["id"], second["fencing_token"], "review", "ok", None, None) is True
+
+
+async def test_referenced_drafts(real_pool):
+    await _fresh()
+    a, b, c = _variant(), _variant(), _variant()
+    await _insert(a, "review", fencing_token=4, draft_sha256="d")
+    await _insert(b, "ready", fencing_token=2)
+    await _insert(c, "failed", fencing_token=1)
+    assert await crud.referenced_drafts() == {(a, "s1", 4)}

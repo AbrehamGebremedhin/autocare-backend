@@ -183,3 +183,12 @@ async def test_owned_car_binds_the_normalised_uuid(fake_pool, raw):
     assert await crud.owned_car(raw, "c1") is None
     _, _, args = _only(fake_pool)
     assert args == (UID, "c1")
+
+
+async def test_referenced_drafts(fake_pool):
+    fake_pool.rows = [
+        {"variant_key": "a", "style_version": "s1", "fencing_token": 3},
+        {"variant_key": "b", "style_version": "s1", "fencing_token": 1},
+    ]
+    assert await crud.referenced_drafts() == {("a", "s1", 3), ("b", "s1", 1)}
+    assert "review" in fake_pool.calls[-1][1]

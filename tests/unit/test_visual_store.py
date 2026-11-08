@@ -372,3 +372,22 @@ def test_sweep_logs_nothing_when_clean(store, root, caplog):
     with caplog.at_level("WARNING", logger="visual_store"):
         assert store.sweep(3600, set()) == 1
     assert caplog.records == []
+
+
+def test_sweep_keeps_listed_drafts_regardless_of_age(store, root):
+    kept = store.write_draft("v1", "s1", 5, DATA)
+    lookalike = store.write_draft("v1", "s1", 6, DATA)  # same row, different token
+    stale = store.write_draft("v2", "s1", 5, DATA)
+    fresh = store.write_draft("v3", "s1", 1, DATA)
+    for rel in (kept, lookalike, stale):
+        _age(root / rel, 7200)
+
+    assert store.sweep(3600, set(), keep_drafts={kept, fresh}) == 2
+    assert (root / kept).exists() and (root / fresh).exists()
+    assert not (root / lookalike).exists() and not (root / stale).exists()
+
+
+def test_sweep_without_keep_drafts_removes_every_old_draft(store, root):
+    rel = store.write_draft("v1", "s1", 5, DATA)
+    _age(root / rel, 7200)
+    assert store.sweep(3600, set(), keep_drafts=None) == 1

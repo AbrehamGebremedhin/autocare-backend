@@ -63,7 +63,7 @@ async def renew_lease(job_id: str, token: int, lease_seconds: int) -> bool:
 
 
 async def finalize_job(job_id: str, token: int, state: str, draft_sha: str | None, error: str | None,
-                       next_attempt_seconds: int | None) -> bool:
+                       next_attempt_seconds: float | None) -> bool:
     # NULL seconds makes a NULL timestamp, which the SQL function reads as "keep next_attempt_at".
     return bool(await pool.fetchval(
         "select finalize_visual_job($1::uuid, $2, $3, $4, $5, now() + make_interval(secs => $6::float8))",
@@ -115,8 +115,18 @@ async def referenced_shas() -> set[str]:
     return {r["sha"] for r in rows}
 
 
+async def referenced_drafts() -> set[tuple[str, str, int]]:
+    """(variant_key, style_version, fencing_token) of every row in review. A row in review always has its draft at
+    VisualStore.draft_rel(variant_key, style_version, fencing_token): the worker writes it under the claim's token
+    and seed (Task 10) must use the row's CURRENT fencing_token. The sweep must never remove these."""
+    rows = await pool.fetch(
+        "select variant_key, style_version, fencing_token from vehicle_visuals where state = 'review'")
+    return {(r["variant_key"], r["style_version"], r["fencing_token"]) for r in rows}
+
+
 async def seed_review(variant_key: str, draft_sha: str, width: int, height: int) -> dict:
-    """Put a curated draft into review. The published revision, sha and size are untouched. A job that is generating
+    """Put a curated draft into review. The published revision, sha and size are untouched.
+    The draft file belongs at the row's CURRENT fencing_token (not 0): referenced_drafts() keeps that path. A job that is generating
     under a live lease is left alone: ValueError."""
     row = await pool.fetchrow(
         "insert into vehicle_visuals (variant_key, style_version, state, provenance, draft_sha256, width, height)"

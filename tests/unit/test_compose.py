@@ -87,6 +87,7 @@ def test_visuals_worker_service(compose):
     assert worker["depends_on"]["db"]["condition"] == "service_healthy"
     assert worker["restart"] == "unless-stopped"
     assert "ports" not in worker
+    assert worker["stop_grace_period"] == "130s"  # an in-flight provider job can run 120 s
     assert _mounts(worker)["/data/visuals"][0] == "visuals"
     assert _env(worker)["DATABASE_URL"] == _env(compose["services"]["api"])["DATABASE_URL"]
 

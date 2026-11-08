@@ -87,6 +87,7 @@ async def _process(job: dict, gen: Generator, store: VisualStore, jitter: Callab
         return
     if gen.charged:
         if await crud.provider_calls_last_day() >= get_settings().VISUAL_PROVIDER_DAILY_BUDGET:
+            await logger.warning(f"visual provider budget exhausted: {variant} budget_exhausted")
             await _finalize(job, "failed", None, "budget_exhausted", None)
             return
         await crud.record_provider_call(variant)  # before the call: a timeout may still have been charged
@@ -149,8 +150,10 @@ def _install_stop(stop: asyncio.Event) -> None:
 
 async def _sweep(store: VisualStore) -> None:
     try:
+        keep_drafts = {store.draft_rel(v, s, t) for v, s, t in await crud.referenced_drafts()}
         removed = await asyncio.to_thread(
-            store.sweep, older_than_seconds=SWEEP_GRACE_SECONDS, keep_shas=await crud.referenced_shas())
+            store.sweep, older_than_seconds=SWEEP_GRACE_SECONDS, keep_shas=await crud.referenced_shas(),
+            keep_drafts=keep_drafts)
         if removed:
             await logger.info(f"visual store sweep removed {removed} files")
     except Exception as exc:

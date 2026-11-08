@@ -158,14 +158,18 @@ class VisualStore:
     def has_object(self, sha256: str) -> bool:
         return self.object_path(sha256) is not None
 
-    def sweep(self, older_than_seconds: int, keep_shas: set[str], now: float | None = None) -> int:
-        """Delete drafts and unreferenced objects older than the grace period; returns files removed, never raises."""
+    def sweep(
+        self, older_than_seconds: int, keep_shas: set[str], now: float | None = None, keep_drafts: set[str] | None = None
+    ) -> int:
+        """Delete drafts and unreferenced objects older than the grace period; returns files removed, never raises.
+
+        keep_drafts holds relative draft paths (as draft_rel returns them) that are never removed, whatever their age."""
         cutoff = (time.time() if now is None else now) - older_than_seconds
         removed, skipped = 0, collections.Counter()
         try:
-            removed += self._sweep_dir("drafts", cutoff, lambda name: True, skipped)
+            removed += self._sweep_dir("drafts", cutoff, lambda rel: rel not in (keep_drafts or ()), skipped)
             removed += self._sweep_dir(
-                "objects", cutoff, lambda name: name.endswith(".webp") and name[:-5] not in keep_shas, skipped
+                "objects", cutoff, lambda rel: rel.endswith(".webp") and Path(rel).stem not in keep_shas, skipped
             )
         except Exception as exc:  # best effort by contract
             skipped[type(exc).__name__] += 1
@@ -186,7 +190,7 @@ class VisualStore:
                 path = Path(dirpath, name)
                 try:
                     st = os.lstat(path)
-                    if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff and doomed(name):
+                    if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff and doomed(f"{top}/{path.relative_to(folder).as_posix()}"):
                         os.unlink(path)
                         removed += 1
                 except OSError as exc:

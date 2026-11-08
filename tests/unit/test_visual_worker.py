@@ -1,7 +1,6 @@
 """The visuals worker's run_once and main, over fakes: no database, no network, no provider."""
 import asyncio
 import io
-import socket
 import threading
 
 import pytest
@@ -12,18 +11,7 @@ from app.services.visual_generators import GeneratorError
 from app.services.visual_store import VisualStore
 from app.workers import vehicle_visuals as w
 
-
-@pytest.fixture(autouse=True)
-def no_network(monkeypatch):
-    real = socket.socket.connect
-
-    def blocked(self, address, *args, **kwargs):
-        # the event loop's own self-pipe connects to loopback on Windows; anything else is real network use
-        if not (isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1")):
-            raise AssertionError("network use in a unit test")
-        return real(self, address, *args, **kwargs)
-
-    monkeypatch.setattr(socket.socket, "connect", blocked)
+pytestmark = pytest.mark.usefixtures("no_network")
 
 
 def _png() -> bytes:
@@ -89,6 +77,11 @@ class FakeCrud:
     async def referenced_shas(self):
         return set()
 
+    review_drafts = ()
+
+    async def referenced_drafts(self):
+        return set(self.review_drafts)
+
 
 def _job(attempt=1, token=7, variant="toyota-echo"):
     return {"id": "11111111-1111-4111-8111-111111111111", "variant_key": variant, "fencing_token": token,
@@ -99,7 +92,7 @@ def _job(attempt=1, token=7, variant="toyota-echo"):
 def crud(monkeypatch):
     fake = FakeCrud(_job())
     for name in ("claim_job", "renew_lease", "finalize_job", "provider_calls_last_day", "record_provider_call",
-                 "referenced_shas"):
+                 "referenced_shas", "referenced_drafts"):
         monkeypatch.setattr(w.crud, name, getattr(fake, name))
     return fake
 
@@ -167,6 +160,34 @@ async def test_budget_exhausted_never_calls_the_generator(crud, store, monkeypat
     assert await w.run_once(gen, store) is True
     assert gen.calls == [] and crud.recorded == []
     assert crud.finalized == [("failed", None, "budget_exhausted", None)]
+
+
+async def test_budget_exhausted_is_logged_with_variant_and_code_only(crud, store, monkeypatch):
+    logged = []
+
+    async def warn(message):
+        logged.append(message)
+
+    monkeypatch.setattr(w.logger, "warning", warn)
+    crud.provider_calls = 10**6
+    await w.run_once(FakeGen(_png(), charged=True), store)
+    (line,) = logged
+    assert "budget_exhausted" in line and "toyota-echo" in line
+    assert str(store._base()) not in line and "sha" not in line.lower()
+
+
+async def test_worker_sweep_keeps_review_drafts_and_removes_others(crud, store):
+    import os
+
+    kept = store.write_draft("toyota-echo", "workshop-v1", 7, b"d")
+    gone = store.write_draft("other-car", "workshop-v1", 2, b"d")
+    lookalike = store.write_draft("toyota-echo", "workshop-v1", 8, b"d")
+    for rel in (kept, gone, lookalike):
+        os.utime(store._base() / rel, (1, 1))  # far older than the grace period
+    crud.review_drafts = {("toyota-echo", "workshop-v1", 7)}
+    await w._sweep(store)
+    assert (store._base() / kept).exists()
+    assert not (store._base() / gone).exists() and not (store._base() / lookalike).exists()
 
 
 async def test_charged_call_is_recorded_before_generate_and_survives_a_timeout(crud, store, monkeypatch):
@@ -294,6 +315,7 @@ async def test_main_stops_on_signal_and_closes_the_pool(monkeypatch, store):
     monkeypatch.setattr(w, "build_generator", lambda: FakeGen(b""))
     monkeypatch.setattr(w, "VisualStore", lambda: store)
     monkeypatch.setattr(w.crud, "referenced_shas", FakeCrud().referenced_shas)
+    monkeypatch.setattr(w.crud, "referenced_drafts", FakeCrud().referenced_drafts)
     try:
         await asyncio.wait_for(w.main(), 5)
     finally:

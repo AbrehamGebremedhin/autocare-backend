@@ -1,22 +1,10 @@
 """Generators: the curated file source, the (unconfigured) provider, and build_generator. No network."""
-import socket
 
 import pytest
 
 from app.services import visual_generators as vg
 
-
-@pytest.fixture(autouse=True)
-def no_network(monkeypatch):
-    real = socket.socket.connect
-
-    def blocked(self, address, *args, **kwargs):
-        # the event loop's own self-pipe connects to loopback on Windows; anything else is real network use
-        if not (isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1")):
-            raise AssertionError("network use in a unit test")
-        return real(self, address, *args, **kwargs)
-
-    monkeypatch.setattr(socket.socket, "connect", blocked)
+pytestmark = pytest.mark.usefixtures("no_network")
 
 
 async def test_curated_reads_a_file(tmp_path):

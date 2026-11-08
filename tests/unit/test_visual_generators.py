@@ -69,6 +69,64 @@ async def test_provider_call_is_not_configured():
     assert vg.ProviderGenerator.charged is True
 
 
+def _configured(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "CLOUDFLARE_ACCOUNT_ID", "acct")
+    monkeypatch.setattr(get_settings(), "CLOUDFLARE_API_TOKEN", "tok")
+
+
+def _provider(handler):
+    import httpx
+
+    return vg.ProviderGenerator(transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.parametrize("body", [{"result": {"image": "aGk="}, "success": True}, {"image": "aGk="}])
+async def test_workers_ai_returns_decoded_image(monkeypatch, body):
+    import httpx
+
+    _configured(monkeypatch)
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["url"], seen["auth"], seen["json"] = str(request.url), request.headers["authorization"], request.read()
+        return httpx.Response(200, json=body)
+
+    assert await _provider(handler)._call("a car") == b"hi"
+    assert seen["url"].endswith("/accounts/acct/ai/run/@cf/black-forest-labs/flux-1-schnell")
+    assert seen["auth"] == "Bearer tok" and b"a car" in seen["json"]
+
+
+@pytest.mark.parametrize(
+    "response, code",
+    [
+        (lambda: __import__("httpx").Response(429), "provider_http_429"),
+        (lambda: __import__("httpx").Response(200, text="not json"), "provider_bad_response"),
+        (lambda: __import__("httpx").Response(200, json={"result": {}}), "provider_bad_response"),
+        (lambda: __import__("httpx").Response(200, json={"image": "!!notb64!!"}), "provider_bad_response"),
+    ],
+)
+async def test_workers_ai_failures_have_stable_codes(monkeypatch, response, code):
+    _configured(monkeypatch)
+    with pytest.raises(vg.GeneratorError) as err:
+        await _provider(lambda request: response())._call("x")
+    assert err.value.code == code
+
+
+async def test_workers_ai_network_error_never_leaks_the_token(monkeypatch):
+    import httpx
+
+    _configured(monkeypatch)
+
+    def handler(request):
+        raise httpx.ConnectError("boom tok")
+
+    with pytest.raises(vg.GeneratorError) as err:
+        await _provider(handler)._call("x")
+    assert err.value.code == "provider_network" and "tok" not in str(err.value)
+
+
 async def test_provider_prompt_is_the_catalog_label_only(monkeypatch):
     monkeypatch.setattr(vg, "label", lambda key: "Toyota Echo 2001")
     prompts = []

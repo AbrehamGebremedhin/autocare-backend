@@ -9,3 +9,6 @@ car_data/
 reports/
 tests/fixtures/e2e/
 backups/
+
+# a local copy of the reference artwork, seeded through scripts/visuals_admin.py, never committed
+/toyota-echo.webp

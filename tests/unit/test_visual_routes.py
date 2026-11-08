@@ -190,6 +190,24 @@ def test_valid_download_serves_the_bytes(client, store):
     assert "content-security-policy" in r.headers  # the usual security headers still apply
 
 
+def test_refused_downloads_are_never_cached(client, store):
+    sha = _put(store)
+    bad = [
+        "/api/v1/visuals/files/not-a-real-name.webp",  # 404: bad name
+        f"/api/v1/visuals/files/{sha}.webp?exp=1&sig={'0' * 64}",  # 404: unsigned
+    ]
+    for url in bad:
+        r = client.get(url)
+        assert r.status_code == 404
+        cc = r.headers["cache-control"]
+        assert cc.startswith("no-store") and "public" not in cc
+    assert client.post(f"/api/v1/visuals/files/{sha}.webp").status_code == 405
+    assert client.post(f"/api/v1/visuals/files/{sha}.webp").headers["cache-control"].startswith("no-store")
+    ok = client.get(_signed_path(sha))  # the route's own header still wins on success
+    assert ok.status_code == 200 and ok.headers["cache-control"].startswith("private, max-age=")
+    assert "public" not in ok.headers["cache-control"] and "no-store" not in ok.headers["cache-control"]
+
+
 def test_cache_age_is_clamped_to_remaining_lifetime(client, store):
     sha = _put(store)
     r = client.get(_signed_path(sha, now=time.time() - 800))  # about 100s of its 900s left

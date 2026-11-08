@@ -243,7 +243,7 @@ per client address.
 - (h) The provider is Cloudflare Workers AI (`@cf/black-forest-labs/flux-1-schnell`). It needs `VISUAL_PROVIDER_ENABLED=true`,
   `CLOUDFLARE_ACCOUNT_ID` and an API token with Workers AI access in `CLOUDFLARE_API_TOKEN`; with either missing, a job
   fails `provider_not_configured`. While enabled it replaces the curated source, so every unseeded variant is generated
-  (the model cannot make transparency; the plain background is stripped in normalization). Output always lands in
+  (the model cannot make transparency; the plain white background is stripped in normalization; the prompt in `visual_generators.PROMPT_TEMPLATE` asks for the reference look: pen-and-ink with a light wash, cream paint, dark olive tyres, front pointing left). Output always lands in
   `review` and needs an operator approve. The free allowance is 10,000 neurons a day (about 40 to 60 per image).
 - (k) `VISUAL_AUTO_APPROVE=true` makes the worker publish provider images without an operator, but only those that
   pass `visual_image.quality_problem`: at least 700 px wide, not a flat sliver, and between 40% and 97% filled (a

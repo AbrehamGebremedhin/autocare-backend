@@ -94,6 +94,7 @@ Names only; the defaults are those in `app/core/config.py`. None of these is a s
 | `VISUAL_JOBS_PER_HOUR` | `60` | Global: rows created in the last hour; over it, prepare answers 429. `0` turns the limit off. |
 | `VISUAL_POLL_SECONDS` | `10` | Worker sleep between polls when nothing is due. |
 | `VISUAL_PROVIDER_ENABLED` | `false` | Use Cloudflare Workers AI instead of the curated directory (see Behaviours to know, item h). |
+| `VISUAL_AUTO_APPROVE` | `false` | With the provider on, publish a generated image by itself when it passes `quality_problem` (item k). Off: every image waits in review for an operator. |
 | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | empty | Credentials for the provider; never logged. |
 | `VISUAL_PROVIDER_DAILY_BUDGET` | `20` | Provider calls allowed per rolling day; at the ceiling the worker stops calling and fails the job `budget_exhausted`. |
 | `VISUAL_CURATED_DIR` | `/data/visuals/curated` | Where the curated generator looks for `{variant_key}.webp\|png\|jpg`. |
@@ -244,6 +245,13 @@ per client address.
   fails `provider_not_configured`. While enabled it replaces the curated source, so every unseeded variant is generated
   (the model cannot make transparency; the plain background is stripped in normalization). Output always lands in
   `review` and needs an operator approve. The free allowance is 10,000 neurons a day (about 40 to 60 per image).
+- (k) `VISUAL_AUTO_APPROVE=true` makes the worker publish provider images without an operator, but only those that
+  pass `visual_image.quality_problem`: at least 700 px wide, not a flat sliver, and between 40% and 97% filled (a
+  car-shaped silhouette, not a blank, a solid block or a thin strip). Anything else stays in `review` with a log line
+  `auto-approve declined: <code>`. This is a shape check, not a judgement of the picture: a wrong car, odd colours or
+  stray text with a car-like outline will publish. Curated and seeded images are never auto-published. To replace a
+  bad published image: `requeue` the variant; with the flag on the new image replaces the old one the same way. Turn
+  the flag off again to go back to reviewing everything.
 - (i) The rate limits (including the download route's) and the per-user prepare throttle live in process memory: they
   reset on restart and multiply with the number of api workers. The image runs one.
 - (j) The descriptor service re-checks car ownership when signing, so a car removed mid-flight gives 404.

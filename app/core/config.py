@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     VISUAL_POLL_SECONDS: int = 10
     VISUAL_PROVIDER_ENABLED: bool = False
     VISUAL_PROVIDER_DAILY_BUDGET: int = 20
+    VISUAL_AUTO_APPROVE: bool = False  # publish provider images that pass quality_problem without an operator
     CLOUDFLARE_ACCOUNT_ID: str = ""
     CLOUDFLARE_API_TOKEN: str = ""
     VISUAL_CURATED_DIR: str = "/data/visuals/curated"

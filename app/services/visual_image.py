@@ -127,6 +127,36 @@ def normalize(data: bytes) -> tuple[bytes, str, int, int]:
     return out, hashlib.sha256(out).hexdigest(), CANVAS[0], CANVAS[1]
 
 
+# What a side view of a car looks like on the canvas, with room to spare: it spans most of the width (so it is
+# already wider than tall), is not a flat sliver, and is neither nearly empty nor a solid block.
+_MIN_CAR_WIDTH = 700
+_MAX_CAR_ASPECT = 5.0
+_CAR_FILL = (0.4, 0.97)
+
+
+def quality_problem(data: bytes) -> str | None:
+    """A cheap sanity check on a normalized artwork, for publishing without a human look. None when it passes,
+    otherwise a short code (too_small, bad_shape, too_empty, too_solid). Not a judgement of taste or content."""
+    try:
+        alpha = _load_rgba(_open(data)).getchannel("A").point(lambda v: 255 if v >= ALPHA_MIN else 0)
+    except InvalidArtwork:
+        return "not_image"
+    bbox = alpha.getbbox()
+    if bbox is None:
+        return "too_empty"
+    width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    if width < _MIN_CAR_WIDTH:
+        return "too_small"
+    if width / height > _MAX_CAR_ASPECT:
+        return "bad_shape"
+    fill = alpha.histogram()[255] / (width * height)
+    if fill < _CAR_FILL[0]:
+        return "too_empty"
+    if fill > _CAR_FILL[1]:
+        return "too_solid"
+    return None
+
+
 def validate_published(data: bytes) -> tuple[str, int, int]:
     """Check bytes already meet the published contract; returns (sha256_hex, width, height)."""
     img = _open(data)

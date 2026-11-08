@@ -8,7 +8,7 @@ import hashlib
 import io
 import warnings
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageDraw
 
 CANVAS = (1024, 420)
 BASELINE_Y = 366
@@ -60,14 +60,20 @@ def _load_rgba(img: Image.Image) -> Image.Image:
 
 
 def _strip_flat_background(rgba: Image.Image) -> Image.Image:
-    """For fully opaque sources, make pixels close to the top-left colour transparent."""
+    """For fully opaque sources, make the top-left-coloured background transparent. Only background that
+    connects to the image border goes, so a white car on a white background keeps its body."""
     if rgba.getchannel("A").getextrema()[0] != 255:
         return rgba
     bg = Image.new("RGB", rgba.size, rgba.getpixel((0, 0))[:3])
     r, g, b = ImageChops.difference(rgba.convert("RGB"), bg).split()
     diff = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    mask = diff.point(lambda v: 255 if v > _BG_TOLERANCE else 0)  # 255 = artwork, 0 = background-like
+    w, h = mask.size
+    for seed in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        if mask.getpixel(seed) == 0:
+            ImageDraw.floodfill(mask, seed, 1)  # 1 = background connected to the border
     rgba = rgba.copy()
-    rgba.putalpha(diff.point(lambda v: 255 if v > _BG_TOLERANCE else 0))
+    rgba.putalpha(mask.point(lambda v: 0 if v == 1 else 255))
     return rgba
 
 

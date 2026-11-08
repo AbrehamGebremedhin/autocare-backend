@@ -62,7 +62,11 @@ async def test_curated_reads_off_the_loop_thread(tmp_path, monkeypatch):
     assert seen and seen[0] is not threading.main_thread()
 
 
-async def test_provider_call_is_not_configured():
+async def test_provider_call_is_not_configured(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "CLOUDFLARE_ACCOUNT_ID", "")  # whatever the local .env says
+    monkeypatch.setattr(get_settings(), "CLOUDFLARE_API_TOKEN", "")
     with pytest.raises(vg.GeneratorError) as err:
         await vg.ProviderGenerator()._call("anything")
     assert err.value.code == "provider_not_configured"
@@ -159,6 +163,9 @@ def test_build_generator_is_curated_by_default_and_never_builds_the_provider(mon
     def boom(self, *a, **k):
         raise AssertionError("provider constructed")
 
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "VISUAL_PROVIDER_ENABLED", False)  # whatever the local .env says
     monkeypatch.setattr(vg.ProviderGenerator, "__init__", boom)
     gen = vg.build_generator()
     assert isinstance(gen, vg.CuratedGenerator) and gen.charged is False

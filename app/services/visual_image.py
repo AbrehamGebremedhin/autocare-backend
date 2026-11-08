@@ -16,6 +16,8 @@ MAX_BYTES = 409_600
 MAX_SOURCE_PIXELS = 25_000_000
 MAX_SOURCE_BYTES = 20_000_000
 
+# a pixel counts as artwork only at or above this alpha; fainter pixels (stray specks, soft shadows) are ignored
+ALPHA_MIN = 128
 _SIDE_MARGIN = 16
 _TOP_MARGIN = 8
 _BG_TOLERANCE = 12
@@ -30,6 +32,11 @@ class InvalidArtwork(Exception):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def _content_bbox(rgba: Image.Image):
+    """Bounding box of the pixels with alpha >= ALPHA_MIN, or None."""
+    return rgba.getchannel("A").point(lambda v: 255 if v >= ALPHA_MIN else 0).getbbox()
 
 
 def _open(data: bytes) -> Image.Image:
@@ -65,7 +72,7 @@ def _strip_flat_background(rgba: Image.Image) -> Image.Image:
 
 
 def _compose(rgba: Image.Image) -> Image.Image:
-    bbox = rgba.getchannel("A").getbbox()
+    bbox = _content_bbox(rgba)
     if bbox is None:
         raise InvalidArtwork("bad_margins")
     art = rgba.crop(bbox)
@@ -75,7 +82,7 @@ def _compose(rgba: Image.Image) -> Image.Image:
     size = (max(1, min(max_w, round(art.width * scale))), max(1, min(max_h, round(art.height * scale))))
     art = art.resize(size, Image.LANCZOS)
     # resampling can fade the outermost rows to alpha 0; re-trim so the lowest visible row is the baseline
-    trim = art.getchannel("A").getbbox()
+    trim = _content_bbox(art)
     if trim is None:
         raise InvalidArtwork("bad_margins")
     art = art.crop(trim)
@@ -110,9 +117,6 @@ def normalize(data: bytes) -> tuple[bytes, str, int, int]:
         raise InvalidArtwork("too_large")
     canvas = _compose(_strip_flat_background(_load_rgba(img)))
     out = _encode(canvas)
-    check = Image.open(io.BytesIO(out))
-    if any(check.info.get(k) for k in _METADATA_KEYS):
-        raise InvalidArtwork("not_image")
     validate_published(out)
     return out, hashlib.sha256(out).hexdigest(), CANVAS[0], CANVAS[1]
 
@@ -126,8 +130,11 @@ def validate_published(data: bytes) -> tuple[str, int, int]:
         raise InvalidArtwork("bad_dimensions")
     if len(data) > MAX_BYTES:
         raise InvalidArtwork("too_many_bytes")
-    alpha = _load_rgba(img).getchannel("A")
-    bbox = alpha.getbbox()
+    if getattr(img, "is_animated", False) or getattr(img, "n_frames", 1) != 1:
+        raise InvalidArtwork("not_image")
+    if any(img.info.get(k) for k in _METADATA_KEYS):
+        raise InvalidArtwork("not_image")
+    bbox = _content_bbox(_load_rgba(img))
     if bbox is None:
         raise InvalidArtwork("bad_margins")
     left, top, right, bottom = bbox

@@ -6,7 +6,7 @@ import warnings
 import zlib
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageFile
 
 from app.services import visual_image as vi
 from app.services.visual_image import InvalidArtwork, normalize, validate_published
@@ -123,7 +123,7 @@ def test_over_pixel_cap_rejected_before_decode(monkeypatch):
     def boom(self, *a, **k):
         raise AssertionError("decoded before the size check")
 
-    monkeypatch.setattr(Image.Image, "load", boom)
+    monkeypatch.setattr(ImageFile.ImageFile, "load", boom)
     monkeypatch.setattr(Image.Image, "convert", boom)
     with pytest.raises(InvalidArtwork) as e:
         normalize(data)
@@ -227,3 +227,89 @@ def test_validate_too_many_bytes(monkeypatch):
     with pytest.raises(InvalidArtwork) as e:
         validate_published(data)
     assert e.value.code == "too_many_bytes"
+
+
+def _solid_bbox(data):
+    alpha = Image.open(io.BytesIO(data)).convert("RGBA").getchannel("A")
+    return alpha.point(lambda v: 255 if v >= vi.ALPHA_MIN else 0).getbbox()
+
+
+def _car(w=2000, h=900):
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    img.paste((20, 120, 220, 255), (600, 300, 1400, 700))
+    return img
+
+
+@pytest.mark.parametrize("alpha", [1, 8, 20, 60, 127])
+def test_faint_stray_pixel_does_not_move_baseline_or_scale(alpha):
+    clean = _solid_bbox(normalize(_encode(_car()))[0])
+    img = _car()
+    img.putpixel((1990, 5), (255, 0, 0, alpha))
+    out = normalize(_encode(img))[0]
+    box = _solid_bbox(out)
+    assert box[3] - 1 == 366
+    assert box[2] - box[0] == clean[2] - clean[0]
+    validate_published(out)
+
+
+def test_faint_shadow_band_does_not_move_baseline():
+    img = _car()
+    img.paste((0, 0, 0, 8), (400, 700, 1600, 850))
+    out = normalize(_encode(img))[0]
+    box = _solid_bbox(out)
+    assert box[3] - 1 == 366
+    clean = _solid_bbox(normalize(_encode(_car()))[0])
+    assert box[2] - box[0] == clean[2] - clean[0]
+
+
+def test_validate_published_faint_pixels_below_baseline_ok():
+    img = Image.new("RGBA", vi.CANVAS, (0, 0, 0, 0))
+    img.paste((200, 30, 30, 255), (100, 100, 900, 367))
+    img.paste((0, 0, 0, 100), (100, 367, 900, 400))
+    validate_published(_encode(img, "WEBP", lossless=True))
+
+
+def test_validate_published_first_solid_row_must_be_baseline():
+    img = Image.new("RGBA", vi.CANVAS, (0, 0, 0, 0))
+    img.paste((200, 30, 30, 255), (100, 100, 900, 300))
+    img.paste((0, 0, 0, 100), (100, 300, 900, 367))
+    with pytest.raises(InvalidArtwork) as e:
+        validate_published(_encode(img, "WEBP", lossless=True))
+    assert e.value.code == "bad_margins"
+
+
+def _valid_canvas_image():
+    img = Image.new("RGBA", vi.CANVAS, (0, 0, 0, 0))
+    img.paste((200, 30, 30, 255), (100, 100, 900, 367))
+    return img
+
+
+def test_validate_rejects_animated_webp():
+    a = _valid_canvas_image()
+    b = Image.new("RGBA", vi.CANVAS, (0, 255, 0, 255))
+    data = _encode(a, "WEBP", save_all=True, append_images=[b], lossless=True)
+    with pytest.raises(InvalidArtwork) as e:
+        validate_published(data)
+    assert e.value.code == "not_image"
+
+
+def _exif():
+    exif = Image.Exif()
+    exif[0x010F] = "SecretCam"
+    return exif.tobytes()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"exif": _exif()},
+        {"icc_profile": b"x" * 64},
+        {"xmp": b"<x:xmpmeta xmlns:x='adobe:ns:meta/'></x:xmpmeta>"},
+    ],
+)
+def test_validate_rejects_metadata(extra):
+    data = _encode(_valid_canvas_image(), "WEBP", lossless=True, **extra)
+    assert {"exif", "icc_profile", "xmp"} & set(Image.open(io.BytesIO(data)).info)
+    with pytest.raises(InvalidArtwork) as e:
+        validate_published(data)
+    assert e.value.code == "not_image"

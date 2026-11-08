@@ -114,7 +114,8 @@ end;
 $$;
 
 -- Publish an approved draft. Only succeeds from review at the expected revision, so a
--- stale approval cannot overwrite a newer one. Returns whether a row changed.
+-- stale approval cannot overwrite a newer one, and only when the row's draft_sha256
+-- equals p_sha (the reviewed draft). Returns whether a row changed.
 create or replace function publish_visual_revision(
     p_id                uuid,
     p_expected_revision int,

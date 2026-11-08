@@ -38,7 +38,7 @@ releases the transaction, then generates the image outside any transaction while
 output is normalized (1024x420 WebP canvas, ground baseline at y=366, metadata stripped, decoded size and bytes
 re-checked, at most 400 KiB), written as a draft at `drafts/{variant}/workshop-v1/{fencing_token}.webp`, and the row is
 finalized into `review`. A stale worker (lost lease) cannot finalize because the SQL function requires the current
-fencing token. Once an hour the worker sweeps the store: drafts and objects older than one hour that no row references
+fencing token. Once at startup and then at most hourly the worker sweeps the store: drafts and objects older than one hour that no row references
 are deleted; drafts of rows in `review` are always kept.
 
 Operator. `scripts/visuals_admin.py` is a CLI, not an HTTP route. Nothing is served to users until an operator approves.
@@ -56,8 +56,9 @@ Operator. `scripts/visuals_admin.py` is a CLI, not an HTTP route. Nothing is ser
   (plus 60 s of skew). The file name must match `[0-9a-f]{64}.webp` exactly, so a path cannot leave `objects/`.
 - The URL is a capability for one shared image, not for a user: two users with the same variant receive the same
   `sha256`. Ownership of the car is checked when the descriptor is requested and again when the URL is signed.
-- Every refusal (bad name, bad or expired signature, missing or corrupt object) is the same `404 File not found`.
-  Refusals carry `Cache-Control: no-store`; a successful download carries `private, max-age=<remaining lifetime, at
+- Every refusal of a URL (bad name, bad or expired signature, missing or corrupt object) is the same `404 File not
+  found`; the route also answers 429 (rate limit) and 405 (wrong method). Refusals carry
+  `Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate`; a successful download carries `private, max-age=<remaining lifetime, at
   most the TTL>`, `Content-Type: image/webp`, `Content-Length` and `X-Content-Type-Options: nosniff`.
 - Rotating `JWT_SECRET_KEY` invalidates outstanding download URLs; they live 15 minutes by default, so
   the effect is a short window until fresh descriptors are requested.
@@ -71,7 +72,7 @@ Names only; the defaults are those in `app/core/config.py`. None of these is a s
 | `VISUALS_DIR` | `/data/visuals` | Root of the private artwork store (`objects/`, `drafts/`). Must be the `visuals` volume. |
 | `PUBLIC_BASE_URL` | empty | Public https origin used in signed URLs. Empty or not `https://` means no URL can be signed and every ready variant answers `fallback` / `temporarily_unavailable`. |
 | `VISUAL_URL_TTL_SECONDS` | `900` | Lifetime of a signed download URL. |
-| `VISUAL_PREPARE_PER_HOUR` | `20` | Per user: prepare calls that would create a job. `0` turns the limit off. |
+| `VISUAL_PREPARE_PER_HOUR` | `20` | Per user: a prepare call that would create a row is refused once the user's count in the last hour has reached this value. `0` turns the limit off. |
 | `VISUAL_JOBS_PER_HOUR` | `60` | Global: rows created in the last hour; over it, prepare answers 429. `0` turns the limit off. |
 | `VISUAL_POLL_SECONDS` | `10` | Worker sleep between polls when nothing is due. |
 | `VISUAL_PROVIDER_ENABLED` | `false` | Build the paid-provider generator instead of the curated one. Leave off (see Behaviours to know). |
@@ -88,7 +89,9 @@ docker compose logs --tail 20 visuals-worker
 ```
 
 It stops cleanly on SIGTERM (`stop_grace_period: 130s`, longer than the 120 s provider timeout). Outside compose:
-`uv run python -m app.workers.vehicle_visuals` with `DATABASE_URL` and `VISUALS_DIR` set. Run one replica: see
+`uv run python -m app.workers.vehicle_visuals` with `DATABASE_URL` and `VISUALS_DIR` set, plus the app's other required
+settings (`JWT_SECRET_KEY` of 32+ characters and `DEEPSEEK_API_KEY`), or it fails at its first settings load;
+`VISUAL_CURATED_DIR` matters too when the curated generator is in use. Run one replica: see
 "Behaviours to know" (g). With the provider flag off the worker uses the curated generator, which reads
 `{VISUAL_CURATED_DIR}/{variant_key}.webp|png|jpg`. A queued variant without such a file is retried (60 to 75 s, then 120
 to 150 s) and, after the third attempt, fails with `no_source`; seed it with the CLI instead.
@@ -118,7 +121,7 @@ between leaves only an unreferenced object that the hourly sweep removes.
 ## Operator commands
 
 Run every command as `docker compose run --rm visuals-worker uv run --no-sync python scripts/visuals_admin.py <command>`.
-Output is one short line; shas, signed URLs and filesystem paths are never printed.
+Output is one short line per result (`seed --approve` prints two: `seeded ...` then `approved ...`); shas, signed URLs and filesystem paths are never printed.
 
 | Command | What it does |
 | --- | --- |
@@ -208,7 +211,8 @@ per client address.
   `failed` or `review` rows, so an orphaned `generating` row cannot be requeued by hand: keep the worker running; it
   reclaims the row once the lease (300 s) has expired, after which the row is `review`, `queued` or `failed` and can be
   seeded.
-- (e) A review draft lives at `drafts/{variant}/workshop-v1/{fencing_token}.webp`, and the hourly sweep keeps the drafts
+- (e) A review draft lives at `drafts/{variant}/workshop-v1/{fencing_token}.webp`, and the sweep (at startup, then at
+  most hourly) keeps the drafts
   of rows in `review` (R11); other drafts and unreferenced objects are removed after one hour.
 - (f) uvicorn's access log is redacted for `sig` and `exp` by `app/utils/log_redaction.py`, but if Caddy access logging
   is ever enabled it WOULD record the signed URL. Keep it off, or redact `sig` and `exp` for `/api/v1/visuals/files/*`
@@ -222,6 +226,12 @@ per client address.
 - (i) The rate limits (including the download route's) and the per-user prepare throttle live in process memory: they
   reset on restart and multiply with the number of api workers. The image runs one.
 - (j) The descriptor service re-checks car ownership when signing, so a car removed mid-flight gives 404.
+- After a republish the previous revision's object keeps its old mtime, so the next sweep deletes it, and any
+  still-live signed URL for the old image (up to the 15-minute TTL) answers 404 once. The client falls back to its
+  silhouette and picks up the new artwork on its next descriptor fetch.
+- The host file passed to `seed` must be world-readable: the container user is uid 10001.
+- Adding the `02-` init mount to `db` makes `docker compose up -d --build` recreate the `db` container (a few seconds of
+  downtime; the data volume is kept).
 - The `visuals` volume is not part of `scripts/backup.sh`. The rows live in the database dump; the images can be
   re-created by seeding again from the source artwork.
 

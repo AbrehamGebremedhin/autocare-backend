@@ -212,3 +212,11 @@ def test_clean_citations_rewrites_raw_markup_in_a_reply():
     raw = "Brakes still work (<Toyota Platz 2001 manual (s3.amazonaws.com), p. 140>) and (Toyota Platz 2001 manual (s3.amazonaws.com), p. 141)."
     assert clean_citations(raw) == "Brakes still work (Toyota Platz 2001 manual, p. 140) and (Toyota Platz 2001 manual, p. 141)."
     assert clean_citations("Opens at 82 °C (see fig.1) <b> x") == "Opens at 82 °C (see fig.1) <b> x"
+
+
+def test_tone_codes_and_unsourced_claim_rules_are_in_the_prompt():
+    assert "No praise" in SYSTEM_PROMPT and "Start with the most useful fact" in SYSTEM_PROMPT
+    assert "step one is\n  to consider reading the stored fault codes" in SYSTEM_PROMPT
+    assert "Never assert the procedure for a specific car\n  unless a passage states it" in SYSTEM_PROMPT
+    assert "general guidance, not checked for this car" in SYSTEM_PROMPT
+    assert "and cite nothing" in SYSTEM_PROMPT

@@ -139,3 +139,31 @@ async def test_state_call_gets_history_new_message_and_reply(fake_llm, fake_stor
 
 def test_sse_framing_keeps_utf8():
     assert sse("token", {"text": "°C — ü"}) == 'event: token\ndata: {"text": "°C — ü"}\n\n'
+
+
+async def test_reported_facts_are_stored_on_the_user_message_and_feed_tests_done(fake_llm, fake_store, session, car):
+    from app.schemas.session import Fact
+
+    fake_llm.facts = [Fact(test="spun the bare hub, tire off", result="noise still there, once per revolution", part="rear left hub")]
+    await _run(session, car, "tire off, hub only, noise still there, once per revolution")
+    user = fake_store.messages(session["id"])[0]
+    assert user["observations"]["facts"] == [fake_llm.facts[0].model_dump()]
+    assert fake_llm.facts_input[0].startswith("tire off, hub only")
+    state = fake_store.rows[session["id"]]["state"]
+    assert state["tests_done"] == [{"test": "spun the bare hub, tire off", "result": "noise still there, once per revolution"}]
+
+
+async def test_established_state_reaches_the_next_prompt(fake_llm, fake_store, session, car):
+    from app.schemas.session import Fact
+
+    fake_llm.facts = [Fact(test="spun the bare hub", result="noise once per revolution")]
+    await _run(session, car, "spun the bare hub, noise once per revolution")
+    fake_llm.state = None  # the state call keeps the previous state from here on
+    await _run(fake_store.rows[session["id"]], car, "what next?")  # the route re-reads the session each turn
+    text = fake_llm.prompt[-1]["content"][0]["text"]
+    assert "test done: spun the bare hub -> noise once per revolution" in text
+
+
+async def test_a_turn_without_facts_leaves_observations_null(fake_llm, fake_store, session, car):
+    await _run(session, car, "hello")
+    assert fake_store.messages(session["id"])[0]["observations"] is None

@@ -8,8 +8,8 @@ from typing import AsyncIterator
 from openai import AsyncOpenAI
 
 from app.core.config import get_settings
-from app.schemas.session import DiagnosisState
-from app.services.prompts import STATE_PROMPT
+from app.schemas.session import DiagnosisState, Fact
+from app.services.prompts import FACTS_PROMPT, STATE_PROMPT
 from app.utils.logger import get_logger_instance
 
 logger = get_logger_instance("llm")
@@ -76,6 +76,24 @@ async def extract_state(conversation: list[dict], previous: DiagnosisState) -> D
     except Exception as exc:
         await logger.warning(f"extract_state failed, keeping previous state: {type(exc).__name__}")
         return previous
+
+
+async def extract_facts(message: str, context: list[dict]) -> list[Fact]:
+    """Structured facts from the user's latest message (`context`: the few messages before it, so a short
+    answer like "on bumpy roads" is read against the question). Never raises: no facts is a fine answer."""
+    messages = [
+        {"role": "system", "content": FACTS_PROMPT},
+        {"role": "user", "content": json.dumps({"context": context, "message": message}, ensure_ascii=False)},
+    ]
+    try:
+        resp = await get_client().chat.completions.create(
+            model=get_settings().DEEPSEEK_MODEL, messages=messages, response_format={"type": "json_object"}
+        )
+        facts = _first_json_object(resp.choices[0].message.content or "").get("facts") or []
+        return [Fact.model_validate(f) for f in facts if isinstance(f, dict)]
+    except Exception as exc:
+        await logger.warning(f"extract_facts failed, no facts for this message: {type(exc).__name__}")
+        return []
 
 
 async def ping() -> bool:

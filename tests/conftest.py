@@ -403,6 +403,8 @@ class FakeLLM:
         self.gate: asyncio.Event | None = None
         self.prompt: list[dict] | None = None
         self.conversation: list[dict] | None = None
+        self.facts: list = []  # what extract_facts returns (Fact objects)
+        self.facts_input: tuple | None = None
 
     async def stream_reply(self, messages: list[dict]):
         self.calls += 1
@@ -413,6 +415,10 @@ class FakeLLM:
             yield token
         if self.fail_stream_after is not None:
             raise RuntimeError("stream broke")
+
+    async def extract_facts(self, message: str, context: list[dict]):
+        self.facts_input = (message, context)
+        return self.facts
 
     async def extract_state(self, conversation: list[dict], previous):
         self.calls += 1
@@ -471,6 +477,7 @@ def fake_llm(monkeypatch, fake_kb):
     fake = FakeLLM()
     monkeypatch.setattr(llm, "stream_reply", fake.stream_reply)
     monkeypatch.setattr(llm, "extract_state", fake.extract_state)
+    monkeypatch.setattr(llm, "extract_facts", fake.extract_facts)
     return fake
 
 

@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from app.core.config import get_settings
 from app.CRUD.chat_session_crud import ChatSessionCRUD
-from app.schemas.session import DiagnosisState, MediaRef, Message, Observations, merge_state
+from app.schemas.session import DiagnosisState, MediaRef, Message, Observations, TestDone, merge_state
 from app.services import hearing, kb, llm, media
 from app.services.media import MediaError, Upload
 from app.services.media_store import MediaStore
@@ -224,6 +224,11 @@ async def _turn(
         passages=passages,
         images=images,
     )
+    n = settings.HISTORY_MESSAGES
+    recent = [{"role": m["role"], "content": prompt_content(m["content"])} for m in (history[-n:] if n > 0 else [])]
+    # What the user reported is read while the reply streams; only the extraction's result is awaited afterwards.
+    said = text or (observations.transcript if observations else "")
+    facts_task = asyncio.create_task(llm.extract_facts(said, recent[-2:])) if said else None
     parts: list[str] = []
     try:
         async with aclosing(llm.stream_reply(prompt)) as stream:
@@ -235,12 +240,15 @@ async def _turn(
         reply = "".join(parts)
         if not reply.strip():
             raise _EmptyReply
-        n = settings.HISTORY_MESSAGES
-        recent = [{"role": m["role"], "content": prompt_content(m["content"])} for m in (history[-n:] if n > 0 else [])]
-        state = merge_state(previous, await llm.extract_state(
-            [*recent, {"role": "user", "content": prompt_content(text)}, {"role": "assistant", "content": reply}],
+        facts = await facts_task if facts_task else []
+        state = merge_state(
             previous,
-        ))
+            await llm.extract_state(
+                [*recent, {"role": "user", "content": prompt_content(text)}, {"role": "assistant", "content": reply}],
+                previous,
+            ),
+            [TestDone(test=f.test, result=f.result) for f in facts if f.test],
+        )
         if _lost(lease):
             raise _LeaseLost
     except _LeaseLost:
@@ -250,9 +258,14 @@ async def _turn(
         await logger.error(f"diagnosis LLM call failed: {type(exc).__name__}")
         yield "error", {"message": LLM_ERROR}
         return
+    finally:
+        if facts_task is not None:
+            facts_task.cancel()  # a no-op once it has finished
 
     assistant = _message("assistant", reply)
     await sessions.append_messages(session["id"], [assistant])
+    if facts:
+        await sessions.update_message(session["id"], user["id"], {"observations": (observations or Observations()).model_copy(update={"facts": facts}).model_dump()})
     await sessions.save_state(session["id"], state.model_dump(), state.title or session.get("title", ""))  # the title is stable: merge_state keeps the first
     yield "state", state.model_dump()
     yield "done", {"message_id": assistant["id"]}

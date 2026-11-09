@@ -46,14 +46,15 @@ def media_dir(tmp_path_factory):
         _ff("-f", "lavfi", "-i", f"testsrc=duration=1:size={side}x16:rate=1", "-pix_fmt", "yuv420p", str(d / f"wide{side}.mp4"))
     _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=61", "-ar", "8000", str(d / "long.wav"))
     _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ar", "8000", str(d / "tone.wav"))
-    _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=90", "-ar", "8000", str(d / "ninety.wav"))
+    _ff("-f", "lavfi", "-i", "testsrc=duration=90:size=64x48:rate=1", "-pix_fmt", "yuv420p", str(d / "ninetyvid.mp4"))
+    _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=150", "-ar", "8000", str(d / "toolong.wav"))
     buf = io.BytesIO()
     Image.new("RGB", (80, 60), (200, 0, 0)).save(
         buf, "MPO", save_all=True, append_images=[Image.new("RGB", (80, 60), (0, 0, 200))]
     )
     (d / "multi.mpo").write_bytes(buf.getvalue())
     _ff(
-        "-f", "lavfi", "-i", "testsrc=duration=61:size=64x48:rate=1",
+        "-f", "lavfi", "-i", "testsrc=duration=121:size=64x48:rate=1",
         "-pix_fmt", "yuv420p", str(d / "longvid.mp4"),
     )
     (d / "fake.mp4").write_text("this is not a video, just text\n")
@@ -107,13 +108,18 @@ async def test_fake_mp4_rejected(tmp_media):
 async def test_long_audio_rejected(tmp_media):
     with pytest.raises(HTTPException) as e:
         await validate_uploads([tmp_media.upload("long.wav")], tmp_media.work)
-    assert e.value.status_code == 413 and "60 seconds" in e.value.detail
+    assert e.value.status_code == 413 and "Audio clips must be 60 seconds" in e.value.detail
 
 
 async def test_long_video_rejected(tmp_media):
     with pytest.raises(HTTPException) as e:
         await validate_uploads([tmp_media.upload("longvid.mp4")], tmp_media.work)
-    assert e.value.status_code == 413 and "60 seconds" in e.value.detail
+    assert e.value.status_code == 413 and "Video clips must be 120 seconds" in e.value.detail
+
+
+async def test_video_up_to_120_seconds_is_accepted(tmp_media):
+    [u] = await validate_uploads([tmp_media.upload("ninetyvid.mp4")], tmp_media.work)  # over the 60 s audio limit
+    assert u.kind == "video" and 89 < u.duration < 91
 
 
 async def test_frames_evenly_spaced_and_jpeg(tmp_media):
@@ -240,9 +246,9 @@ async def test_traversal_filename_stays_in_tmpdir(tmp_media):
 
 
 async def test_audio_pcm_decode_is_capped(tmp_media):
-    # 90 s of audio: the decode itself must stop at MAX_MEDIA_SECONDS.
-    pcm = await audio_pcm(tmp_media.dir / "ninety.wav")
-    assert 0 < len(pcm) <= get_settings().MAX_MEDIA_SECONDS * 48000
+    # 150 s of audio: the decode itself must stop at the longest allowed clip (the video limit).
+    pcm = await audio_pcm(tmp_media.dir / "toolong.wav")
+    assert 0 < len(pcm) <= get_settings().MAX_VIDEO_SECONDS * 48000
 
 
 async def test_mpo_jpeg_accepted_and_reencoded(tmp_media):

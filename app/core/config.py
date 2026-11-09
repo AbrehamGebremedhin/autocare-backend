@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     SOUND_MIN_SCORE: float = 0.2
 
     MAX_FRAMES: int = 8
-    MAX_MEDIA_SECONDS: int = 60
+    MAX_MEDIA_SECONDS: int = 60  # audio-only clips
+    MAX_VIDEO_SECONDS: int = 120  # video clips (their audio track is decoded up to this too)
     MAX_MEDIA_MB: int = 100
     MAX_IMAGES: int = 4
     MAX_IMAGE_MB: int = 10

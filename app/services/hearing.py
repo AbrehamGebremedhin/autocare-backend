@@ -8,7 +8,7 @@ import numpy as np
 
 from app.core.config import get_settings
 from app.schemas.session import SoundTag
-from app.services.media import audio_pcm
+from app.services.media import audio_pcm, decode_limit
 
 CAR_SOUND_LABELS: list[str] = [
     # catch-alls (kept in the softmax so fault labels compete against them)
@@ -87,7 +87,7 @@ def _transcribe_sync(pcm: np.ndarray) -> str:
     # Pass the already-capped array: given a path, faster-whisper would decode the whole file.
     # beam_size=1 (greedy): several times faster on CPU, plenty for short diagnostic clips.
     segments, _ = _whisper().transcribe(pcm, vad_filter=True, beam_size=1)
-    limit = get_settings().MAX_MEDIA_SECONDS
+    limit = decode_limit()
     parts: list[str] = []
     size = 0
     for seg in segments:  # lazy generator; second guard besides the capped decode
@@ -105,7 +105,7 @@ async def transcribe(path: Path) -> str:
 
     Raises media.MediaError if the file has no decodable audio; callers check has_audio first.
     """
-    pcm = await audio_pcm(path, sr=WHISPER_SR)  # ffmpeg decode capped at MAX_MEDIA_SECONDS
+    pcm = await audio_pcm(path, sr=WHISPER_SR)  # ffmpeg decode capped at decode_limit()
     return await asyncio.to_thread(_transcribe_sync, pcm)
 
 

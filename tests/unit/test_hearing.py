@@ -173,7 +173,7 @@ async def test_transcribe_stops_after_max_media_seconds(mocker, tmp_path):
     mocker.patch("app.services.hearing._whisper", return_value=fake)
     out = await transcribe(tmp_path / "a.mp4")
     assert out
-    assert max(consumed) <= get_settings().MAX_MEDIA_SECONDS + 5
+    assert max(consumed) <= get_settings().MAX_VIDEO_SECONDS + 5
 
 
 async def test_transcribe_caps_length(mocker, tmp_path):

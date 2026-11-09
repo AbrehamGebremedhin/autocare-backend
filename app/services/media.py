@@ -96,10 +96,17 @@ async def probe(path: Path) -> dict:
     return {"duration": duration, "has_audio": bool(audio), "has_video": bool(video), "max_side": max_side}
 
 
+def decode_limit() -> int:
+    """Seconds of any clip that are ever decoded: the longer of the audio and video limits. Validation holds each
+    kind to its own limit; this caps decoding itself, whatever a container claims."""
+    s = get_settings()
+    return max(s.MAX_MEDIA_SECONDS, s.MAX_VIDEO_SECONDS)
+
+
 async def audio_pcm(path: Path, sr: int = 48000) -> np.ndarray:
     # The container's Duration is attacker-controlled, so cap the decode itself:
     # -t as an output option means ffmpeg never emits more than the limit.
-    limit = get_settings().MAX_MEDIA_SECONDS
+    limit = decode_limit()
     out = await _run(
         "ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file", "-i", str(path),
         "-vn", "-ac", "1", "-ar", str(sr), "-t", str(limit), "-f", "f32le", "-",
@@ -118,7 +125,7 @@ async def extract_frames(path: Path, duration: float, n: int) -> list[bytes]:
 
     async def one(i: int) -> bytes | None:
         # Clamp: a lying container must not make us seek far past the limit.
-        t = min(duration * (i + 0.5) / n_eff, get_settings().MAX_MEDIA_SECONDS - 0.001)
+        t = min(duration * (i + 0.5) / n_eff, decode_limit() - 0.001)
         try:
             return await _run(
                 "ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file", "-ss", f"{t:.3f}", "-i", str(path),
@@ -208,8 +215,9 @@ async def validate_uploads(files: list[UploadFile], tmpdir: Path) -> list[Upload
             kind = "audio"
         else:
             raise HTTPException(415, "Unsupported file type.")
-        if info["duration"] > s.MAX_MEDIA_SECONDS:
-            raise HTTPException(413, f"Clips must be {s.MAX_MEDIA_SECONDS} seconds or shorter.")
+        max_seconds = s.MAX_VIDEO_SECONDS if kind == "video" else s.MAX_MEDIA_SECONDS
+        if info["duration"] > max_seconds:
+            raise HTTPException(413, f"{kind.capitalize()} clips must be {max_seconds} seconds or shorter.")
         if kind == "video" and info["max_side"] > MAX_VIDEO_SIDE:
             raise HTTPException(413, f"Video resolution must be at most {MAX_VIDEO_SIDE} pixels per side.")
         uploads.append(Upload(kind, raw, info["duration"], info["has_audio"]))

@@ -250,6 +250,9 @@ per client address.
   against `VISUAL_PROVIDER_DAILY_BUDGET`. Cloudflare's output filter sometimes refuses a harmless picture
   (`provider_http_400`); the job then retries (up to 3 attempts), each retry drawing a new car. The plain white
   background is stripped in normalization.
+  With `BRAVE_API_KEY` set, step 1 is replaced by a real photo of the exact car (Brave Image Search, Brave's own
+  thumbnail only, used privately as the shape reference and never served), so the result follows the real model
+  instead of flux's guess; without a key or a hit, the text step runs as before.
   A reviewed image in `VISUAL_CURATED_DIR` (named `<variant_key>.webp|png|jpg`) always wins over generation, costs no
   provider call and is never auto-published; only variants without one are generated. Seeded images (`seed`) are
   published rows and are never overwritten by a generated one unless an operator requeues them.

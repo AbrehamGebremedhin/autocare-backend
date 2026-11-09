@@ -13,6 +13,7 @@ import re
 from functools import cache
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 import httpx
 
@@ -37,8 +38,11 @@ RESTYLE_PROMPT = (
     "Image 1 is a car. Image 2 is a style reference. Redraw the exact car from image 1, keeping its body shape, "
     "proportions, windows, lights and wheels unchanged, but in the illustration style of image 2: the same fine "
     "pen-and-ink line weight, fine hatching, flat muted colours, pale cream body paint and dark olive-grey tyres. "
-    "Strict flat side view facing left on a plain white background. Do not copy the car from image 2."
+    "Strict flat side view facing left on a plain white background, even if image 1 shows the car at an angle or "
+    "with a background. Do not copy the car, its shape or its doors from image 2: only its drawing style."
 )
+BRAVE_IMAGES_URL = "https://api.search.brave.com/res/v1/images/search"
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
 _KEY = re.compile(r"[A-Za-z0-9_-]+")
 _EXTENSIONS = (".webp", ".png", ".jpg")
 
@@ -84,6 +88,48 @@ class CuratedGenerator:
         if not isinstance(variant_key, str) or not _KEY.fullmatch(variant_key):
             raise GeneratorError("invalid_variant")
         return await asyncio.to_thread(self._read, variant_key)
+
+
+async def reference_photo(label: str, transport: httpx.AsyncBaseTransport | None = None) -> bytes | None:
+    """A JPEG photo of the exact car from Brave Image Search, used privately as the shape reference; None if none.
+
+    Only Brave's own thumbnail host is fetched (never an arbitrary URL from a result), and the result is re-encoded.
+    """
+    key = get_settings().BRAVE_API_KEY
+    if not key:
+        return None
+    name = re.sub(r"\(.*?\)", "", label).strip()
+    try:
+        async with httpx.AsyncClient(transport=transport, timeout=20) as client:
+            resp = await client.get(
+                BRAVE_IMAGES_URL, params={"q": f"{name} side view", "count": 10},
+                headers={"X-Subscription-Token": key, "Accept": "application/json"},
+            )
+            resp.raise_for_status()
+            for hit in resp.json().get("results") or []:
+                src = ((hit.get("thumbnail") or {}).get("src") or "") if isinstance(hit, dict) else ""
+                host = urlparse(src).hostname or ""
+                if urlparse(src).scheme != "https" or not (host == "brave.com" or host.endswith(".brave.com")):
+                    continue
+                photo = await client.get(src)
+                if photo.status_code == 200 and len(photo.content) <= MAX_PHOTO_BYTES:
+                    jpeg = await asyncio.to_thread(_as_jpeg, photo.content)
+                    if jpeg:
+                        return jpeg
+    except (httpx.HTTPError, ValueError):
+        pass
+    return None
+
+
+def _as_jpeg(data: bytes) -> bytes | None:
+    from PIL import Image
+
+    try:
+        out = io.BytesIO()
+        Image.open(io.BytesIO(data)).convert("RGB").save(out, "JPEG", quality=90)
+        return out.getvalue()
+    except (OSError, ValueError):
+        return None
 
 
 @cache
@@ -144,10 +190,12 @@ class ProviderGenerator:
             raise GeneratorError("provider_bad_response") from exc
 
     async def generate(self, variant_key: str, style_version: str) -> bytes:
-        prompt = PROMPT_TEMPLATE.format(label=label(variant_key))  # catalog label only, never user data
+        name = label(variant_key)  # catalog label only, never user data
         try:
             async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS):
-                return await self._restyle(await self._call(prompt))
+                # A real photo of the exact car fixes its shape; without one the text prompt has to guess it.
+                car = await reference_photo(name) or await self._call(PROMPT_TEMPLATE.format(label=name))
+                return await self._restyle(car)
         except TimeoutError as exc:
             raise GeneratorError("provider_timeout") from exc
 

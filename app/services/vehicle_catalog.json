@@ -10,6 +10,14 @@
       "ambiguous": false
     },
     {
+      "key": "toyota-vitz-2001-hatchback",
+      "label": "Toyota Vitz hatchback (1999-2005)",
+      "make": "toyota",
+      "models": ["vitz"],
+      "years": [1999, 2005],
+      "ambiguous": false
+    },
+    {
       "key": "honda-civic-2008-sedan",
       "label": "Honda Civic sedan (2006-2011)",
       "make": "honda",

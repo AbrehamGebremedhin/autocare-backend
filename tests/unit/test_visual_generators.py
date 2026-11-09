@@ -281,3 +281,63 @@ async def test_a_broken_curated_image_is_an_error_not_a_silent_generation(tmp_pa
     with pytest.raises(vg.GeneratorError) as err:
         await _chain(tmp_path, provider).generate("toyota-echo-2001-sedan", "s")
     assert err.value.code == "too_large" and provider.calls == []
+
+
+def _photo_bytes():
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 30, 30)).save(out, "PNG")
+    return out.getvalue()
+
+
+async def test_reference_photo_uses_only_brave_thumbnails(monkeypatch):
+    import httpx
+
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "BRAVE_API_KEY", "k")
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.host == "api.search.brave.com":
+            return httpx.Response(200, json={"results": [
+                {"thumbnail": {"src": "https://evil.test/a.jpg"}},
+                {"thumbnail": {"src": "https://imgs.search.brave.com/x.png"}},
+            ]})
+        return httpx.Response(200, content=_photo_bytes())
+
+    photo = await vg.reference_photo("Toyota Vitz hatchback (1999-2005)", httpx.MockTransport(handler))
+    assert photo[:2] == b"\xff\xd8"  # re-encoded as JPEG
+    assert not any("evil.test" in u for u in seen) and "q=Toyota+Vitz+hatchback+side+view" in seen[0]
+
+
+async def test_reference_photo_is_none_without_key_or_on_failure(monkeypatch):
+    import httpx
+
+    from app.core.config import get_settings
+
+    assert await vg.reference_photo("Toyota Vitz") is None  # tests run with no Brave key
+    monkeypatch.setattr(get_settings(), "BRAVE_API_KEY", "k")
+    assert await vg.reference_photo("Toyota Vitz", httpx.MockTransport(lambda r: httpx.Response(500))) is None
+
+
+async def test_generate_restyles_a_reference_photo_when_there_is_one(monkeypatch):
+    monkeypatch.setattr(vg, "label", lambda key: "Toyota Vitz")
+
+    async def photo(name):
+        return b"photo"
+
+    async def restyle(self, car):
+        return b"styled:" + car
+
+    async def no_text(self, prompt):
+        raise AssertionError("text step should be skipped")
+
+    monkeypatch.setattr(vg, "reference_photo", photo)
+    monkeypatch.setattr(vg.ProviderGenerator, "_restyle", restyle)
+    monkeypatch.setattr(vg.ProviderGenerator, "_call", no_text)
+    assert await vg.ProviderGenerator().generate("toyota-vitz-2001-hatchback", "workshop-v1") == b"styled:photo"

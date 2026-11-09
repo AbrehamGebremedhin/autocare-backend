@@ -167,3 +167,9 @@ async def test_established_state_reaches_the_next_prompt(fake_llm, fake_store, s
 async def test_a_turn_without_facts_leaves_observations_null(fake_llm, fake_store, session, car):
     await _run(session, car, "hello")
     assert fake_store.messages(session["id"])[0]["observations"] is None
+
+
+async def test_stored_reply_has_clean_citations(fake_llm, fake_store, session, car):
+    fake_llm.reply = "Brakes still work (<Toyota Platz 2001 manual (s3.amazonaws.com), p. 140>)."
+    await _run(session, car, "abs light")
+    assert fake_store.messages(session["id"])[-1]["content"] == "Brakes still work (Toyota Platz 2001 manual, p. 140)."

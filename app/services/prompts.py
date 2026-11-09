@@ -1,4 +1,5 @@
 import base64
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
@@ -107,6 +108,21 @@ Only include what the user actually said; never infer or add facts. If the messa
 output {"facts": []}. Keep the language of the user."""
 
 _PASSAGE_CHARS = 1500
+_HOST_NOTE = re.compile(r"\s*\((?:https?://)?(?:[\w-]+\.)+[a-z]{2,}(?:/[^\s)]*)?\)", re.IGNORECASE)
+_ANGLE_CITATION = re.compile(r"(\(\s*)?<([^<>]*?,\s*p\.\s*\d+)>(\s*\))?")
+
+
+def citation_label(title: str, page: int | str) -> str:
+    """The one place a source is named for the reader: "Toyota Platz 2001 manual, p. 140". No storage host
+    (titles are saved as "<car> manual (<host>)"), no angle or square brackets."""
+    clean = " ".join(_HOST_NOTE.sub("", title).replace("<", "").replace(">", "").replace("[", "").replace("]", "").split())
+    return f"{clean}, p. {page}"
+
+
+def clean_citations(text: str) -> str:
+    """Backstop for a reply that still cites in the old raw style: <Title (host), p. 140> -> (Title, p. 140)."""
+    text = _ANGLE_CITATION.sub(lambda m: f"({m.group(2)})", text)
+    return _HOST_NOTE.sub("", text)
 
 
 _TRANSMISSION_WORDS = {"manual": "manual", "automatic": "automatic", "cvt": "CVT", "dual_clutch": "dual-clutch"}
@@ -163,7 +179,7 @@ def _render_observations(obs: Observations | None) -> str:
 def _render_passages(passages: Sequence["Passage"]) -> str:
     if not passages:
         return "none found"
-    return "\n\n".join(f"[{p['title']}, p. {p['page']}]\n{p['content'][:_PASSAGE_CHARS]}" for p in passages)
+    return "\n\n".join(f"[{citation_label(p['title'], p['page'])}]\n{p['content'][:_PASSAGE_CHARS]}" for p in passages)
 
 
 MEDIA_PLACEHOLDER = "[attached media]"

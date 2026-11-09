@@ -191,3 +191,24 @@ def test_empty_history_content_gets_a_placeholder(car, empty_state):
     history = [{"role": "user", "content": ""}, {"role": "assistant", "content": "a belt"}]
     msgs = _build(car, empty_state, history=history)
     assert msgs[1:3] == [{"role": "user", "content": "[attached media]"}, {"role": "assistant", "content": "a belt"}]
+
+
+def test_citation_label_has_no_host_or_brackets():
+    from app.services.prompts import citation_label
+
+    assert citation_label("Toyota Platz 2001 manual (s3.amazonaws.com)", 140) == "Toyota Platz 2001 manual, p. 140"
+    assert citation_label("<Toyota Echo 2001 owner's manual>", 7) == "Toyota Echo 2001 owner's manual, p. 7"
+
+
+def test_passage_labels_use_the_clean_citation(car, empty_state):
+    passage = {"source_type": "manual", "title": "Toyota Platz 2001 manual (s3.amazonaws.com)", "page": 140, "content": "ABS warning light"}
+    text = _user_text(_build(car, empty_state, passages=[passage]))
+    assert "[Toyota Platz 2001 manual, p. 140]" in text and "amazonaws" not in text
+
+
+def test_clean_citations_rewrites_raw_markup_in_a_reply():
+    from app.services.prompts import clean_citations
+
+    raw = "Brakes still work (<Toyota Platz 2001 manual (s3.amazonaws.com), p. 140>) and (Toyota Platz 2001 manual (s3.amazonaws.com), p. 141)."
+    assert clean_citations(raw) == "Brakes still work (Toyota Platz 2001 manual, p. 140) and (Toyota Platz 2001 manual, p. 141)."
+    assert clean_citations("Opens at 82 °C (see fig.1) <b> x") == "Opens at 82 °C (see fig.1) <b> x"

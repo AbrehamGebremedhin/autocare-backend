@@ -46,7 +46,7 @@ async def test_search_skips_the_database_for_empty_query(fake_pool):
 
 
 async def test_search_sends_exact_sql_and_params(fake_pool):
-    fake_pool.rows = [{"source_type": "manual", "title": "Echo", "page": 3, "content": "x", "rank": 0.5}]
+    fake_pool.rows = [{"source_type": "manual", "title": "Echo", "page": 3, "content": "radiator fan relay", "rank": 0.5}]
     out = await search("radiator fan", "toyota-echo-2001", 8)
     assert fake_pool.calls == [
         ("fetch", "SELECT * FROM search_kb($1, $2, $3)", ("radiator | fan", "toyota-echo-2001", 8))
@@ -55,9 +55,9 @@ async def test_search_sends_exact_sql_and_params(fake_pool):
 
 
 async def test_search_maps_rows_to_passages(fake_pool):
-    fake_pool.rows = [{"source_type": "book", "car_id": None, "title": "T", "page": 1, "content": "c", "rank": 1.0}]
+    fake_pool.rows = [{"source_type": "book", "car_id": None, "title": "T", "page": 1, "content": "radiator fan", "rank": 1.0}]
     out = await search("radiator fan", "x", 3)
-    assert out == [{"source_type": "book", "title": "T", "page": 1, "content": "c"}]
+    assert out == [{"source_type": "book", "title": "T", "page": 1, "content": "radiator fan"}]
 
 
 def _fake_reader(mocker, pages):
@@ -130,3 +130,30 @@ async def test_ingest_pdf_failed_second_batch_rolls_everything_back(mocker, tmp_
     assert fake_pool.transactions == ["rollback"]  # the delete and batch 1 are undone with it
     assert fake_pool.acquired == 0
     assert len(_batches(fake_pool)) == 2  # batch 3 never ran
+
+
+def _passage(content, title="Automotive Engine Repair", page=215):
+    return {"source_type": "book", "title": title, "page": page, "content": content}
+
+
+def test_wheel_bearing_question_does_not_keep_engine_accessory_text():
+    from app.services.kb import relevant
+
+    accessory = _passage("Alternator and water pump bearing noise: a whine from the accessory drive belt area. Replace the bearing.")
+    audio = _passage("CD player: press the button to select the audio source. Noise reduction.", "Toyota Platz 2001 manual", 31)
+    wheel = _passage("Rear wheel bearing: with the wheel raised, spin the hub and listen. A bearing that growls or clicks "
+                     "once per revolution is worn. Rocking the hub shows play.", "Haynes brakes and suspension", 88)
+    query = "rear wheel bearing noise once per revolution, tire off, hub only"
+    assert relevant([accessory, audio, wheel], query) == [wheel]
+
+
+def test_nothing_relevant_leaves_no_passages(monkeypatch):
+    import asyncio
+
+    from app.services import kb
+
+    async def fake_fetch(sql, *args):
+        return [{"source_type": "manual", "title": "t", "page": 1, "content": "radio tuner presets and clock setting"}]
+
+    monkeypatch.setattr(kb.pool, "fetch", fake_fetch)
+    assert asyncio.run(kb.search("abs warning light flickers on bumpy roads", "car", 8)) == []

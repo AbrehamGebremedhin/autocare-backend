@@ -1,4 +1,5 @@
 import asyncio
+import math
 import re
 from pathlib import Path
 from typing import Literal, TypedDict
@@ -27,12 +28,32 @@ class Passage(TypedDict):
     content: str
 
 
-def build_tsquery(text: str, max_terms: int = 12) -> str:
+def _terms(text: str, max_terms: int = 12) -> list[str]:
     terms: dict[str, None] = {}
     for token in _TOKEN.findall(text.lower()):
         if len(token) >= 3 and token not in _STOPWORDS:
             terms.setdefault(token)
-    return " | ".join(list(terms)[:max_terms])
+    return list(terms)[:max_terms]
+
+
+def build_tsquery(text: str, max_terms: int = 12) -> str:
+    return " | ".join(_terms(text, max_terms))
+
+
+MIN_TERMS = 2  # a passage must match at least this many query terms ...
+MIN_SHARE = 0.3  # ... and at least this share of them, or it is not about the question
+
+
+def _stem(token: str) -> str:
+    return token[:5]  # ponytail: "bearing"/"bearings", "wheel"/"wheels"; swap in a real stemmer if recall suffers
+
+
+def relevant(passages: list["Passage"], query: str) -> list["Passage"]:
+    """The search ORs the query terms, so one shared word ("bearing", "noise") is enough to match. Keep only
+    passages that cover enough of the question's terms; with none left the reply says it is general guidance."""
+    terms = {_stem(t) for t in _terms(query)}
+    need = max(MIN_TERMS, math.ceil(MIN_SHARE * len(terms)))
+    return [p for p in passages if len(terms & {_stem(t) for t in _TOKEN.findall(p["content"].lower())}) >= need]
 
 
 def chunk_pages(pages: list[str], size: int = 1500) -> list[tuple[int, str]]:
@@ -93,7 +114,7 @@ async def search(query: str, car_id: str, k: int) -> list[Passage]:
     if not tsq:
         return []
     rows = await pool.fetch("SELECT * FROM search_kb($1, $2, $3)", tsq, car_id, k)
-    return [
-        Passage(source_type=r["source_type"], title=r["title"], page=r["page"], content=r["content"])
-        for r in rows
-    ]
+    return relevant(
+        [Passage(source_type=r["source_type"], title=r["title"], page=r["page"], content=r["content"]) for r in rows],
+        query,
+    )

@@ -13,7 +13,7 @@ from app.schemas.session import DiagnosisState, MediaRef, Message, Observations,
 from app.services import hearing, kb, llm, media
 from app.services.media import MediaError, Upload
 from app.services.media_store import MediaStore
-from app.services.prompts import build_messages, prompt_content
+from app.services.prompts import build_messages, clean_citations, prompt_content
 from app.utils.logger import get_logger_instance
 
 logger = get_logger_instance("diagnosis")
@@ -237,7 +237,7 @@ async def _turn(
                     raise _LeaseLost
                 parts.append(token)
                 yield "token", {"text": token}
-        reply = "".join(parts)
+        reply = clean_citations("".join(parts))
         if not reply.strip():
             raise _EmptyReply
         facts = await facts_task if facts_task else []

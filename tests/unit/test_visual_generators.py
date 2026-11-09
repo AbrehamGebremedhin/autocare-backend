@@ -305,14 +305,20 @@ async def test_reference_photo_uses_only_brave_thumbnails(monkeypatch):
         seen.append(str(request.url))
         if request.url.host == "api.search.brave.com":
             return httpx.Response(200, json={"results": [
-                {"thumbnail": {"src": "https://evil.test/a.jpg"}},
-                {"thumbnail": {"src": "https://imgs.search.brave.com/x.png"}},
+                {"title": "Toyota Vitz", "properties": {"width": 640, "height": 480},
+                 "thumbnail": {"src": "https://evil.test/a.jpg"}},
+                {"title": "Toyota Vitz mirror glass", "properties": {"width": 640, "height": 480},
+                 "thumbnail": {"src": "https://imgs.search.brave.com/part.png"}},
+                {"title": "Toyota Vitz", "properties": {"width": 480, "height": 480},
+                 "thumbnail": {"src": "https://imgs.search.brave.com/square.png"}},
+                {"title": "Toyota Vitz side", "properties": {"width": 640, "height": 480},
+                 "thumbnail": {"src": "https://imgs.search.brave.com/x.png"}},
             ]})
         return httpx.Response(200, content=_photo_bytes())
 
     photo = await vg.reference_photo("Toyota Vitz hatchback (1999-2005)", httpx.MockTransport(handler))
     assert photo[:2] == b"\xff\xd8"  # re-encoded as JPEG
-    assert not any("evil.test" in u for u in seen) and "q=Toyota+Vitz+hatchback+side+view" in seen[0]
+    assert seen[1:] == ["https://imgs.search.brave.com/x.png"]  # not evil.test, the part, or the square shot
 
 
 async def test_reference_photo_is_none_without_key_or_on_failure(monkeypatch):

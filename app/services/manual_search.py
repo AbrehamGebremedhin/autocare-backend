@@ -23,8 +23,8 @@ MAX_REDIRECTS = 3
 DOWNLOAD_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 RELEVANCE_PAGES = 8
 QUERIES = (
-    "{year} {make} {model} owner's manual pdf",
-    "{year} {make} {model} service repair manual pdf",
+    "{year} {make} {model} owner's manual filetype:pdf",
+    "{year} {make} {model} service repair manual filetype:pdf",
 )
 _ALNUM = re.compile(r"[^a-z0-9]+")
 

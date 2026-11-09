@@ -90,6 +90,30 @@ class CuratedGenerator:
         return await asyncio.to_thread(self._read, variant_key)
 
 
+_NOT_PARTS = "-mirror -headlight -parts -toy -model"
+_PART_WORDS = {"mirror", "glass", "headlight", "headlamp", "lamp", "wiper", "panel", "armrest", "bumper", "grille",
+               "seat", "cover", "kit", "toy", "diecast", "wheel", "tyre", "tire", "decal", "sticker"}
+
+
+def _photo_candidates(results: list, name: str) -> list[str]:
+    """Brave-hosted thumbnails worth trying, best first: wide photos whose title names the car and is no spare part."""
+    words = re.findall(r"[a-z0-9]+", name.lower())
+    scored = []
+    for hit in results:
+        if not isinstance(hit, dict):
+            continue
+        src = (hit.get("thumbnail") or {}).get("src") or ""
+        host = urlparse(src).hostname or ""
+        if urlparse(src).scheme != "https" or not (host == "brave.com" or host.endswith(".brave.com")):
+            continue
+        title = set(re.findall(r"[a-z0-9]+", str(hit.get("title", "")).lower()))
+        size = hit.get("properties") or {}
+        wide = (size.get("width") or 0) >= 1.3 * (size.get("height") or 1)  # product shots are square
+        if wide and not title & _PART_WORDS and len(words) > 1 and words[1] in title:  # words[1] is the model, right after the make
+            scored.append((sum(w in title for w in words) + ("side" in title or "profile" in title), src))
+    return [src for _, src in sorted(scored, key=lambda t: -t[0])]
+
+
 async def reference_photo(label: str, transport: httpx.AsyncBaseTransport | None = None) -> bytes | None:
     """A JPEG photo of the exact car from Brave Image Search, used privately as the shape reference; None if none.
 
@@ -102,16 +126,12 @@ async def reference_photo(label: str, transport: httpx.AsyncBaseTransport | None
     try:
         async with httpx.AsyncClient(transport=transport, timeout=20) as client:
             resp = await client.get(
-                BRAVE_IMAGES_URL, params={"q": f"{name} side view", "count": 10},
+                BRAVE_IMAGES_URL, params={"q": f"{name} car side view {_NOT_PARTS}", "count": 20},
                 headers={"X-Subscription-Token": key, "Accept": "application/json"},
             )
             resp.raise_for_status()
-            for hit in resp.json().get("results") or []:
-                src = ((hit.get("thumbnail") or {}).get("src") or "") if isinstance(hit, dict) else ""
-                host = urlparse(src).hostname or ""
-                if urlparse(src).scheme != "https" or not (host == "brave.com" or host.endswith(".brave.com")):
-                    continue
-                photo = await client.get(src)
+            for hit in _photo_candidates(resp.json().get("results") or [], name):
+                photo = await client.get(hit)
                 if photo.status_code == 200 and len(photo.content) <= MAX_PHOTO_BYTES:
                     jpeg = await asyncio.to_thread(_as_jpeg, photo.content)
                     if jpeg:

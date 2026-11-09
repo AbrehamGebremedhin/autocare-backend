@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from app.core.config import get_settings
 from app.CRUD.chat_session_crud import ChatSessionCRUD
-from app.schemas.session import DiagnosisState, MediaRef, Message, Observations
+from app.schemas.session import DiagnosisState, MediaRef, Message, Observations, merge_state
 from app.services import hearing, kb, llm, media
 from app.services.media import MediaError, Upload
 from app.services.media_store import MediaStore
@@ -237,10 +237,10 @@ async def _turn(
             raise _EmptyReply
         n = settings.HISTORY_MESSAGES
         recent = [{"role": m["role"], "content": prompt_content(m["content"])} for m in (history[-n:] if n > 0 else [])]
-        state = await llm.extract_state(
+        state = merge_state(previous, await llm.extract_state(
             [*recent, {"role": "user", "content": prompt_content(text)}, {"role": "assistant", "content": reply}],
             previous,
-        )
+        ))
         if _lost(lease):
             raise _LeaseLost
     except _LeaseLost:
@@ -253,6 +253,6 @@ async def _turn(
 
     assistant = _message("assistant", reply)
     await sessions.append_messages(session["id"], [assistant])
-    await sessions.save_state(session["id"], state.model_dump(), state.title or session.get("title", ""))
+    await sessions.save_state(session["id"], state.model_dump(), state.title or session.get("title", ""))  # the title is stable: merge_state keeps the first
     yield "state", state.model_dump()
     yield "done", {"message_id": assistant["id"]}

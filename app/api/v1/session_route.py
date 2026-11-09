@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.schemas.Car import MAX_CAR_ID_CHARS, NO_NUL
+from app.schemas.session import DiagnosisState
 from app.services import diagnosis
 from app.services.diagnosis import Lease, run_turn, sse
 from app.services.media import Upload, validate_uploads
@@ -159,7 +160,9 @@ async def list_sessions(current_user: dict = Depends(get_current_user)):
 
 @router.get("/{session_id}", summary="Get one session with its messages and state")
 async def get_session(session_id: str, current_user: dict = Depends(get_current_user)):
-    return await _owned_session(session_id, current_user["id"])
+    session = await _owned_session(session_id, current_user["id"])
+    # Sessions saved before ranks and severities are upgraded on the way out (no float likelihoods leave the API).
+    return {**session, "state": DiagnosisState.model_validate(session.get("state") or {}).model_dump()}
 
 
 @router.delete("/{session_id}", summary="Delete a session and its media")

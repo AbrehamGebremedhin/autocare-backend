@@ -51,7 +51,7 @@ def fake_completion(fake_client):
     return _set
 
 
-VALID = '{"suspected_causes":[{"cause":"Fan relay","likelihood":0.6,"evidence":"on/off bursts","next_check":"swap relay"}],"safety_flags":[],"title":"Fan cycling"}'
+VALID = '{"suspected_causes":[{"cause":"Fan relay","rank":"likely","evidence":"on/off bursts","next_check":"swap relay"}],"safety_flags":[],"title":"Fan cycling"}'
 
 
 async def test_stream_reply_yields_only_content(fake_stream):
@@ -88,8 +88,8 @@ async def test_extract_state_handles_fences_and_prose(fake_completion):
     assert s.title == "Fan cycling"
 
 
-async def test_extract_state_rejects_out_of_range_likelihood(fake_completion):
-    fake_completion(VALID.replace("0.6", "1.7"))
+async def test_extract_state_rejects_unknown_rank(fake_completion):
+    fake_completion(VALID.replace("likely", "certain"))
     prev = DiagnosisState(title="keep")
     assert await extract_state([], prev) == prev
 

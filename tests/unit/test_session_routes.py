@@ -80,6 +80,20 @@ def test_get_own_session(client, auth_headers, existing_session):
     assert r.headers["cache-control"].startswith("no-store")
 
 
+def test_get_session_upgrades_a_legacy_state_and_returns_no_float_likelihood(
+    client, auth_headers, existing_session, fake_store
+):
+    fake_store.rows[existing_session["id"]]["state"] = {
+        "title": "Rear noise",
+        "suspected_causes": [{"cause": "Wheel bearing", "likelihood": 0.85}],
+        "safety_flags": ["check the hub nut torque before driving"],
+    }
+    state = client.get(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers).json()["state"]
+    assert state["suspected_causes"][0]["rank"] == "most_likely" and "likelihood" not in state["suspected_causes"][0]
+    assert state["safety_flags"] == [{"text": "check the hub nut torque before driving", "severity": "critical", "resolved": False}]
+    assert state["title"] == "Rear noise" and state["current_focus"] == "Rear noise"
+
+
 def test_other_users_session_is_404(client, auth_headers_other_user, existing_session):
     assert client.get(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers_other_user).status_code == 404
 

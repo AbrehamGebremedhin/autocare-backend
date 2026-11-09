@@ -397,7 +397,7 @@ class FakeLLM:
         self.reply = "Likely the fan relay. Check it with the engine cold."
         self.fail_stream_after: int | None = None
         self.state: DiagnosisState | None = DiagnosisState(
-            suspected_causes=[SuspectedCause(cause="Fan relay", likelihood=0.6)],
+            suspected_causes=[SuspectedCause(cause="Fan relay", rank="likely")],
             title="Fan cycling on and off",
         )
         self.gate: asyncio.Event | None = None

@@ -7,8 +7,11 @@ from app.schemas.session import (
     MediaRef,
     Message,
     Observations,
+    RuledOut,
+    SafetyFlag,
     SoundTag,
     SuspectedCause,
+    TestDone,
 )
 from app.services.prompts import SYSTEM_PROMPT, build_messages
 
@@ -143,14 +146,39 @@ def test_car_section_tolerates_missing_keys(empty_state):
 
 def test_state_rendered(car):
     state = DiagnosisState(
-        suspected_causes=[SuspectedCause(cause="Coolant temperature sensor", likelihood=0.6,
+        suspected_causes=[SuspectedCause(cause="Coolant temperature sensor", rank="likely",
                                          evidence="fan cycles on and off", next_check="Read ECT live data")],
-        safety_flags=["do not drive while overheating"],
+        safety_flags=[SafetyFlag(text="do not drive while overheating", severity="critical")],
     )
     text = _user_text(_build(car, state))
-    assert "Coolant temperature sensor" in text and "0.6" in text and "Read ECT live data" in text
-    assert "do not drive while overheating" in text
-    assert "none yet" not in text
+    assert "Coolant temperature sensor (likely)" in text and "Read ECT live data" in text
+    assert "CRITICAL: do not drive while overheating" in text
+    assert "none yet" not in text and "0.6" not in text
+
+
+def test_established_findings_are_fed_back_with_a_do_not_ask_rule(car):
+    state = DiagnosisState(
+        confirmed_findings=["new hub fitted"],
+        tests_done=[TestDone(test="spun bare hub, tire off", result="noise once per revolution")],
+        ruled_out=[RuledOut(cause="rear tire", reason="noise persists with tire off")],
+    )
+    text = _user_text(_build(car, state))
+    assert "finding: new hub fitted" in text
+    assert "test done: spun bare hub, tire off -> noise once per revolution" in text
+    assert "ruled out: rear tire (noise persists with tire off)" in text
+    assert "do not ask the user for anything listed there" in SYSTEM_PROMPT
+
+
+def test_open_critical_flag_comes_first_and_rule_is_in_the_prompt(car):
+    state = DiagnosisState(safety_flags=[
+        SafetyFlag(text="drive gently in the wet", severity="important"),
+        SafetyFlag(text="check the hub nut torque before driving", severity="critical"),
+        SafetyFlag(text="old resolved thing", severity="critical", resolved=True),
+    ])
+    flags = _user_text(_build(car, state)).split("## Safety flags")[1].split("##")[0]
+    assert flags.index("CRITICAL: check the hub nut") < flags.index("IMPORTANT: drive gently")
+    assert "resolved" not in flags
+    assert "first paragraph of your reply states it" in SYSTEM_PROMPT
 
 
 def test_utf8_preserved_in_user_block(car, empty_state):

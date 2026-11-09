@@ -182,7 +182,7 @@ async def test_audio_turn_tags_and_transcribes(fake_all, session, car, audio_upl
     assert _image_blocks(fake_all.llm.prompt) == []
     assert TRANSCRIPT in fake_all.llm.prompt[-1]["content"][0]["text"]
     user_msg = fake_all.store.messages(session["id"])[0]
-    assert user_msg["observations"] == {"transcript": TRANSCRIPT, "sounds": [{"label": "belt squeal", "score": 0.7}]}
+    assert user_msg["observations"] == {"transcript": TRANSCRIPT, "sounds": [{"label": "belt squeal", "score": 0.7}], "facts": []}
     assert user_msg["media"][0]["kind"] == "audio"
 
 

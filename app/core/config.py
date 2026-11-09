@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
     GOOGLE_CLIENT_IDS: str = ""
 
+    # Manual discovery: Brave Search finds extra manual PDFs besides startmycar; empty key keeps startmycar only.
+    BRAVE_API_KEY: str = ""
+    MANUAL_MAX_SOURCES: int = 3  # manuals indexed per car, startmycar included
+    MANUAL_MAX_MB: int = 80  # larger downloads are abandoned
+
     # Vehicle visuals: stored artwork, the public https origin used in signed download urls, and worker limits.
     VISUALS_DIR: str = "/data/visuals"
     PUBLIC_BASE_URL: str = ""  # e.g. https://api.example.com; empty or non-https means no signed urls are issued

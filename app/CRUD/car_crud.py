@@ -4,11 +4,12 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import List, Dict, Optional, Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
+from app.core.config import get_settings
 from app.db import pool
 from app.db.crud import BaseCRUD, _ident
-from app.services import kb
+from app.services import kb, manual_search
 from app.services.fetch_car_data_service import FetchCarDataService
 from app.utils.logger import get_logger_instance
 
@@ -178,27 +179,59 @@ async def _set_kb_status(car_id: str, status: str, count: int = 0) -> None:
         await _logger.error(f"Could not set kb_status={status} for {log_id(car_id)}: {type(e).__name__}")
 
 
+async def _startmycar_manual(fetcher: FetchCarDataService, car: dict, pdf_path: Path) -> str | None:
+    """Download startmycar's owner manual to pdf_path; the title to index it under, or None when it has none."""
+    url = fetcher.build_url(car["make"], car["model"], car["year"])["Owner_Manual"]
+    link = await fetcher.scrape_links(url, "owner_manual")
+    if not link:
+        return None
+    await fetcher.download_pdf(urljoin(fetcher.BASE_URL, link), str(pdf_path))
+    return f"{car['make']} {car['model']} {car['year']} owner's manual"
+
+
 async def ingest_car_manual(car: dict) -> None:
-    """Background task: fetch the car's owner manual and load it into kb_passages. Never raises."""
+    """Background task: index up to MANUAL_MAX_SOURCES manuals (startmycar, then Brave Search hits) into kb_passages.
+
+    A source that fails or is not about this car is skipped. Never raises.
+    """
     car_id = car["id"]
+    max_sources = get_settings().MANUAL_MAX_SOURCES
     fetcher = FetchCarDataService()
     tmp_dir = None
+    total = indexed = 0
+    failed = False
     try:
-        url = fetcher.build_url(car["make"], car["model"], car["year"])["Owner_Manual"]
-        link = await fetcher.scrape_links(url, "owner_manual")
-        if not link:
-            await _set_kb_status(car_id, "no_manual")
-            return
-        tmp_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="manual_")
-        pdf_path = Path(tmp_dir) / "manual.pdf"
-        await fetcher.download_pdf(urljoin(fetcher.BASE_URL, link), str(pdf_path))
-        count = await kb.ingest_pdf(
-            pdf_path,
-            source_type="manual",
-            title=f"{car['make']} {car['model']} {car['year']} owner's manual",
-            car_id=car_id,
-        )
-        await _set_kb_status(car_id, "ready" if count > 0 else "no_manual", count)
+        tmp_dir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="manual_"))
+        label = f"{car['make']} {car['model']} {car['year']}"
+
+        async def index(title: str, pdf_path: Path) -> None:
+            nonlocal total, indexed
+            count = await kb.ingest_pdf(pdf_path, source_type="manual", title=title, car_id=car_id)
+            if count > 0:
+                total, indexed = total + count, indexed + 1
+
+        try:
+            title = await _startmycar_manual(fetcher, car, tmp_dir / "startmycar.pdf")
+            if title:
+                await index(title, tmp_dir / "startmycar.pdf")
+        except Exception as e:
+            failed = True
+            await _logger.error(f"startmycar manual failed for {log_id(car_id)}: {type(e).__name__}")
+
+        if indexed < max_sources:
+            urls = await manual_search.search_manual_urls(car["make"], car["model"], car["year"], max_sources * 2)
+            for n, url in enumerate(urls):
+                if indexed >= max_sources:
+                    break
+                path = tmp_dir / f"web{n}.pdf"
+                try:
+                    if await manual_search.download_manual(url, path, car["model"]):
+                        await index(f"{label} manual ({urlparse(url).hostname})", path)
+                except Exception as e:
+                    failed = True
+                    await _logger.error(f"web manual failed for {log_id(car_id)}: {type(e).__name__}")
+
+        await _set_kb_status(car_id, "ready" if indexed else "failed" if failed else "no_manual", total)
     except Exception as e:
         await _logger.error(f"Manual ingest failed for {log_id(car_id)}: {type(e).__name__}")
         await _set_kb_status(car_id, "failed")

@@ -7,6 +7,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://autocare:test@db.invalid:543
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
 os.environ.setdefault("GOOGLE_CLIENT_IDS", "")  # Google sign-in off unless a test turns it on
 os.environ.setdefault("ENV", "development")
+os.environ["BRAVE_API_KEY"] = ""  # never search the real web from tests, whatever .env holds
 
 import asyncio
 import json

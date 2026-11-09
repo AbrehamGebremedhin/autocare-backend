@@ -25,7 +25,8 @@ class Upload:
 
 MAX_IMAGE_PIXELS = 50_000_000  # decompression-bomb cap (width * height)
 MAX_IMAGE_SIDE = 1024
-MAX_VIDEO_SIDE = 4096  # px; bounds the memory of each concurrent frame decode
+MAX_VIDEO_SIDE = 7680  # px (8K, what current phones record); bounds the memory of each frame decode
+_FRAME_DECODES = 2  # frames decoded at once per clip: an 8K decode is a few hundred MB
 SUBPROCESS_TIMEOUT = 30.0
 CHUNK = 1024 * 1024
 _ALLOWED_IMAGE_FORMATS = {"JPEG", "MPO", "PNG", "WEBP"}  # MPO: multi-picture JPEG (phones)
@@ -123,15 +124,18 @@ async def extract_frames(path: Path, duration: float, n: int) -> list[bytes]:
     n_eff = n if duration >= 1.0 else max(1, round(duration * 8))
     n_eff = min(n, n_eff)
 
+    slots = asyncio.Semaphore(_FRAME_DECODES)
+
     async def one(i: int) -> bytes | None:
         # Clamp: a lying container must not make us seek far past the limit.
         t = min(duration * (i + 0.5) / n_eff, decode_limit() - 0.001)
         try:
-            return await _run(
-                "ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file", "-ss", f"{t:.3f}", "-i", str(path),
-                "-frames:v", "1", "-vf", f"scale='min({MAX_IMAGE_SIDE},iw)':-2",
-                "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "4", "-",
-            )  # fmt: skip
+            async with slots:
+                return await _run(
+                    "ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file", "-ss", f"{t:.3f}", "-i", str(path),
+                    "-frames:v", "1", "-vf", f"scale='min({MAX_IMAGE_SIDE},iw)':-2",
+                    "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "4", "-",
+                )  # fmt: skip
         except MediaError:
             return None
 

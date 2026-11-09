@@ -34,7 +34,7 @@ def _build(car, state, **overrides):
 
 def test_system_prompt_rules_present():
     for phrase in [
-        "(<title>, p. <page>)",
+        "in plain parentheses",
         "(Toyota Echo 2001 owner's manual, p. 212)",
         "I couldn't find",
         "\"none found\"",

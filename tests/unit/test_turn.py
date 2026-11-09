@@ -52,13 +52,14 @@ async def test_llm_failure_saves_user_message_only(fake_llm, fake_store, session
     fake_llm.fail_stream_after = 1
     events = [e async for e, _ in run_turn(session, car, "fan clicks", [])]
     assert events[-1] == "error"
-    assert [m["role"] for m in fake_store.messages(session["id"])] == ["user"]
+    user, failed = fake_store.messages(session["id"])
+    assert user["role"] == "user" and (failed["role"], failed["status"], failed["retry_of"]) == ("assistant", "failed", user["id"])
 
 
 async def test_llm_failure_keeps_state_and_title(fake_llm, fake_store, session, car):
     fake_llm.fail_stream_after = 2
     out = await _run(session, car, "fan clicks")
-    assert out[-1] == ("error", {"message": LLM_ERROR})
+    assert out[-1][0] == "error" and out[-1][1]["message"] == LLM_ERROR
     assert [e for e, _ in out].count("token") == 2
     row = fake_store.rows[session["id"]]
     assert row["state"] == {} and row["title"] == "New diagnosis"
@@ -68,8 +69,8 @@ async def test_llm_failure_keeps_state_and_title(fake_llm, fake_store, session, 
 async def test_stream_failing_before_first_token_is_an_error(fake_llm, fake_store, session, car):
     fake_llm.fail_stream_after = 0
     out = await _run(session, car, "fan clicks")
-    assert out == [("stage", {"name": "searching"}), ("error", {"message": LLM_ERROR})]
-    assert [m["role"] for m in fake_store.messages(session["id"])] == ["user"]
+    assert [e for e, _ in out] == ["stage", "error"] and out[-1][1]["message"] == LLM_ERROR
+    assert [m["role"] for m in fake_store.messages(session["id"])] == ["user", "assistant"]  # the second is the failed attempt
 
 
 async def test_utf8_round_trip(fake_llm, fake_store, session, car):
@@ -173,3 +174,46 @@ async def test_stored_reply_has_clean_citations(fake_llm, fake_store, session, c
     fake_llm.reply = "Brakes still work (<Toyota Platz 2001 manual (s3.amazonaws.com), p. 140>)."
     await _run(session, car, "abs light")
     assert fake_store.messages(session["id"])[-1]["content"] == "Brakes still work (Toyota Platz 2001 manual, p. 140)."
+
+
+async def test_timeout_saves_a_failed_attempt_and_retry_answers_the_same_message(fake_llm, fake_store, session, car, monkeypatch):
+    from app.services import llm
+
+    async def timing_out(messages):
+        raise TimeoutError("model did not answer")
+        yield ""  # pragma: no cover (makes this an async generator)
+
+    good = llm.stream_reply
+    monkeypatch.setattr(llm, "stream_reply", timing_out)
+    out = await _run(session, car, "ABS light flickers on bumps")
+    assert out[-1][0] == "error"
+    user_id = out[-1][1]["retry_message_id"]
+    assert [(m["role"], m["status"]) for m in fake_store.messages(session["id"])] == [("user", "ok"), ("assistant", "failed")]
+
+    monkeypatch.setattr(llm, "stream_reply", good)  # the fake is back
+    row = fake_store.rows[session["id"]]
+    retried = [x async for x in run_turn(row, car, None, [], retry_of=user_id)]
+    assert retried[-1][0] == "done"
+    msgs = fake_store.messages(session["id"])
+    assert [(m["role"], m["status"]) for m in msgs] == [("user", "ok"), ("assistant", "failed"), ("assistant", "ok")]
+    assert [m["role"] for m in msgs].count("user") == 1  # nothing synthetic was added as a user message
+    sent = fake_llm.prompt[-1]["content"][0]["text"]
+    assert "ABS light flickers on bumps" in sent  # the retry answers the original text
+    assert [m["role"] for m in fake_llm.prompt[1:-1]] == []  # and the failed attempt is not history
+
+
+def test_retry_only_applies_to_a_failed_last_message():
+    import pytest
+
+    from app.services.diagnosis import retry_target
+    from app.utils.exceptions import BusinessLogicException, RecordNotFoundException
+
+    u = {"id": "u1", "role": "user", "content": "hi", "media": []}
+    failed = {"id": "a1", "role": "assistant", "content": "", "status": "failed"}
+    ok = {"id": "a2", "role": "assistant", "content": "hello", "status": "ok"}
+    assert retry_target([u, failed], "u1") is u
+    for messages, mid, err in [([u], "u1", BusinessLogicException), ([u, ok], "u1", BusinessLogicException),
+                               ([u, failed], "nope", RecordNotFoundException),
+                               ([{**u, "media": [{"kind": "image", "path": "p"}]}, failed], "u1", BusinessLogicException)]:
+        with pytest.raises(err):
+            retry_target(messages, mid)

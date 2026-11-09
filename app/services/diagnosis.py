@@ -14,6 +14,7 @@ from app.services import hearing, kb, llm, media
 from app.services.media import MediaError, Upload
 from app.services.media_store import MediaStore
 from app.services.prompts import build_messages, clean_citations, prompt_content
+from app.utils.exceptions import BusinessLogicException, RecordNotFoundException
 from app.utils.logger import get_logger_instance
 
 logger = get_logger_instance("diagnosis")
@@ -57,10 +58,27 @@ def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _message(role: str, content: str) -> dict:
+def _message(role: str, content: str, **extra) -> dict:
     return Message(
-        id=uuid4().hex, role=role, content=content, created_at=datetime.now(timezone.utc).isoformat()
+        id=uuid4().hex, role=role, content=content, created_at=datetime.now(timezone.utc).isoformat(), **extra
     ).model_dump(mode="json")
+
+
+def _failed(m: dict) -> bool:
+    return m.get("status") == "failed"
+
+
+def retry_target(messages: list[dict], message_id: str) -> dict:
+    """The user message a retry answers again: it must be the last user message, with nothing after it but
+    failed attempts, and carry no files (those are not kept for a second try; the user sends them again)."""
+    idx = next((i for i, m in enumerate(messages) if m["id"] == message_id and m["role"] == "user"), None)
+    if idx is None:
+        raise RecordNotFoundException("Message")
+    if not all(_failed(m) for m in messages[idx + 1:]) or len(messages) == idx + 1:
+        raise BusinessLogicException("Only a message whose reply failed can be retried.")
+    if messages[idx].get("media"):
+        raise BusinessLogicException("This message had files attached; send it again with the files.")
+    return messages[idx]
 
 
 async def _store_originals(session: dict, message_id: str, uploads: list[Upload]) -> list[dict]:
@@ -146,14 +164,20 @@ async def _heartbeat(lease: Lease) -> None:
 
 
 async def run_turn(
-    session: dict, car: dict, text: str | None, uploads: list[Upload], lease: Lease | None = None
+    session: dict,
+    car: dict,
+    text: str | None,
+    uploads: list[Upload],
+    lease: Lease | None = None,
+    retry_of: str | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """One diagnosis turn as (event, data) pairs. With `lease` (the session lease the caller holds), a
     background task renews it while the turn runs; once it is lost the turn ends with an error event and
-    writes nothing more."""
+    writes nothing more. With `retry_of` (the id of a user message whose reply failed) that message is answered
+    again: nothing is added to the transcript before the reply."""
     heartbeat = asyncio.create_task(_heartbeat(lease)) if lease is not None else None
     try:
-        async with aclosing(_turn(session, car, text, uploads, lease)) as events:
+        async with aclosing(_turn(session, car, text, uploads, lease, retry_of)) as events:
             async for event, data in events:
                 if event in ("done", "error") and heartbeat is not None:
                     heartbeat.cancel()  # the turn's last event: nothing is written after it
@@ -164,7 +188,7 @@ async def run_turn(
 
 
 async def _turn(
-    session: dict, car: dict, text: str | None, uploads: list[Upload], lease: Lease | None
+    session: dict, car: dict, text: str | None, uploads: list[Upload], lease: Lease | None, retry_of: str | None = None
 ) -> AsyncIterator[tuple[str, dict]]:
     # `error` and `done` must stay terminal events: nothing may be written or yielded after either one,
     # because run_turn stops the heartbeat and the send route frees the session lease when it sees them.
@@ -172,9 +196,15 @@ async def _turn(
     previous = DiagnosisState.model_validate(session.get("state") or {})
     history = session.get("messages") or []
 
-    # Saved before the first event, so a client that goes away early never loses its message.
-    user = _message("user", text or "")
-    await sessions.append_messages(session["id"], [user])
+    if retry_of is not None:  # answer the stored message again: it is not saved a second time
+        user = retry_target(history, retry_of)
+        text = user["content"] or None
+        history = history[: history.index(user)]
+    else:
+        # Saved before the first event, so a client that goes away early never loses its message.
+        user = _message("user", text or "")
+        await sessions.append_messages(session["id"], [user])
+    history = [m for m in history if not _failed(m)]  # a failed attempt has no reply to show the model
 
     observations: Observations | None = None
     images: list[bytes] = []
@@ -256,7 +286,10 @@ async def _turn(
         return
     except Exception as exc:
         await logger.error(f"diagnosis LLM call failed: {type(exc).__name__}")
-        yield "error", {"message": LLM_ERROR}
+        # Keep a record of the failed attempt, so the transcript never has two user messages in a row, and
+        # tell the client which message to retry (POST .../messages/{id}/retry).
+        await sessions.append_messages(session["id"], [_message("assistant", "", status="failed", retry_of=user["id"])])
+        yield "error", {"message": LLM_ERROR, "retry_message_id": user["id"]}
         return
     finally:
         if facts_task is not None:

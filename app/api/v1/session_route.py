@@ -108,6 +108,7 @@ def _events(
     uploads: Sequence[Upload] = (),
     tmpdir: str | None = None,
     media_user: str | None = None,
+    retry_of: str | None = None,
 ) -> tuple[AsyncIterator[str], weakref.finalize]:
     """SSE body for one turn, plus the release for the session lease (and, if `media_user`, that account's media slot) the
     caller already holds.
@@ -128,7 +129,7 @@ def _events(
 
     async def stream():
         try:
-            async with aclosing(run_turn(session, car, text, list(uploads), lease)) as events:
+            async with aclosing(run_turn(session, car, text, list(uploads), lease, retry_of)) as events:
                 async for event, data in events:
                     if event in ("done", "error"):
                         await finish()
@@ -193,6 +194,23 @@ async def send_message(
     text = (text or "").replace(chr(0), "").strip() or None
     if not text and not files:
         raise BusinessLogicException("A message needs text or at least one file.")
+    return await _start_turn(session_id, text, files, current_user)
+
+
+@router.post(
+    "/{session_id}/messages/{message_id}/retry",
+    summary="Answer a user message again after its reply failed; nothing new is added to the transcript",
+)
+@limiter.limit("20/minute")
+async def retry_message(
+    request: Request, session_id: str, message_id: str, current_user: dict = Depends(get_current_user)
+):
+    return await _start_turn(session_id, None, [], current_user, retry_of=message_id)
+
+
+async def _start_turn(
+    session_id: str, text: str | None, files: list[UploadFile], current_user: dict, retry_of: str | None = None
+) -> StreamingResponse:
     session = await _owned_session(session_id, current_user["id"])
     car = await profiles.car_crud.get_car_by_id(session["car_id"])
     if car is None:
@@ -217,6 +235,8 @@ async def send_message(
     try:
         # Re-read under the lease: the snapshot above may predate the previous turn's writes.
         session = await _owned_session(sid, current_user["id"])
+        if retry_of is not None:
+            text = diagnosis.retry_target(session.get("messages") or [], retry_of)["content"] or None
         uploads: list[Upload] = []
         if files:
             tmpdir = tempfile.mkdtemp(prefix="autocare-turn-")
@@ -224,7 +244,7 @@ async def send_message(
         # Last check before the model: only a request that got this far uses up the day's count. A 429 here
         # releases the lease and the slot like any other error.
         count_daily_message(current_user["id"])
-        body, release = _events(lease, session, car, text, uploads, tmpdir, media_user)
+        body, release = _events(lease, session, car, text, uploads, tmpdir, media_user, retry_of)
         return StreamingResponse(
             body,
             media_type="text/event-stream",

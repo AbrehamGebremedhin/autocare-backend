@@ -572,7 +572,8 @@ async def test_send_claims_only_after_the_ownership_check(auth_headers_other_use
 def test_lock_released_after_llm_failure(client, auth_headers, existing_session, fake_llm):
     fake_llm.fail_stream_after = 1
     r = client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
-    assert _parse(r.text)[-1] == ("error", {"message": "The diagnosis service failed, please retry."})
+    event, data = _parse(r.text)[-1]
+    assert event == "error" and data["message"] == "The diagnosis service failed, please retry." and data["retry_message_id"]
     fake_llm.fail_stream_after = None
     r = client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers)
     assert r.status_code == 200 and _parse(r.text)[-1][0] == "done"
@@ -807,3 +808,19 @@ async def test_renew_and_release_act_only_for_the_holder(fake_pool):
     assert release_args == ("sid", "h1")
     fake_pool.value = None
     assert await ChatSessionCRUD().renew("sid", "someone-else") is False
+
+
+def test_retry_route_answers_the_failed_message_without_a_new_user_message(
+    client, auth_headers, existing_session, fake_llm, fake_store, fake_garage
+):
+    fake_llm.fail_stream_after = 1
+    sent = _parse(client.post(_url(existing_session["id"]), data={"text": "fan clicks"}, headers=auth_headers).text)
+    mid = sent[-1][1]["retry_message_id"]
+    fake_llm.fail_stream_after = None
+    r = client.post(f"{_url(existing_session['id'])}/{mid}/retry", headers=auth_headers)
+    assert r.status_code == 200 and _parse(r.text)[-1][0] == "done"
+    roles = [(m["role"], m["status"]) for m in fake_store.messages(existing_session["id"])]
+    assert roles == [("user", "ok"), ("assistant", "failed"), ("assistant", "ok")]
+    # a second retry has nothing to retry
+    assert client.post(f"{_url(existing_session['id'])}/{mid}/retry", headers=auth_headers).status_code == 422
+    assert client.post(f"{_url(existing_session['id'])}/nope/retry", headers=auth_headers).status_code == 404

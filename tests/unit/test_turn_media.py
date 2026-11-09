@@ -347,10 +347,10 @@ async def test_audio_original_stored_with_audio_label(fake_all, session, car, au
 async def test_empty_reply_is_an_error_and_saves_nothing_more(fake_all, session, car):
     fake_all.llm.reply = "   "
     out = await _run(session, car, "fan clicks", [])
-    assert out == [SEARCHING, ("error", {"message": LLM_ERROR})]
+    assert out[0] == SEARCHING and out[1][0] == "error" and out[1][1]["message"] == LLM_ERROR and len(out) == 2
     assert fake_all.llm.calls == 1  # no state call
     row = fake_all.store.rows[session["id"]]
-    assert [m["role"] for m in row["messages"]] == ["user"]
+    assert [(m["role"], m["status"]) for m in row["messages"]] == [("user", "ok"), ("assistant", "failed")]
     assert row["state"] == {} and row["title"] == "New diagnosis"
 
 
@@ -426,7 +426,7 @@ def test_tmpdir_removed_after_llm_error(client, auth_headers, existing_session, 
     r = client.post(
         _url(existing_session["id"]), files={"files": ("p.jpg", _jpeg(), "image/jpeg")}, headers=auth_headers
     )
-    assert _parse(r.text)[-1] == ("error", {"message": LLM_ERROR})
+    assert _parse(r.text)[-1][1]["message"] == LLM_ERROR
     assert len(turn_dirs) == 1 and not turn_dirs[0].exists()
     assert not fake_all.store.busy(existing_session["id"])
 

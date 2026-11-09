@@ -52,23 +52,24 @@ async def test_search_ranks_pdf_hits_first_and_drops_other_models(brave_key):
         {"url": "https://blog.test/echo-tips", "title": "Echo tips"},
         {"url": "https://files.test/toyota-echo-2001-owners-manual.pdf", "title": "Toyota Echo 2001 manual"},
         {"url": "https://other.test/x.pdf", "title": "unrelated"},
+        {"url": "https://files.test/2010_toyota_echo.pdf", "title": "2010 Echo"},
     ]
     transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"web": {"results": hits}}))
-    urls = await manual_search.search_manual_urls("Toyota", "Echo", 2001, 5, transport)
+    urls = await manual_search.search_manual_urls("Toyota", "Echo", 2001, 5, transport=transport)
     assert urls == ["https://files.test/toyota-echo-2001-owners-manual.pdf", "https://blog.test/echo-tips"]
 
 
 async def test_search_without_key_or_on_failure_is_empty(brave_key, mocker):
     assert await manual_search.search_manual_urls("Toyota", "Echo", 2001, 0) == []
     boom = httpx.MockTransport(lambda r: httpx.Response(500))
-    assert await manual_search.search_manual_urls("Toyota", "Echo", 2001, 5, boom) == []
+    assert await manual_search.search_manual_urls("Toyota", "Echo", 2001, 5, transport=boom) == []
     mocker.patch("app.services.manual_search.get_settings", return_value=mocker.Mock(BRAVE_API_KEY=""))
     assert await manual_search.search_manual_urls("Toyota", "Echo", 2001, 5) == []
 
 
 async def test_download_accepts_a_pdf_about_the_model(tmp_path, brave_key):
     transport = httpx.MockTransport(lambda r: httpx.Response(200, content=_pdf("Toyota Echo owners manual")))
-    assert await manual_search.download_manual("https://a.test/m.pdf", tmp_path / "m.pdf", "Echo", transport)
+    assert await manual_search.download_manual("https://a.test/m.pdf", tmp_path / "m.pdf", ["Echo"], transport=transport)
 
 
 async def test_download_rejects_other_models_non_pdfs_and_oversize(tmp_path, brave_key):
@@ -76,20 +77,49 @@ async def test_download_rejects_other_models_non_pdfs_and_oversize(tmp_path, bra
         return httpx.MockTransport(lambda r: httpx.Response(200, content=content))
 
     dest = tmp_path / "m.pdf"
-    assert not await manual_search.download_manual("https://a.test/m.pdf", dest, "Echo", serve(_pdf("Honda Civic")))
-    assert not await manual_search.download_manual("https://a.test/m.pdf", dest, "Echo", serve(b"<html>Echo</html>"))
-    assert not await manual_search.download_manual("https://a.test/m.pdf", dest, "Echo", serve(b"%PDF-" + b"0" * 2_000_000))
+    assert not await manual_search.download_manual("https://a.test/m.pdf", dest, ["Echo"], transport=serve(_pdf("Honda Civic")))
+    assert not await manual_search.download_manual("https://a.test/m.pdf", dest, ["Echo"], transport=serve(b"<html>Echo</html>"))
+    assert not await manual_search.download_manual("https://a.test/m.pdf", dest, ["Echo"], transport=serve(b"%PDF-" + b"0" * 2_000_000))
 
 
 async def test_download_refuses_private_hosts_and_private_redirects(tmp_path, brave_key):
     dest = tmp_path / "m.pdf"
     never = httpx.MockTransport(lambda r: pytest.fail("fetched a private host"))
-    assert not await manual_search.download_manual("http://internal.test/m.pdf", dest, "Echo", never)
+    assert not await manual_search.download_manual("http://internal.test/m.pdf", dest, ["Echo"], transport=never)
     redirect = httpx.MockTransport(lambda r: httpx.Response(302, headers={"location": "http://internal.test/m.pdf"}))
-    assert not await manual_search.download_manual("https://a.test/m.pdf", dest, "Echo", redirect)
+    assert not await manual_search.download_manual("https://a.test/m.pdf", dest, ["Echo"], transport=redirect)
+
+
+async def test_search_and_check_accept_sibling_names(brave_key, tmp_path):
+    hits = [{"url": "https://files.test/echo-owners-manual.pdf", "title": "Echo manual"}]
+    queries = []
+
+    def handler(request):
+        queries.append(request.url.params["q"])
+        return httpx.Response(200, json={"web": {"results": hits}})
+
+    urls = await manual_search.search_manual_urls("Toyota", "Platz", 2001, 5, ["Echo"], transport=httpx.MockTransport(handler))
+    assert urls == ["https://files.test/echo-owners-manual.pdf"] and any("Echo" in q for q in queries)
+    pdf = httpx.MockTransport(lambda r: httpx.Response(200, content=_pdf("Toyota Echo owners manual")))
+    assert not await manual_search.download_manual("https://a.test/m.pdf", tmp_path / "m.pdf", ["Platz", "Echo"], 2001, transport=pdf)
+    dated = httpx.MockTransport(lambda r: httpx.Response(200, content=_pdf("Toyota Echo 2001 owners manual")))
+    assert await manual_search.download_manual("https://a.test/m.pdf", tmp_path / "m.pdf", ["Platz", "Echo"], 2001, transport=dated)
+
+
+async def test_sibling_names_cleans_the_llm_answer_and_survives_failure(mocker):
+    def reply(content):
+        return mocker.Mock(choices=[mocker.Mock(message=mocker.Mock(content=content))])
+
+    create = mocker.AsyncMock(return_value=reply('{"names": ["Echo", "Platz", "Yaris", "bad<script>", 5]}'))
+    mocker.patch("app.services.manual_search.llm.get_client", return_value=mocker.Mock(chat=mocker.Mock(completions=mocker.Mock(create=create))))
+    assert await manual_search.sibling_names("Toyota", "Platz", 2001) == ["Echo", "Yaris"]
+    create.side_effect = RuntimeError("down")
+    assert await manual_search.sibling_names("Toyota", "Platz", 2001) == []
 
 
 async def test_ingest_indexes_web_manuals_after_startmycar(mocker):
+    mocker.patch("app.CRUD.car_crud.get_settings", return_value=mocker.Mock(MANUAL_MAX_SOURCES=3, BRAVE_API_KEY="k"))
+    mocker.patch("app.CRUD.car_crud.manual_search.sibling_names", return_value=[])
     mocker.patch("app.CRUD.car_crud.FetchCarDataService.scrape_links", return_value=None)
     mocker.patch("app.CRUD.car_crud.manual_search.search_manual_urls", return_value=["https://a.test/1.pdf", "https://b.test/2.pdf"])
     mocker.patch("app.CRUD.car_crud.manual_search.download_manual", side_effect=[False, True])

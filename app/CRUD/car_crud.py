@@ -195,7 +195,8 @@ async def ingest_car_manual(car: dict) -> None:
     A source that fails or is not about this car is skipped. Never raises.
     """
     car_id = car["id"]
-    max_sources = get_settings().MANUAL_MAX_SOURCES
+    settings = get_settings()
+    max_sources = settings.MANUAL_MAX_SOURCES
     fetcher = FetchCarDataService()
     tmp_dir = None
     total = indexed = 0
@@ -218,14 +219,16 @@ async def ingest_car_manual(car: dict) -> None:
             failed = True
             await _logger.error(f"startmycar manual failed for {log_id(car_id)}: {type(e).__name__}")
 
-        if indexed < max_sources:
-            urls = await manual_search.search_manual_urls(car["make"], car["model"], car["year"], max_sources * 2)
+        if indexed < max_sources and settings.BRAVE_API_KEY:
+            aliases = await manual_search.sibling_names(car["make"], car["model"], car["year"])
+            models = [car["model"], *aliases]
+            urls = await manual_search.search_manual_urls(car["make"], car["model"], car["year"], max_sources * 2, aliases)
             for n, url in enumerate(urls):
                 if indexed >= max_sources:
                     break
                 path = tmp_dir / f"web{n}.pdf"
                 try:
-                    if await manual_search.download_manual(url, path, car["model"]):
+                    if await manual_search.download_manual(url, path, models, car["year"]):
                         await index(f"{label} manual ({urlparse(url).hostname})", path)
                 except Exception as e:
                     failed = True

@@ -220,3 +220,19 @@ def test_tone_codes_and_unsourced_claim_rules_are_in_the_prompt():
     assert "Never assert the procedure for a specific car\n  unless a passage states it" in SYSTEM_PROMPT
     assert "general guidance, not checked for this car" in SYSTEM_PROMPT
     assert "and cite nothing" in SYSTEM_PROMPT
+
+
+def test_earlier_media_turns_reach_later_prompts_as_transcript_and_sound_tags(car, empty_state):
+    history = [
+        {"role": "user", "content": "", "media": [{"kind": "video", "path": "p"}],
+         "observations": {"transcript": "it knocks when I turn", "sounds": [{"label": "knock", "score": 0.61}], "facts": []}},
+        {"role": "assistant", "content": "Sounds like a possible CV joint."},
+        {"role": "user", "content": "here is a photo", "media": [{"kind": "image", "path": "q"}], "observations": None},
+        {"role": "user", "content": "plain text", "media": [], "observations": None},
+    ]
+    sent = [m["content"] for m in _build(car, empty_state, history=history)[1:-1]]
+    assert sent[0].startswith("[Attached: video (no longer shown)") and "it knocks when I turn" in sent[0] and "knock (0.61)" in sent[0]
+    assert sent[1] == "Sounds like a possible CV joint."
+    assert sent[2] == "here is a photo\n[Attached: photo (no longer shown)]"
+    assert sent[3] == "plain text"
+    assert "[attached media]" not in "".join(sent)

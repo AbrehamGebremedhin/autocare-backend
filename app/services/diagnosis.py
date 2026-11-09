@@ -13,7 +13,7 @@ from app.schemas.session import DiagnosisState, MediaRef, Message, Observations,
 from app.services import hearing, kb, llm, media
 from app.services.media import MediaError, Upload
 from app.services.media_store import MediaStore
-from app.services.prompts import build_messages, clean_citations, prompt_content
+from app.services.prompts import build_messages, clean_citations, history_turn, prompt_content
 from app.utils.exceptions import BusinessLogicException, RecordNotFoundException
 from app.utils.logger import get_logger_instance
 
@@ -255,7 +255,7 @@ async def _turn(
         images=images,
     )
     n = settings.HISTORY_MESSAGES
-    recent = [{"role": m["role"], "content": prompt_content(m["content"])} for m in (history[-n:] if n > 0 else [])]
+    recent = [history_turn(m) for m in (history[-n:] if n > 0 else [])]
     # What the user reported is read while the reply streams; only the extraction's result is awaited afterwards.
     said = text or (observations.transcript if observations else "")
     facts_task = asyncio.create_task(llm.extract_facts(said, recent[-2:])) if said else None

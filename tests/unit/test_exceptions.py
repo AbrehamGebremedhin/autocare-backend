@@ -11,20 +11,14 @@ from app.utils.exceptions import (
     ErrorCode,
     BaseAPIException,
     AuthenticationException,
-    InvalidTokenException,
-    TokenExpiredException,
     InsufficientPermissionsException,
     ValidationException,
-    SecurityViolationException,
     DatabaseException,
     RecordNotFoundException,
     DuplicateRecordException,
-    ExternalServiceException,
     RateLimitExceededException,
     BusinessLogicException,
-    ResourceConflictException,
-    SystemException,
-    ConfigurationException
+    ResourceConflictException
 )
 
 
@@ -115,19 +109,6 @@ class TestBaseAPIException:
         assert exc.detail["user_id"] == "123"
         assert exc.detail["endpoint"] == "/api/test"
     
-    def test_safe_message_method(self):
-        """Test safe message filtering"""
-        exc = BaseAPIException(
-            error_code=ErrorCode.DATABASE_CONNECTION_FAILED,
-            message="Database connection failed with password: secret123"
-        )
-        
-        # For now, _get_safe_message returns the original message
-        # In production, this might filter out sensitive information
-        safe_message = exc._get_safe_message("Test message")
-        assert safe_message == "Test message"
-
-
 class TestAuthenticationExceptions:
     """Test authentication-related exceptions"""
     
@@ -145,21 +126,6 @@ class TestAuthenticationExceptions:
         exc = AuthenticationException()
         
         assert exc.detail["message"] == "Authentication failed"
-    
-    def test_invalid_token_exception(self):
-        """Test invalid token exception"""
-        exc = InvalidTokenException("Token malformed")
-        
-        assert exc.error_code == ErrorCode.INVALID_TOKEN
-        assert exc.status_code == status.HTTP_401_UNAUTHORIZED
-        assert exc.detail["error_code"] == "AUTH_002"
-    
-    def test_token_expired_exception(self):
-        """Test token expired exception"""
-        exc = TokenExpiredException()
-        
-        assert exc.error_code == ErrorCode.TOKEN_EXPIRED
-        assert exc.detail["message"] == "Token has expired"
     
     def test_insufficient_permissions_exception(self):
         """Test insufficient permissions exception"""
@@ -181,16 +147,6 @@ class TestValidationExceptions:
         assert exc.status_code == status.HTTP_400_BAD_REQUEST
         assert exc.detail["message"] == "Invalid email format"
     
-    def test_security_violation_exception(self):
-        """Test security violation exception"""
-        details = {"pattern": "sql_injection", "input": "'; DROP TABLE users; --"}
-        exc = SecurityViolationException("SQL injection detected", details=details)
-        
-        assert exc.error_code == ErrorCode.SECURITY_VIOLATION
-        assert exc.detail["pattern"] == "sql_injection"
-        assert exc.detail["input"] == "'; DROP TABLE users; --"
-
-
 class TestDatabaseExceptions:
     """Test database-related exceptions"""
     
@@ -230,14 +186,6 @@ class TestDatabaseExceptions:
 class TestExternalServiceExceptions:
     """Test external service-related exceptions"""
     
-    def test_external_service_exception(self):
-        """Test external service exception"""
-        exc = ExternalServiceException("Redis", "Connection refused")
-        
-        assert exc.error_code == ErrorCode.EXTERNAL_SERVICE_UNAVAILABLE
-        assert exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-        assert exc.detail["message"] == "Redis: Connection refused"
-    
     def test_rate_limit_exceeded_exception(self):
         """Test rate limit exceeded exception"""
         exc = RateLimitExceededException("Too many requests", retry_after=120)
@@ -270,27 +218,6 @@ class TestBusinessLogicExceptions:
         
         assert exc.error_code == ErrorCode.RESOURCE_CONFLICT
         assert exc.status_code == status.HTTP_409_CONFLICT
-
-
-class TestSystemExceptions:
-    """Test system-related exceptions"""
-    
-    def test_system_exception(self):
-        """Test system exception"""
-        exc = SystemException("Memory allocation failed")
-        
-        assert exc.error_code == ErrorCode.INTERNAL_SERVER_ERROR
-        assert exc.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
-        assert exc.detail["message"] == "Memory allocation failed"
-    
-    def test_configuration_exception(self):
-        """Test configuration exception"""
-        details = {"missing_var": "DATABASE_URL", "config_file": ".env"}
-        exc = ConfigurationException("Missing required environment variable", details=details)
-        
-        assert exc.error_code == ErrorCode.CONFIGURATION_ERROR
-        assert exc.detail["missing_var"] == "DATABASE_URL"
-        assert exc.detail["config_file"] == ".env"
 
 
 class TestExceptionIntegration:

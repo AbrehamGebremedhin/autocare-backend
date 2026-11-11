@@ -137,6 +137,7 @@ def _reset_rate_limits():
 
     limiter.reset()
     usage_limits._counts.clear()
+    usage_limits._car_adds.clear()
     usage_limits._media_users.clear()
 
 

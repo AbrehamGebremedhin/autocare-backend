@@ -43,6 +43,8 @@ class Settings(BaseSettings):
 
     ENABLE_DOCS: bool = False  # serves /docs, /redoc and /openapi.json; off for a public deployment
     DAILY_MESSAGE_LIMIT: int = 200  # messages per account per UTC day, counted in memory per process; 0 turns the cap off
+    MAX_CARS_PER_USER: int = 20  # cars in one garage; 0 turns the cap off
+    DAILY_CAR_ADD_LIMIT: int = 20  # POST /cars calls per account per UTC day, counted in memory per process; 0 turns the cap off
     MAX_CONCURRENT_MEDIA_TURNS: int = 2  # media turns running at once in this process, one per account; 0 turns the limits off
 
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.

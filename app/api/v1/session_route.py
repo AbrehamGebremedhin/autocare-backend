@@ -147,7 +147,8 @@ def _events(
 
 
 @router.post("", summary="Start a diagnosis session for one of the user's cars")
-async def create_session(payload: SessionCreate, current_user: dict = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def create_session(request: Request, payload: SessionCreate, current_user: dict = Depends(get_current_user)):
     cars = await profiles.get_user_cars(current_user["id"])
     if not any(c.get("id") == payload.car_id for c in cars):
         raise RecordNotFoundException("Car")

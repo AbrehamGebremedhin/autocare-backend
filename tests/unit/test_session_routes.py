@@ -824,3 +824,8 @@ def test_retry_route_answers_the_failed_message_without_a_new_user_message(
     # a second retry has nothing to retry
     assert client.post(f"{_url(existing_session['id'])}/{mid}/retry", headers=auth_headers).status_code == 422
     assert client.post(f"{_url(existing_session['id'])}/nope/retry", headers=auth_headers).status_code == 404
+
+
+def test_create_session_is_rate_limited(client, auth_headers, fake_store, fake_garage, car):
+    codes = [client.post("/api/v1/sessions", json={"car_id": car["id"]}, headers=auth_headers).status_code for _ in range(31)]
+    assert codes[:30] == [200] * 30 and codes[30] == 429

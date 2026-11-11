@@ -260,3 +260,90 @@ def test_scrape_client_does_not_advertise_brotli_without_a_decoder():
     offered = {e.strip() for e in asyncio.run(build()).split(",")}
     has_brotli = any(importlib.util.find_spec(m) for m in ("brotli", "brotlicffi"))
     assert has_brotli or "br" not in offered
+
+
+# --- limits on adding cars ---------------------------------------------------------
+
+def _post_car(client, headers, **extra):
+    return client.post("/api/v1/cars", json={**NEW_CAR, **extra}, headers=headers)
+
+
+@pytest.fixture
+def add_car(mocker):
+    """add_car_to_user and the background ingest stubbed; returns the add_car_to_user mock."""
+    mocker.patch("app.api.v1.car_route.ingest_car_manual")
+    return mocker.patch(
+        "app.api.v1.car_route.user_profile_service.add_car_to_user",
+        return_value={"success": True, "car_info": {**CAR, "kb_status": "ready"}},
+    )
+
+
+def test_add_car_is_rate_limited_per_address(client, auth_headers, add_car):
+    assert [_post_car(client, auth_headers).status_code for _ in range(10)] == [200] * 10
+    r = _post_car(client, auth_headers)
+    assert r.status_code == 429 and r.json()["error_code"] == "EXT_003"
+
+
+def test_full_garage_refuses_a_new_car(client, auth_headers, add_car, mocker, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "MAX_CARS_PER_USER", 2)
+    mocker.patch("app.api.v1.car_route.user_profile_service.garage_ids", return_value=["a-b-2001", "c-d-2002"])
+    r = _post_car(client, auth_headers)
+    assert r.status_code == 422 and r.json()["error_code"] == "BIZ_001"
+    assert r.json()["message"] == "A garage holds at most 2 cars. Remove one to add another."
+    add_car.assert_not_called()
+
+
+def test_full_garage_still_returns_a_car_already_in_it(client, auth_headers, add_car, mocker, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "MAX_CARS_PER_USER", 2)
+    mocker.patch("app.api.v1.car_route.user_profile_service.garage_ids", return_value=["toyota-echo-2001", "c-d-2002"])
+    assert _post_car(client, auth_headers).status_code == 200
+    add_car.assert_called_once()
+
+
+def test_daily_car_add_limit_is_429_with_retry_after(client, auth_headers, add_car, monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.core.config import get_settings
+    from app.services import usage_limits
+
+    monkeypatch.setattr(get_settings(), "DAILY_CAR_ADD_LIMIT", 1)
+    monkeypatch.setattr(usage_limits, "_utc_now", lambda: datetime(2026, 3, 1, 23, 0, 0, tzinfo=timezone.utc))
+    assert _post_car(client, auth_headers).status_code == 200
+    r = _post_car(client, auth_headers)
+    assert r.status_code == 429 and r.headers["retry-after"] == "3600"
+    assert r.json()["message"] == "Daily limit of 1 added cars reached. Try again after midnight UTC."
+    assert add_car.call_count == 1
+    assert usage_limits._counts == {}  # its own counter, not the message one
+
+
+def test_daily_car_add_limit_zero_turns_it_off(client, auth_headers, add_car, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "DAILY_CAR_ADD_LIMIT", 0)
+    monkeypatch.setattr(get_settings(), "MAX_CARS_PER_USER", 0)
+    assert [_post_car(client, auth_headers).status_code for _ in range(5)] == [200] * 5
+
+
+async def test_second_ingest_of_the_same_car_is_a_no_op_while_the_first_runs(mocker, update):
+    from app.CRUD import car_crud
+
+    started, release, calls = asyncio.Event(), asyncio.Event(), []
+
+    async def scrape(*args, **kwargs):
+        calls.append(1)
+        started.set()
+        await release.wait()
+        return None
+
+    mocker.patch("app.CRUD.car_crud.FetchCarDataService.scrape_links", side_effect=scrape)
+    first = asyncio.create_task(ingest_car_manual(CAR))
+    await started.wait()
+    await asyncio.wait_for(ingest_car_manual(CAR), 1)  # returns at once
+    assert len(calls) == 1 and CAR["id"] in car_crud._ingesting
+    release.set()
+    await first
+    assert CAR["id"] not in car_crud._ingesting

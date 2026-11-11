@@ -96,6 +96,10 @@ class UserProfileService(BaseService):
             await self.logger.error(f"Error adding car to user {user_id}: {type(e).__name__}")
             raise DatabaseException("Could not add car") from e
 
+    async def garage_ids(self, user_id: str) -> List[str]:
+        """The ids of the cars in the user's garage (one query); [] without a profile."""
+        return await pool.fetchval("SELECT cars FROM user_profiles WHERE user_id = $1::uuid", user_id) or []
+
     async def set_transmission(self, user_id: str, car_id: str, transmission: str) -> bool:
         """Set the owner's transmission for a car in their garage; False when the car is not in it."""
         status = await pool.execute(

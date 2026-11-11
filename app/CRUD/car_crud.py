@@ -189,7 +189,21 @@ async def _startmycar_manual(fetcher: FetchCarDataService, car: dict, pdf_path: 
     return f"{car['make']} {car['model']} {car['year']} owner's manual"
 
 
+_ingesting: set[str] = set()  # car ids whose manual ingest is running in this process
+
+
 async def ingest_car_manual(car: dict) -> None:
+    """Run the manual ingest unless one is already running for this car (two quick adds start one, not two)."""
+    if car["id"] in _ingesting:
+        return
+    _ingesting.add(car["id"])
+    try:
+        await _ingest_car_manual(car)
+    finally:
+        _ingesting.discard(car["id"])
+
+
+async def _ingest_car_manual(car: dict) -> None:
     """Background task: index up to MANUAL_MAX_SOURCES manuals (startmycar, then Brave Search hits) into kb_passages.
 
     A source that fails or is not about this car is skipped. Never raises.

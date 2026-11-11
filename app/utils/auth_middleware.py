@@ -23,14 +23,6 @@ class AuthenticationError(HTTPException):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-class AuthorizationError(HTTPException):
-    """Custom authorization error"""
-    def __init__(self, detail: str = "Insufficient permissions"):
-        super().__init__(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=detail
-        )
-
 class JWTHandler:
     """JWT token handling utilities"""
     
@@ -151,62 +143,3 @@ async def validate_user(user_id: str, issued_at: float) -> bool:
     if not exists:
         raise AuthenticationError("Token validation failed")
     return True
-
-async def get_current_active_user(
-    current_user: Dict[str, Any] = Depends(get_current_user)
-) -> Dict[str, Any]:
-    """
-    Get current active user (additional validation if needed)
-    """
-    # Add additional checks here if needed (user status, etc.)
-    return current_user
-
-def require_permissions(required_permissions: list):
-    """
-    Decorator to require specific permissions
-    """
-    def permission_checker(current_user: Dict[str, Any] = Depends(get_current_user)):
-        user_permissions = current_user.get("permissions", [])
-        user_role = current_user.get("role", "user")
-        
-        # Admin has all permissions
-        if user_role == "admin":
-            return current_user
-        
-        # Check specific permissions
-        if not any(perm in user_permissions for perm in required_permissions):
-            raise AuthorizationError(f"Required permissions: {', '.join(required_permissions)}")
-        
-        return current_user
-    
-    return permission_checker
-
-def require_role(required_role: str):
-    """
-    Decorator to require specific role
-    """
-    def role_checker(current_user: Dict[str, Any] = Depends(get_current_user)):
-        user_role = current_user.get("role", "user")
-        
-        if user_role != required_role and user_role != "admin":
-            raise AuthorizationError(f"Required role: {required_role}")
-        
-        return current_user
-    
-    return role_checker
-
-# Optional authentication (for public endpoints that can benefit from user context)
-async def get_optional_user(
-    request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
-) -> Optional[Dict[str, Any]]:
-    """
-    Get current user if authenticated, otherwise return None
-    """
-    if not credentials:
-        return None
-    
-    try:
-        return await get_current_user(request, credentials)
-    except (AuthenticationError, AuthorizationError):
-        return None

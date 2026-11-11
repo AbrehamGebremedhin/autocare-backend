@@ -13,11 +13,7 @@ from app.utils.auth_middleware import (
     JWTHandler, 
     access_claims,
     get_current_user, 
-    get_current_active_user,
-    require_permissions,
-    require_role,
     AuthenticationError,
-    AuthorizationError
 )
 
 
@@ -248,109 +244,6 @@ class TestAuthenticationMiddleware:
         with pytest.raises(AuthenticationError):
             await get_current_user(mock_request, credentials)
     
-    @pytest.mark.asyncio
-    async def test_get_current_active_user(self, mock_request, valid_credentials):
-        """Test getting current active user"""
-        import os
-        from app.utils.auth_middleware import jwt_handler
-        
-        # Patch the global JWT handler to use test environment secret
-        original_secret = jwt_handler.secret_key
-        jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
-        
-        try:
-            with patch('app.utils.auth_middleware.validate_user', new_callable=AsyncMock) as mock_validate:
-                mock_validate.return_value = True
-                
-                user = await get_current_user(mock_request, valid_credentials)
-                active_user = await get_current_active_user(user)
-                
-                assert active_user == user
-        finally:
-            # Restore original secret
-            jwt_handler.secret_key = original_secret
-
-
-class TestAuthorizationDecorators:
-    """Test authorization decorator functions"""
-    
-    @pytest.fixture
-    def user_with_permissions(self):
-        """User with specific permissions"""
-        return {
-            "id": "user-123",
-            "email": "test@example.com",
-            "role": "user",
-            "permissions": ["read", "write", "delete"]
-        }
-    
-    @pytest.fixture
-    def admin_user(self):
-        """Admin user"""
-        return {
-            "id": "admin-123",
-            "email": "admin@example.com",
-            "role": "admin",
-            "permissions": ["admin"]
-        }
-    
-    @pytest.fixture
-    def basic_user(self):
-        """Basic user with limited permissions"""
-        return {
-            "id": "basic-123",
-            "email": "basic@example.com",
-            "role": "user",
-            "permissions": ["read"]
-        }
-    
-    def test_require_permissions_success(self, user_with_permissions):
-        """Test successful permission check"""
-        permission_checker = require_permissions(["read", "write"])
-        
-        # Should not raise exception
-        result = permission_checker(user_with_permissions)
-        assert result == user_with_permissions
-    
-    def test_require_permissions_admin_bypass(self, admin_user):
-        """Test that admin bypasses permission checks"""
-        permission_checker = require_permissions(["super_secret_permission"])
-        
-        # Admin should bypass permission check
-        result = permission_checker(admin_user)
-        assert result == admin_user
-    
-    def test_require_permissions_failure(self, basic_user):
-        """Test failed permission check"""
-        permission_checker = require_permissions(["admin", "delete"])
-        
-        with pytest.raises(AuthorizationError) as exc_info:
-            permission_checker(basic_user)
-        
-        assert "required permissions" in str(exc_info.value.detail).lower()
-    
-    def test_require_role_success(self, admin_user):
-        """Test successful role check"""
-        role_checker = require_role("admin")
-        
-        result = role_checker(admin_user)
-        assert result == admin_user
-    
-    def test_require_role_admin_bypass(self, admin_user):
-        """Test that admin can access any role"""
-        role_checker = require_role("user")
-        
-        result = role_checker(admin_user)
-        assert result == admin_user
-    
-    def test_require_role_failure(self, basic_user):
-        """Test failed role check"""
-        role_checker = require_role("admin")
-        
-        with pytest.raises(AuthorizationError) as exc_info:
-            role_checker(basic_user)
-        
-        assert "required role" in str(exc_info.value.detail).lower()
 
 
 class TestValidateUser:

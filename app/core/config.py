@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import List
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -74,6 +74,12 @@ class Settings(BaseSettings):
 
     def get_google_client_ids(self) -> List[str]:
         return [c.strip() for c in self.GOOGLE_CLIENT_IDS.split(",") if c.strip()]
+
+    @model_validator(mode="after")
+    def _no_debug_in_production(self):
+        if self.is_production() and self.DEBUG:
+            raise ValueError("DEBUG must be false when ENV=production: debug mode returns tracebacks to clients")
+        return self
 
     def is_production(self) -> bool:
         return self.ENV.lower() == "production"

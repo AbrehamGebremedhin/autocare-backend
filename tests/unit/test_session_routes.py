@@ -882,3 +882,14 @@ async def test_session_list_is_limited_to_100(fake_pool):
     await ChatSessionCRUD().list_for_user("u1")
     [(_, sql, _)] = fake_pool.calls
     assert sql.rstrip().endswith("LIMIT 100")
+
+
+INTERNAL = {"user_id", "busy_until", "busy_by"}
+
+
+def test_session_json_has_no_internal_fields(client, auth_headers, fake_store, fake_garage, car):
+    created = client.post("/api/v1/sessions", json={"car_id": car["id"]}, headers=auth_headers).json()
+    assert not INTERNAL & set(created) and created["car_id"] == car["id"]
+    fake_store.rows[created["id"]].update(busy_until="2099-01-01T00:00:00+00:00", busy_by="holder-token")
+    got = client.get(f"/api/v1/sessions/{created['id']}", headers=auth_headers).json()
+    assert not INTERNAL & set(got) and got["id"] == created["id"] and "messages" in got and "state" in got

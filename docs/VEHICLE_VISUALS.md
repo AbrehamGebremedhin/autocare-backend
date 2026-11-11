@@ -76,7 +76,7 @@ Operator. `scripts/visuals_admin.py` is a CLI, not an HTTP route. Nothing is ser
   `sha256`. Ownership of the car is checked when the descriptor is requested and again when the URL is signed.
 - Every refusal of a URL (bad name, bad or expired signature, missing or corrupt object) is the same `404 File not
   found`; the route also answers 429 (rate limit) and 405 (wrong method). Refusals carry
-  `Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate`; a successful download carries `private, max-age=<remaining lifetime, at
+  `Cache-Control: no-store`; a successful download carries `private, max-age=<remaining lifetime, at
   most the TTL>`, `Content-Type: image/webp`, `Content-Length` and `X-Content-Type-Options: nosniff`.
 - Rotating `JWT_SECRET_KEY` invalidates outstanding download URLs; they live 15 minutes by default, so
   the effect is a short window until fresh descriptors are requested.

@@ -22,6 +22,8 @@ GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 # For other addresses a verified email only means the address was verified once, maybe long ago.
 GOOGLE_EMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
 GOOGLE_CLOCK_SKEW_SECONDS = 10
+GOOGLE_HTTP_TIMEOUT_SECONDS = 10  # google-auth's own default is 120 s, in a pool thread
+GOOGLE_CERTS_TTL_SECONDS = 3600
 
 _hasher = PasswordHasher()  # argon2id with the library's defaults
 # Checked when there is no hash to compare with (unknown email, Google-only account), so that
@@ -106,11 +108,47 @@ async def log_out_everywhere(user_id: str, token_issued_at: float) -> None:
     await users.revoke_tokens(user_id, time.time())
 
 
+class _CertRequest:
+    """google-auth transport that keeps Google's signing certificates for GOOGLE_CERTS_TTL_SECONDS (google-auth
+    downloads them on every verification) and bounds each download. Only status-200 answers are kept."""
+
+    def __init__(self, inner=None):
+        self._inner = inner or Request()
+        self._cache: dict[str, tuple[float, object]] = {}  # url -> (monotonic time fetched, response)
+
+    def __call__(self, url, method="GET", **kwargs):
+        cached = self._cache.get(url)
+        if cached and time.monotonic() - cached[0] < GOOGLE_CERTS_TTL_SECONDS:
+            return cached[1]
+        response = self._inner(url, method=method, **{**kwargs, "timeout": GOOGLE_HTTP_TIMEOUT_SECONDS})
+        if response.status == 200:
+            self._cache[url] = (time.monotonic(), response)
+        return response
+
+    def clear(self) -> bool:
+        """Drop the cached certificates; True when there were any."""
+        had = bool(self._cache)
+        self._cache.clear()
+        return had
+
+
+_certs = _CertRequest()
+
+
 def _verify_google_token(token: str) -> dict:
     # Checks the signature (against Google's published keys) and expiry; audience is checked by the caller.
-    return google_id_token.verify_oauth2_token(
-        token, Request(), audience=None, clock_skew_in_seconds=GOOGLE_CLOCK_SKEW_SECONDS
-    )
+    def verify() -> dict:
+        return google_id_token.verify_oauth2_token(
+            token, _certs, audience=None, clock_skew_in_seconds=GOOGLE_CLOCK_SKEW_SECONDS
+        )
+
+    try:
+        return verify()
+    except ValueError:
+        # Google rotated its keys inside the cache window: the token's key id is not in the cached set. Fetch once more.
+        if not _certs.clear():
+            raise
+        return verify()
 
 
 async def _google_identity(token: str) -> tuple[str, str, bool]:

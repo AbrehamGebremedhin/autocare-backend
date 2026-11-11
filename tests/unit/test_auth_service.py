@@ -352,3 +352,75 @@ async def test_inserts_bind_every_value(fake_pool):
     await UserCRUD().create_google_user("b@example.com", "sub-b")
     assert [c[2] for c in fake_pool.calls] == [("a@example.com", "$argon2id$hash"), ("b@example.com", "sub-b")]
     assert all("a@example.com" not in c[1] and "sub-b" not in c[1] for c in fake_pool.calls)
+
+
+# --- Google certificate cache ---------------------------------------------------
+
+CERTS_URL = "https://www.googleapis.com/oauth2/v1/certs"
+
+
+class _FakeTransport:
+    """Counts calls and answers with a fixed status; remembers the keyword arguments of each call."""
+
+    def __init__(self, status=200):
+        self.status, self.calls = status, []
+
+    def __call__(self, url, method="GET", **kwargs):
+        self.calls.append(kwargs)
+        return type("Resp", (), {"status": self.status, "data": b"{}"})()
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(auth_service.time, "monotonic", lambda: now[0])
+    return now
+
+
+def test_certs_are_fetched_once_within_the_ttl(clock):
+    inner = _FakeTransport()
+    certs = auth_service._CertRequest(inner)
+    first = certs(CERTS_URL, method="GET")
+    clock[0] += 3599
+    assert certs(CERTS_URL, method="GET") is first and len(inner.calls) == 1
+
+
+def test_certs_are_fetched_again_after_the_ttl(clock):
+    inner = _FakeTransport()
+    certs = auth_service._CertRequest(inner)
+    certs(CERTS_URL)
+    clock[0] += 3601
+    certs(CERTS_URL)
+    assert len(inner.calls) == 2
+
+
+def test_a_failed_cert_fetch_is_not_cached(clock):
+    inner = _FakeTransport(status=500)
+    certs = auth_service._CertRequest(inner)
+    certs(CERTS_URL)
+    certs(CERTS_URL)
+    assert len(inner.calls) == 2 and certs.clear() is False
+
+
+def test_the_cert_fetch_has_a_10_second_timeout(clock):
+    inner = _FakeTransport()
+    auth_service._CertRequest(inner)(CERTS_URL, timeout=120)
+    assert inner.calls[0]["timeout"] == 10
+
+
+def test_an_unknown_key_refetches_the_certs_once(mocker, clock, monkeypatch):
+    certs = auth_service._CertRequest(_FakeTransport())
+    certs(CERTS_URL)  # warm
+    monkeypatch.setattr(auth_service, "_certs", certs)
+    verify = mocker.patch("google.oauth2.id_token.verify_oauth2_token", side_effect=[ValueError("no key"), _claims()])
+    assert auth_service._verify_google_token("t") == _claims()
+    assert verify.call_count == 2
+    assert certs.clear() is False  # emptied between the two checks and not refilled by the fake verify
+
+
+def test_a_bad_token_with_a_cold_cache_is_not_retried(mocker, monkeypatch):
+    monkeypatch.setattr(auth_service, "_certs", auth_service._CertRequest(_FakeTransport()))
+    verify = mocker.patch("google.oauth2.id_token.verify_oauth2_token", side_effect=ValueError("bad"))
+    with pytest.raises(ValueError):
+        auth_service._verify_google_token("t")
+    assert verify.call_count == 1

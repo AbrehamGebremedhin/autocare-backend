@@ -74,6 +74,11 @@ def _spawn_release(lease: Lease, media_user: str | None = None) -> asyncio.Task:
     return task
 
 
+async def drain_releases() -> None:
+    """Wait for the lease releases still scheduled (shutdown: they need the pool, which closes next)."""
+    await asyncio.gather(*_releasing, return_exceptions=True)
+
+
 def _release(
     loop: asyncio.AbstractEventLoop, lease: Lease, tmpdir: str | None, media_user: str | None = None
 ) -> asyncio.Task | None:

@@ -41,6 +41,13 @@ docker compose run --rm -v ./car_data:/app/car_data:ro api uv run --no-sync pyth
 
 `car_data/` is never copied into the image; it is only mounted for this command. Re-running replaces the passages of each PDF it finds.
 
+### Container limits and shutdown
+
+- **Logs** are rotated by Docker: five files of 10 MB per container (`x-logging` in `docker-compose.yml`).
+- **Memory pressure**: Postgres has `oom_score_adj: -500` and the api and worker `500`, so the kernel kills them before it touches the database. No memory limit is set because the right number depends on the host; add `mem_limit` to the api once you know its normal use (Whisper and CLAP need about 2 GB).
+- **Stopping the api** (`docker compose stop api`, a deploy) waits up to 60 s: uvicorn stops taking requests and gives replies in flight 45 s (`--timeout-graceful-shutdown`) before cutting them, then the remaining session leases are released. A reply cut off after that frees its session at once; only a killed process leaves a lease to expire (5 minutes). At start the api deletes turn and manual-download folders a killed process left in `/tmp`.
+- **Dropped privileges**: the api and worker run with `cap_drop: ["ALL"]`, `no-new-privileges` and `pids_limit: 512`. If a container refuses to start after an update, remove those three keys from that service in `docker-compose.yml` and report it; nothing in the app needs them.
+
 ### Schema changes
 
 `app/db/sql/schema.sql` is mounted into Postgres' init directory, so it runs **only when the `pgdata` volume is empty** (the very first start). The app never changes the schema. Later changes are applied by hand:

@@ -177,6 +177,7 @@ def test_dockerfile_cmd_runs_one_uvicorn_worker_behind_proxy_headers():
     cmd = next(line for line in _dockerfile() if line.startswith("CMD "))
     assert "uvicorn" in cmd and '"--proxy-headers"' in cmd
     assert "--workers" not in cmd  # one worker: rate limits and the Whisper/CLAP models are per process
+    assert '"--timeout-graceful-shutdown", "45"' in cmd  # in-flight replies get 45 s of the 60 s stop grace period
 
 
 def test_dockerignore_keeps_scripts_and_drops_car_data():
@@ -208,3 +209,27 @@ def test_no_hosted_backend_leftovers():
         if needle in path.read_text(encoding="utf-8", errors="ignore").lower():
             hits.append(path.relative_to(ROOT).as_posix())
     assert hits == []
+
+
+def test_every_service_rotates_its_logs(compose):
+    for name in ("db", "api", "visuals-worker"):
+        assert compose["services"][name]["logging"] == {
+            "driver": "json-file", "options": {"max-size": "10m", "max-file": "5"},
+        }
+
+
+def test_the_database_outlives_the_api_under_memory_pressure(compose):
+    s = compose["services"]
+    assert s["db"]["oom_score_adj"] == -500
+    assert s["api"]["oom_score_adj"] == s["visuals-worker"]["oom_score_adj"] == 500
+
+
+def test_app_containers_drop_capabilities(compose):
+    for name in ("api", "visuals-worker"):
+        s = compose["services"][name]
+        assert s["cap_drop"] == ["ALL"] and s["security_opt"] == ["no-new-privileges:true"] and s["pids_limit"] == 512
+    assert not {"cap_drop", "security_opt", "pids_limit"} & set(compose["services"]["db"])
+
+
+def test_api_has_time_to_finish_replies_on_stop(compose):
+    assert compose["services"]["api"]["stop_grace_period"] == "60s"

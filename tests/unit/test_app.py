@@ -136,3 +136,15 @@ async def test_lifespan_installs_a_bigger_default_executor(mocker):
     async with main.lifespan(main.app):
         executor = asyncio.get_running_loop()._default_executor
     assert executor._max_workers == main.DEFAULT_EXECUTOR_THREADS == 32
+
+
+def test_startup_removes_stale_turn_and_manual_directories(monkeypatch, tmp_path):
+    import tempfile
+
+    import main
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    for name in ("autocare-turn-a", "autocare-manual-b", "other-c"):
+        (tmp_path / name).mkdir()
+    assert main.sweep_stale_tmp() == 2
+    assert [p.name for p in tmp_path.iterdir()] == ["other-c"]

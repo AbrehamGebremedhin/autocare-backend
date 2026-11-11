@@ -2,6 +2,8 @@
 import asyncio
 import logging
 import os
+import shutil
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +17,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.routes import router as v1_router
+from app.api.v1.session_route import drain_releases
 from app.core.config import get_settings
 from app.db import pool
 from app.db.pool import DatabaseUnavailable
@@ -41,8 +44,20 @@ def media_dir_writable(path: str) -> bool:
     return current.is_dir() and os.access(current, os.W_OK | os.X_OK)
 
 
+def sweep_stale_tmp() -> int:
+    """Remove the turn and manual-ingest directories a killed process left in the temp dir; how many were removed."""
+    removed = 0
+    for pattern in ("autocare-turn-*", "autocare-manual-*"):
+        for path in Path(tempfile.gettempdir()).glob(pattern):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+    return removed
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    sweep_stale_tmp()
     # Whisper, CLAP, argon2, pypdf and DNS lookups share the default executor: give it room so media work cannot starve logins.
     asyncio.get_running_loop().set_default_executor(
         ThreadPoolExecutor(max_workers=DEFAULT_EXECUTOR_THREADS, thread_name_prefix="autocare")
@@ -53,6 +68,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await drain_releases()  # lease releases still pending need the pool
         await pool.close_pool()
 
 

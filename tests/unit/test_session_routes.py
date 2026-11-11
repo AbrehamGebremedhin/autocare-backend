@@ -829,3 +829,11 @@ def test_retry_route_answers_the_failed_message_without_a_new_user_message(
 def test_create_session_is_rate_limited(client, auth_headers, fake_store, fake_garage, car):
     codes = [client.post("/api/v1/sessions", json={"car_id": car["id"]}, headers=auth_headers).status_code for _ in range(31)]
     assert codes[:30] == [200] * 30 and codes[30] == 429
+
+
+async def test_shutdown_waits_for_pending_lease_releases(fake_store, session):
+    holder = fake_store.hold(session["id"])
+    session_route._release(asyncio.get_running_loop(), Lease(session["id"], holder), None)
+    assert fake_store.busy(session["id"])  # the release is scheduled, not done
+    await session_route.drain_releases()
+    assert not fake_store.busy(session["id"])

@@ -1,5 +1,10 @@
+import asyncio
+import logging
+
 import pytest
 from fastapi.routing import iter_route_contexts
+
+from app.utils.logger import get_logger_instance
 
 
 def test_app_imports_and_health_route_exists(client):
@@ -113,3 +118,21 @@ def test_cors_exposes_retry_after_to_browsers(client):
     r = client.get("/health", headers={"Origin": "http://localhost:3000"})
     exposed = r.headers["access-control-expose-headers"]
     assert "Retry-After" in exposed and "X-Correlation-ID" in exposed
+
+
+async def test_logging_never_waits_for_the_thread_pool(monkeypatch, caplog):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "run_in_executor", lambda *a, **k: pytest.fail("logging used the executor"))
+    with caplog.at_level(logging.INFO):
+        await get_logger_instance("pool-test").info("hello")
+    assert "hello" in caplog.text
+
+
+async def test_lifespan_installs_a_bigger_default_executor(mocker):
+    import main
+
+    mocker.patch("main.pool.init_pool")
+    mocker.patch("main.pool.close_pool")
+    async with main.lifespan(main.app):
+        executor = asyncio.get_running_loop()._default_executor
+    assert executor._max_workers == main.DEFAULT_EXECUTOR_THREADS == 32

@@ -1,11 +1,8 @@
 import logging
-import asyncio
-import functools
 from typing import Optional
 
 class Logger:
     _instances = {}
-    _lock = asyncio.Lock()
 
     def __new__(cls, name: str = "autocare"):
         if name not in cls._instances:
@@ -26,45 +23,22 @@ class Logger:
         self.logger.setLevel(logging.INFO)
         self._initialized = True
 
+    # Async so ~150 call sites keep awaiting them, but each is one direct call: a log line costs microseconds,
+    # and a thread hop would queue it behind Whisper in the default executor.
     async def info(self, message: str):
-        loop = asyncio.get_running_loop()
-        async with self._lock:
-            await loop.run_in_executor(
-                None,
-                functools.partial(self.logger.info, message, extra={"log_type": "info"})
-            )
+        self.logger.info(message, extra={"log_type": "info"})
 
     async def warning(self, message: str):
-        loop = asyncio.get_running_loop()
-        async with self._lock:
-            await loop.run_in_executor(
-                None,
-                functools.partial(self.logger.warning, message, extra={"log_type": "warning"})
-            )
+        self.logger.warning(message, extra={"log_type": "warning"})
 
     async def error(self, message: str):
-        loop = asyncio.get_running_loop()
-        async with self._lock:
-            await loop.run_in_executor(
-                None,
-                functools.partial(self.logger.error, message, extra={"log_type": "error"})
-            )
+        self.logger.error(message, extra={"log_type": "error"})
 
     async def debug(self, message: str):
-        loop = asyncio.get_running_loop()
-        async with self._lock:
-            await loop.run_in_executor(
-                None,
-                functools.partial(self.logger.debug, message, extra={"log_type": "debug"})
-            )
+        self.logger.debug(message, extra={"log_type": "debug"})
 
     async def critical(self, message: str):
-        loop = asyncio.get_running_loop()
-        async with self._lock:
-            await loop.run_in_executor(
-                None,
-                functools.partial(self.logger.critical, message, extra={"log_type": "critical"})
-            )
+        self.logger.critical(message, extra={"log_type": "critical"})
 
 def get_logger_instance(name: Optional[str] = None) -> Logger:
     return Logger(name or "autocare")

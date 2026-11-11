@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from app.utils.log_redaction import install_redaction
 from app.utils.security_middleware import SecurityHeadersMiddleware
 
 settings = get_settings()
+DEFAULT_EXECUTOR_THREADS = 32  # asyncio's default is min(32, cpus + 4): two media turns would fill it on a small host
 logger = logging.getLogger("autocare")
 install_redaction()  # uvicorn's access log prints the query string; signed artwork urls must not reach it
 
@@ -41,6 +43,10 @@ def media_dir_writable(path: str) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Whisper, CLAP, argon2, pypdf and DNS lookups share the default executor: give it room so media work cannot starve logins.
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=DEFAULT_EXECUTOR_THREADS, thread_name_prefix="autocare")
+    )
     if not media_dir_writable(settings.MEDIA_DIR):
         logger.warning("MEDIA_DIR %s is not writable by this process; media uploads will fail", settings.MEDIA_DIR)
     await pool.init_pool()

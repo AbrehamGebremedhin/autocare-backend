@@ -102,7 +102,7 @@ API replicas on other hosts must keep their clocks NTP-synced with each other an
 bash scripts/backup.sh
 ```
 
-It writes `backups/YYYY-MM-DD.sql.gz` (`pg_dump --clean --if-exists`) and `backups/YYYY-MM-DD-media.tar.gz` (the media volume), keeps the newest 14 of each and prints a crontab line for a daily run. `backups/` is git-ignored; copy it off the server. The script is committed as executable, but `bash scripts/backup.sh` works without relying on the file mode.
+It writes `backups/YYYY-MM-DD.sql.gz` (`pg_dump --clean --if-exists`), `backups/YYYY-MM-DD-media.tar.gz` (the media volume) and `backups/YYYY-MM-DD-visuals.tar.gz` (the vehicle artwork volume), keeps the newest 14 of each and prints a crontab line for a daily run. `backups/` is git-ignored; copy it off the server. The script is committed as executable, but `bash scripts/backup.sh` works without relying on the file mode.
 
 Restore the database (the dump drops and recreates its tables, so stop the api first):
 
@@ -111,10 +111,11 @@ docker compose stop api
 gunzip -c backups/2026-11-06.sql.gz | docker compose exec -T db psql -U autocare -d autocare -v ON_ERROR_STOP=1
 ```
 
-Restore the media (the volume is `<project>_media`, by default `autocare-backend_media`):
+Restore the media and the artwork (the volumes are `<project>_media` and `<project>_visuals`, by default `autocare-backend_media` and `autocare-backend_visuals`). Restore the artwork together with the database: its rows say `ready` for images that only the volume holds.
 
 ```
 docker run --rm -i -v autocare-backend_media:/data postgres:16-alpine tar -xzf - -C /data < backups/2026-11-06-media.tar.gz
+docker run --rm -i -v autocare-backend_visuals:/data postgres:16-alpine tar -xzf - -C /data < backups/2026-11-06-visuals.tar.gz
 docker compose start api
 ```
 

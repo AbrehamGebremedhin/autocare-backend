@@ -265,8 +265,9 @@ per client address.
 - The host file passed to `seed` must be world-readable: the container user is uid 10001.
 - Adding the `02-` init mount to `db` makes `docker compose up -d --build` recreate the `db` container (a few seconds of
   downtime; the data volume is kept).
-- The `visuals` volume is not part of `scripts/backup.sh`. The rows live in the database dump; the images can be
-  re-created by seeding again from the source artwork.
+- `scripts/backup.sh` archives the `visuals` volume as `backups/YYYY-MM-DD-visuals.tar.gz` next to the database dump.
+  Restore both together: after a restore of the dump alone, rows say `ready` and their image files are missing
+  (provider-generated artwork costs money to regenerate).
 
 ## Owner deploy checklist
 

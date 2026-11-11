@@ -195,6 +195,8 @@ def test_backup_script_dumps_db_and_media_and_rotates():
     assert "docker compose exec -T db pg_dump -U autocare" in script and "| gzip" in script
     assert '"$volume:/data:ro"' in script and "tar -czf -" in script
     assert "KEEP=14" in script and "crontab" in script.lower()
+    assert "/data/visuals" in script and "-visuals.tar.gz" in script
+    assert script.count("backup_volume ") >= 3  # the definition and two calls
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "backups/" in gitignore
 

@@ -1,8 +1,9 @@
 import pytest
+from fastapi.routing import iter_route_contexts
 
 
 def test_app_imports_and_health_route_exists(client):
-    paths = {r.path for r in client.app.routes}
+    paths = {r.path for r in iter_route_contexts(client.app.routes)}
     assert "/health" in paths
     assert not any(p.startswith("/ws") or "metrics" in p for p in paths)
 

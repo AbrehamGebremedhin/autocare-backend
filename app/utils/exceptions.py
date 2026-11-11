@@ -183,7 +183,7 @@ class PayloadTooLargeException(BaseAPIException):
         super().__init__(
             error_code=ErrorCode.PAYLOAD_TOO_LARGE,
             message=message,
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             details=details
         )
 
@@ -243,7 +243,7 @@ class BusinessLogicException(BaseAPIException):
         super().__init__(
             error_code=ErrorCode.INVALID_OPERATION,
             message=message,
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             details=details
         )
 

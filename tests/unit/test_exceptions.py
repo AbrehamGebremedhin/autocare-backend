@@ -261,7 +261,7 @@ class TestBusinessLogicExceptions:
         exc = BusinessLogicException("Cannot delete active user")
         
         assert exc.error_code == ErrorCode.INVALID_OPERATION
-        assert exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert exc.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
         assert exc.detail["message"] == "Cannot delete active user"
     
     def test_resource_conflict_exception(self):

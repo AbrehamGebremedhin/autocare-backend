@@ -2,6 +2,7 @@ import logging
 
 import jwt
 import pytest
+from fastapi.routing import iter_route_contexts
 
 PUBLIC = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
 SIGNED_DOWNLOAD = "/api/v1/visuals/files/{name:path}"  # public on purpose: the url's HMAC is the credential
@@ -10,7 +11,7 @@ CLIENT_ID = "client-1.apps.googleusercontent.com"
 
 
 def test_every_non_auth_route_requires_token(client):
-    for route in client.app.routes:
+    for route in iter_route_contexts(client.app.routes):
         path = getattr(route, "path", "")
         if path in PUBLIC or path == SIGNED_DOWNLOAD or path.startswith("/api/v1/auth"):
             continue

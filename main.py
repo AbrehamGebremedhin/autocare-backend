@@ -90,7 +90,12 @@ MAX_LOGGED_PATH_CHARS = 100
 
 def _route(request: Request) -> str:
     """The matched route's template (no ids from the URL), else the raw path, truncated."""
-    return getattr(request.scope.get("route"), "path", None) or request.url.path[:MAX_LOGGED_PATH_CHARS]
+    route = request.scope.get("route")
+    if not getattr(route, "path", None):
+        return request.url.path[:MAX_LOGGED_PATH_CHARS]
+    # FastAPI keeps a route's path relative to the router it sits on: put the include prefix back.
+    rendered = route.path_format.format(**request.scope.get("path_params", {}))
+    return request.url.path.removesuffix(rendered) + route.path
 
 
 def _error_response(request: Request, status_code: int, body: dict, cause: str, headers=None) -> JSONResponse:

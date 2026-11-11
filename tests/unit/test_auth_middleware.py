@@ -110,7 +110,7 @@ class TestJWTHandler:
         # Create token with different secret
         wrong_token = jwt.encode(
             sample_user_data, 
-            "wrong-secret", 
+            "wrong-secret-that-is-32-bytes-long", 
             algorithm=jwt_handler.algorithm
         )
         

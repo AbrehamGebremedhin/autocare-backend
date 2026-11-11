@@ -1,8 +1,12 @@
 """Request body cap: 413 before the body is read when Content-Length is too big, and while reading when it is absent."""
+import json
+import time
+
 import pytest
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.testclient import TestClient
 
+from app.utils.auth_middleware import access_claims, jwt_handler
 from app.utils.body_limit import BodySizeLimitMiddleware
 from app.utils.exceptions import BaseAPIException
 
@@ -139,3 +143,68 @@ async def test_main_app_rejects_huge_upload_before_auth_and_body_read(main_app):
     path = "/api/v1/sessions/abc/messages"
     status, _, calls = await _call(main_app, path, [(b"content-length", str(cap + 1).encode())], [b""])
     assert status == 413 and calls == 0  # no token was sent: the cap runs before auth
+
+
+def _auth_app(reads: list) -> FastAPI:
+    app = _app(reads)
+    app.user_middleware.clear()
+    app.middleware_stack = None
+    app.add_middleware(
+        BodySizeLimitMiddleware, max_bytes=10, upload_max_bytes=100, upload_path=r"/upload/[^/]+", upload_auth=access_claims
+    )
+    return app
+
+
+def _json(sent: list[dict]) -> dict:
+    return json.loads(b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body"))
+
+
+def _bearer(token: str, scheme: bytes = b"Bearer") -> list:
+    return [(b"authorization", scheme + b" " + token.encode())]
+
+
+async def test_upload_without_a_token_is_401_and_the_body_is_never_read():
+    status, sent, receives = await _call(_auth_app([]), UPLOAD, [], [b"x" * 50])
+    assert status == 401 and receives == 0
+    assert _json(sent)["error_code"] == "AUTH_001"
+    assert _json(sent)["message"] == "Missing authentication token"
+    assert (b"www-authenticate", b"Bearer") in sent[0]["headers"]
+
+
+async def test_upload_with_an_expired_token_says_so():
+    token = jwt_handler.create_access_token({"sub": "u1"}, issued_at=time.time() - 7200)
+    status, sent, receives = await _call(_auth_app([]), UPLOAD, _bearer(token), [b"x" * 50])
+    assert status == 401 and receives == 0
+    assert _json(sent)["message"] == "Token has expired"
+
+
+async def test_upload_with_a_refresh_token_is_401():
+    token = jwt_handler.create_refresh_token({"sub": "u1"})
+    status, sent, receives = await _call(_auth_app([]), UPLOAD, _bearer(token), [b"x" * 50])
+    assert status == 401 and receives == 0
+    assert _json(sent)["message"] == "Invalid token type"
+
+
+async def test_upload_accepts_a_lower_case_bearer_scheme():
+    reads: list = []
+    token = jwt_handler.create_access_token({"sub": "u1"})
+    status, _, _ = await _call(_auth_app(reads), UPLOAD, _bearer(token, b"bearer"), [b"x" * 50])
+    assert status == 200 and reads == [50]
+
+
+async def test_oversized_upload_is_still_413_without_a_token():
+    status, _, receives = await _call(_auth_app([]), UPLOAD, [(b"content-length", b"101")], [b"x" * 101])
+    assert status == 413 and receives == 0
+
+
+async def test_json_routes_are_not_checked():
+    reads: list = []
+    status, _, _ = await _call(_auth_app(reads), "/json", [], [b"x" * 5])
+    assert status == 200 and reads == [5]
+
+
+def test_main_app_checks_the_token_of_chat_uploads_before_reading_them():
+    import main
+
+    limits = [m for m in main.app.user_middleware if m.cls is BodySizeLimitMiddleware]
+    assert [m.kwargs["upload_auth"] for m in limits] == [access_claims]

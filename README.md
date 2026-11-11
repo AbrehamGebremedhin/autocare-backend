@@ -168,7 +168,7 @@ data: {"message_id": "..."}
 
 ## Media
 
-A message needs text (up to 5000 chars) or at least one file: up to 4 images of at most 10 MB each, or one audio file of at most 60 s or one video file of at most 120 s, and at most 100 MB (`MAX_IMAGES`, `MAX_IMAGE_MB`, `MAX_MEDIA_SECONDS`, `MAX_VIDEO_SECONDS`, `MAX_MEDIA_MB`). Bodies are capped before they are read and before auth: the chat route takes up to `max(MAX_IMAGES * MAX_IMAGE_MB, MAX_MEDIA_MB) + 1` MB, every other route 1 MB; larger gets `413` (`VAL_005`).
+A message needs text (up to 5000 chars) or at least one file: up to 4 images of at most 10 MB each, or one audio file of at most 60 s or one video file of at most 120 s, and at most 100 MB (`MAX_IMAGES`, `MAX_IMAGE_MB`, `MAX_MEDIA_SECONDS`, `MAX_VIDEO_SECONDS`, `MAX_MEDIA_MB`). Bodies are capped, and on the chat route the bearer token is checked (signature, expiry, type; the account lookup stays in the route), before the upload is read. The chat route takes up to `max(MAX_IMAGES * MAX_IMAGE_MB, MAX_MEDIA_MB) + 1` MB, every other route 1 MB; larger gets `413` (`VAL_005`).
 
 Originals are kept in `MEDIA_DIR/{user_id}/{session_id}/{message_id}/` (default `/data/media`, the `media` volume) until the session is deleted or `scripts/prune_media.py` removes them, so the volume grows with use; nothing deletes media on its own, so watch the disk, schedule the prune below and include the volume in backups. Two limits keep it in check; when either refuses a file, that original is not stored, the turn still runs and a warning is logged (class name only). When the volume has less than `MEDIA_MIN_FREE_MB` free (default 2048) new originals are not stored. At startup the api logs a warning if `MEDIA_DIR` is not writable.
 

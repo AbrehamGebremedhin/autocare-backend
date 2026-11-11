@@ -11,6 +11,7 @@ import os
 
 from app.utils.auth_middleware import (
     JWTHandler, 
+    access_claims,
     get_current_user, 
     get_current_active_user,
     require_permissions,
@@ -486,3 +487,49 @@ class TestErrorLogsHideDetails:
                 await get_current_user(mock_request, creds)
         assert "ValueError" in caplog.text
         assert "secret internals" not in caplog.text
+
+
+class TestAccessClaims:
+    """access_claims: the token checks of get_current_user, without the database."""
+
+    def _handler(self):
+        return JWTHandler()
+
+    def test_valid_access_token_returns_its_payload(self):
+        token = self._handler().create_access_token({"sub": "u1", "email": "a@b.c"})
+        assert access_claims(token)["sub"] == "u1"
+
+    @pytest.mark.parametrize("token", [None, ""])
+    def test_missing_token(self, token):
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(token)
+        assert exc.value.detail == "Missing authentication token"
+
+    def test_expired_token(self):
+        token = self._handler().create_access_token({"sub": "u1"}, issued_at=datetime.now().timestamp() - 7200)
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(token)
+        assert exc.value.detail == "Token has expired"
+
+    def test_garbage_token(self):
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims("not-a-jwt")
+        assert exc.value.detail == "Invalid token"
+
+    def test_refresh_token_is_the_wrong_type(self):
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(self._handler().create_refresh_token({"sub": "u1"}))
+        assert exc.value.detail == "Invalid token type"
+
+    @pytest.mark.parametrize("data", [{}, {"sub": ""}])
+    def test_token_without_a_subject_is_an_invalid_payload(self, data):
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(self._handler().create_access_token(data))
+        assert exc.value.detail == "Invalid token payload"
+
+    def test_token_with_a_boolean_iat_is_an_invalid_payload(self):
+        h = self._handler()
+        token = jwt.encode({"sub": "u1", "type": "access", "iat": True}, h.secret_key, algorithm=h.algorithm)
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(token)
+        assert exc.value.detail == "Invalid token payload"

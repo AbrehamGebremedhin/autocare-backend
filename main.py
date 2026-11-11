@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.db import pool
 from app.db.pool import DatabaseUnavailable
 from app.services import llm
+from app.utils.auth_middleware import access_claims
 from app.utils.body_limit import BodySizeLimitMiddleware
 from app.utils.correlation import CorrelationIdMiddleware
 from app.utils.exceptions import ErrorCode, ServiceUnavailableException, error_body, http_error_body
@@ -65,6 +66,7 @@ app.add_middleware(
     max_bytes=_MB,
     upload_max_bytes=(max(settings.MAX_IMAGES * settings.MAX_IMAGE_MB, settings.MAX_MEDIA_MB) + 1) * _MB,
     upload_path=r"/api/v1/sessions/[^/]+/messages",
+    upload_auth=access_claims,
 )
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)

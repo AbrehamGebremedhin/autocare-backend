@@ -74,6 +74,19 @@ class JWTHandler:
 # Global JWT handler instance
 jwt_handler = JWTHandler()
 
+def access_claims(token: str | None) -> Dict[str, Any]:
+    """The verified payload of an access token (401 otherwise). Checks the token alone, never the database."""
+    if not token:
+        raise AuthenticationError("Missing authentication token")
+    payload = jwt_handler.verify_token(token)
+    if payload.get("type") != "access":
+        raise AuthenticationError("Invalid token type")
+    issued_at = payload.get("iat")
+    if not payload.get("sub") or isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
+        raise AuthenticationError("Invalid token payload")
+    return payload
+
+
 async def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
@@ -93,17 +106,9 @@ async def get_current_user(
         raise AuthenticationError("Missing authentication token")
     
     try:
-        payload = jwt_handler.verify_token(credentials.credentials)
-        
-        # Validate token type
-        if payload.get("type") != "access":
-            raise AuthenticationError("Invalid token type")
-        
-        user_id = payload.get("sub")
-        issued_at = payload.get("iat")
-        if not user_id or isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
-            raise AuthenticationError("Invalid token payload")
-        
+        payload = access_claims(credentials.credentials)
+        user_id, issued_at = payload["sub"], payload["iat"]
+
         # The user must still exist and the token must not predate a revocation (deleted account, Google link)
         await validate_user(user_id, issued_at)
         

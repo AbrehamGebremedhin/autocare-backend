@@ -211,6 +211,22 @@ async def ingest_car_manual(car: dict) -> None:
         _ingesting.discard(car["id"])
 
 
+async def resume_pending_ingests() -> None:
+    """At start-up: ingests a restart interrupted left their cars `pending` for good. Mark them `failed` first (one
+    statement, so a car whose ingest keeps killing the process is retried once per interruption, not on every start),
+    then ingest them one after another. Never raises."""
+    try:
+        cars = await pool.fetch("UPDATE \"Car\" SET kb_status = 'failed' WHERE kb_status = 'pending' RETURNING *")
+    except Exception as e:
+        await _logger.error(f"Could not look for interrupted ingests: {type(e).__name__}")
+        return
+    for car in cars:
+        try:
+            await ingest_car_manual(car)
+        except Exception as e:
+            await _logger.error(f"Resumed ingest failed for {log_id(car['id'])}: {type(e).__name__}")
+
+
 async def _ingest_car_manual(car: dict) -> None:
     """Background task: index up to MANUAL_MAX_SOURCES manuals (startmycar, then Brave Search hits) into kb_passages.
 

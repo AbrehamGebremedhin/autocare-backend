@@ -356,3 +356,35 @@ async def test_second_ingest_of_the_same_car_is_a_no_op_while_the_first_runs(moc
     release.set()
     await first
     assert CAR["id"] not in car_crud._ingesting
+
+
+# --- resuming interrupted ingests ----------------------------------------------------
+
+async def test_resume_marks_pending_cars_failed_then_ingests_each(fake_pool, mocker):
+    from app.CRUD import car_crud
+
+    fake_pool.rows = [{**CAR, "kb_status": "failed"}, {**CAR, "id": "honda-fit-2009", "kb_status": "failed"}]
+    ingest = mocker.patch("app.CRUD.car_crud.ingest_car_manual")
+    await car_crud.resume_pending_ingests()
+    [(method, sql, _)] = fake_pool.calls
+    assert sql == "UPDATE \"Car\" SET kb_status = 'failed' WHERE kb_status = 'pending' RETURNING *"
+    assert [c.args[0]["id"] for c in ingest.await_args_list] == ["toyota-echo-2001", "honda-fit-2009"]
+
+
+async def test_resume_survives_a_database_error(fake_pool, mocker):
+    from app.CRUD import car_crud
+
+    fake_pool.error = RuntimeError("db down secret")
+    log_error = mocker.patch("app.CRUD.car_crud._logger.error")
+    assert await car_crud.resume_pending_ingests() is None
+    logged = " ".join(str(c.args[0]) for c in log_error.call_args_list)
+    assert "RuntimeError" in logged and "secret" not in logged
+
+
+async def test_resume_continues_after_one_ingest_raises(fake_pool, mocker):
+    from app.CRUD import car_crud
+
+    fake_pool.rows = [CAR, {**CAR, "id": "honda-fit-2009"}]
+    ingest = mocker.patch("app.CRUD.car_crud.ingest_car_manual", side_effect=[RuntimeError("boom"), None])
+    await car_crud.resume_pending_ingests()
+    assert ingest.await_count == 2

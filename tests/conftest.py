@@ -141,6 +141,15 @@ def _reset_rate_limits():
     usage_limits._media_users.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_startup_ingest_resume():
+    """The app's start-up retries cars left `pending`; no test wants an extra statement on its fake pool or its rows ingested."""
+    import main
+
+    with patch("main.resume_pending_ingests", AsyncMock()):
+        yield
+
+
 class FakeUserStore:
     """In-memory stand-in for UserCRUD, with the users table's unique indexes on lower(email) and google_sub.
     tokens_valid_after is epoch seconds (float), compared with a token's iat like the SQL does."""

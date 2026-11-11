@@ -36,6 +36,8 @@ services:
       DATABASE_URL: postgresql://autocare:${POSTGRES_PASSWORD}@db:5432/autocare
       # Address of the reverse proxy whose X-Forwarded-For uvicorn trusts (see README).
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      # The image has the models baked in: load them at start-up so the first media turn does not wait for them.
+      PRELOAD_MODELS: "true"
     depends_on:
       db:
         condition: service_healthy

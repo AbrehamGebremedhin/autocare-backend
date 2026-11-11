@@ -18,10 +18,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.routes import router as v1_router
 from app.api.v1.session_route import drain_releases
+from app.CRUD.car_crud import resume_pending_ingests
 from app.core.config import get_settings
 from app.db import pool
 from app.db.pool import DatabaseUnavailable
-from app.services import llm
+from app.services import hearing, llm
 from app.utils.auth_middleware import access_claims
 from app.utils.body_limit import BodySizeLimitMiddleware
 from app.utils.correlation import CorrelationIdMiddleware
@@ -55,6 +56,13 @@ def sweep_stale_tmp() -> int:
     return removed
 
 
+async def _preload_models() -> None:
+    try:
+        await asyncio.to_thread(hearing.prefetch)
+    except Exception as exc:  # the models then load on the first media turn, as before
+        logger.warning("model preload failed: %s", type(exc).__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     sweep_stale_tmp()
@@ -65,9 +73,16 @@ async def lifespan(app: FastAPI):
     if not media_dir_writable(settings.MEDIA_DIR):
         logger.warning("MEDIA_DIR %s is not writable by this process; media uploads will fail", settings.MEDIA_DIR)
     await pool.init_pool()
+    # Background work of start-up: it must not delay the first request, and it stops with the app.
+    background = [asyncio.create_task(resume_pending_ingests())]
+    if settings.PRELOAD_MODELS:
+        background.append(asyncio.create_task(_preload_models()))
     try:
         yield
     finally:
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
         await drain_releases()  # lease releases still pending need the pool
         await pool.close_pool()
 

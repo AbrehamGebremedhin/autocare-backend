@@ -233,3 +233,8 @@ def test_app_containers_drop_capabilities(compose):
 
 def test_api_has_time_to_finish_replies_on_stop(compose):
     assert compose["services"]["api"]["stop_grace_period"] == "60s"
+
+
+def test_compose_preloads_models_on_the_api_only(compose):
+    assert _env(compose["services"]["api"])["PRELOAD_MODELS"] == "true"
+    assert "PRELOAD_MODELS" not in _env(compose["services"]["visuals-worker"])

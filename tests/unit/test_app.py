@@ -148,3 +148,55 @@ def test_startup_removes_stale_turn_and_manual_directories(monkeypatch, tmp_path
         (tmp_path / name).mkdir()
     assert main.sweep_stale_tmp() == 2
     assert [p.name for p in tmp_path.iterdir()] == ["other-c"]
+
+
+def _wait_for(condition, seconds=3.0):
+    import time
+
+    end = time.monotonic() + seconds
+    while not condition() and time.monotonic() < end:
+        time.sleep(0.02)
+    return condition()
+
+
+def test_models_are_not_loaded_at_startup_by_default(mocker, fake_pool):
+    import main
+    from fastapi.testclient import TestClient
+
+    prefetch = mocker.patch("main.hearing.prefetch")
+    with TestClient(main.app):
+        pass
+    prefetch.assert_not_called()
+
+
+def test_models_are_loaded_at_startup_when_enabled(mocker, monkeypatch, fake_pool):
+    import main
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(main.settings, "PRELOAD_MODELS", True)
+    prefetch = mocker.patch("main.hearing.prefetch")
+    with TestClient(main.app):
+        assert _wait_for(lambda: prefetch.called)
+
+
+def test_a_failed_preload_is_logged_and_the_app_still_starts(mocker, monkeypatch, fake_pool, caplog):
+    import main
+    from fastapi.testclient import TestClient
+
+    fake_pool.value = 1
+    monkeypatch.setattr(main.settings, "PRELOAD_MODELS", True)
+    mocker.patch("main.llm.ping", return_value=True)
+    mocker.patch("main.hearing.prefetch", side_effect=OSError("no disk /secret/path"))
+    with caplog.at_level(logging.WARNING, logger="autocare"), TestClient(main.app) as c:
+        assert _wait_for(lambda: "OSError" in caplog.text)
+        assert c.get("/health").status_code == 200
+    assert "/secret/path" not in caplog.text
+
+
+def test_startup_resumes_interrupted_ingests(mocker, fake_pool):
+    import main
+    from fastapi.testclient import TestClient
+
+    resume = mocker.patch("main.resume_pending_ingests", mocker.AsyncMock())
+    with TestClient(main.app):
+        assert _wait_for(lambda: resume.await_count == 1)

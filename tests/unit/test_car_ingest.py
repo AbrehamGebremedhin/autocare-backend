@@ -55,7 +55,7 @@ async def test_ingest_marks_no_manual(mocker, update):
 
 async def test_ingest_ready_path(mocker, update):
     mocker.patch("app.CRUD.car_crud.FetchCarDataService.scrape_links", return_value="/files/echo.pdf")
-    download = mocker.patch("app.CRUD.car_crud.FetchCarDataService.download_pdf")
+    download = mocker.patch("app.CRUD.car_crud.manual_search.fetch_pdf", return_value=True)
     ingest = mocker.patch("app.CRUD.car_crud.kb.ingest_pdf", return_value=42)
     await ingest_car_manual(CAR)
     assert download.call_args.args[0] == "https://www.startmycar.com/files/echo.pdf"
@@ -65,9 +65,18 @@ async def test_ingest_ready_path(mocker, update):
     assert update.call_args.args == ({"id": "toyota-echo-2001"}, {"kb_status": "ready", "kb_passage_count": 42})
 
 
+async def test_startmycar_manual_that_fails_the_fetch_is_no_manual(mocker, update):
+    mocker.patch("app.CRUD.car_crud.FetchCarDataService.scrape_links", return_value="/files/echo.pdf")
+    mocker.patch("app.CRUD.car_crud.manual_search.fetch_pdf", return_value=False)
+    ingest = mocker.patch("app.CRUD.car_crud.kb.ingest_pdf")
+    await ingest_car_manual(CAR)
+    ingest.assert_not_called()
+    assert update.call_args.args[1]["kb_status"] == "no_manual"
+
+
 async def test_ingest_zero_passages_is_no_manual(mocker, update):
     mocker.patch("app.CRUD.car_crud.FetchCarDataService.scrape_links", return_value="/x.pdf")
-    mocker.patch("app.CRUD.car_crud.FetchCarDataService.download_pdf")
+    mocker.patch("app.CRUD.car_crud.manual_search.fetch_pdf", return_value=True)
     mocker.patch("app.CRUD.car_crud.kb.ingest_pdf", return_value=0)
     await ingest_car_manual(CAR)
     assert update.call_args.args[1]["kb_status"] == "no_manual"
@@ -75,7 +84,7 @@ async def test_ingest_zero_passages_is_no_manual(mocker, update):
 
 async def test_ingest_failure_sets_failed_logs_class_only_and_does_not_raise(mocker, update):
     mocker.patch("app.CRUD.car_crud.FetchCarDataService.scrape_links", return_value="/x.pdf")
-    mocker.patch("app.CRUD.car_crud.FetchCarDataService.download_pdf")
+    mocker.patch("app.CRUD.car_crud.manual_search.fetch_pdf", return_value=True)
     mocker.patch("app.CRUD.car_crud.kb.ingest_pdf", side_effect=RuntimeError("secret-token-123"))
     log_error = mocker.patch("app.CRUD.car_crud._logger.error")
     await ingest_car_manual(CAR)

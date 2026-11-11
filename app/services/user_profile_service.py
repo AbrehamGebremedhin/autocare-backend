@@ -1,4 +1,3 @@
-from app.services.base_service import BaseService
 from app.CRUD.car_crud import CarCRUD, log_id
 from app.db import pool
 from app.db.crud import BaseCRUD
@@ -8,26 +7,14 @@ from app.utils.logger import get_logger_instance
 from typing import List, Dict, Any, Optional
 
 
-class UserProfileService(BaseService):
+class UserProfileService:
     """Service for managing user profiles and car associations"""
     
     def __init__(self, car_crud: Optional[CarCRUD] = None):
-        super().__init__()
         self.car_crud = car_crud or CarCRUD()
         self.profiles = BaseCRUD("user_profiles")
         self.logger = get_logger_instance("user_profile")
     
-    async def perform_action(self, action: str, *args, **kwargs):
-        """
-        Perform action for BaseService compatibility
-        """
-        if action == "add_car":
-            return await self.add_car_to_user(*args, **kwargs)
-        elif action == "remove_car":
-            return await self.remove_car_from_user(*args, **kwargs)
-        else:
-            return {"success": False, "error": f"Unknown action: {action}"}
-        
     async def add_car_to_user(
         self, 
         user_id: str, 

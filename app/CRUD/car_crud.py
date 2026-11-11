@@ -182,10 +182,9 @@ async def _set_kb_status(car_id: str, status: str, count: int = 0) -> None:
 async def _startmycar_manual(fetcher: FetchCarDataService, car: dict, pdf_path: Path) -> str | None:
     """Download startmycar's owner manual to pdf_path; the title to index it under, or None when it has none."""
     url = fetcher.build_url(car["make"], car["model"], car["year"])["Owner_Manual"]
-    link = await fetcher.scrape_links(url, "owner_manual")
-    if not link:
+    link = await fetcher.scrape_links(url)
+    if not link or not await manual_search.fetch_pdf(urljoin(fetcher.BASE_URL, link), pdf_path):
         return None
-    await fetcher.download_pdf(urljoin(fetcher.BASE_URL, link), str(pdf_path))
     return f"{car['make']} {car['model']} {car['year']} owner's manual"
 
 
@@ -216,7 +215,7 @@ async def _ingest_car_manual(car: dict) -> None:
     total = indexed = 0
     failed = False
     try:
-        tmp_dir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="manual_"))
+        tmp_dir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="autocare-manual-"))
         label = f"{car['make']} {car['model']} {car['year']}"
 
         async def index(title: str, pdf_path: Path) -> None:

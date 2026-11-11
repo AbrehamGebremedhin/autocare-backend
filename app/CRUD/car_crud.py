@@ -114,6 +114,15 @@ class CarCRUD(BaseCRUD):
         """Create a car record - now redirects to create_or_get_car for uniqueness"""
         return await self.create_or_get_car(data)
 
+    async def get_many(self, ids: List[str]) -> List[Dict[str, Any]]:
+        """The cars with these ids in one query, in the order of `ids`; unknown ids are left out."""
+        rows = {r["id"]: r for r in await pool.fetch(f"SELECT * FROM {self._table} WHERE id = ANY($1::text[])", ids)}
+        cars = [rows[i] for i in ids if i in rows]
+        for car in cars:
+            if "car_guide_links" in car:
+                car["car_guide_links"] = self.ensure_list(car["car_guide_links"])
+        return cars
+
     async def get_car_by_id(self, car_id: str):
         """Retrieve a car by its unique id."""
         # Normalize car_id to handle different formats

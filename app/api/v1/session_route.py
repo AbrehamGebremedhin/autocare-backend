@@ -37,6 +37,8 @@ BUSY = "This session is busy: a reply is still being generated, or it is being d
 # across every worker. Scheduled lease releases, kept here so they are not garbage-collected mid-flight.
 _releasing: set[asyncio.Task] = set()
 
+MAX_SESSION_MESSAGES = 400  # a session's messages are one jsonb array that every turn rewrites
+
 
 class SessionCreate(BaseModel):
     car_id: str = Field(min_length=1, max_length=MAX_CAR_ID_CHARS, pattern=NO_NUL)
@@ -241,6 +243,8 @@ async def _start_turn(
     try:
         # Re-read under the lease: the snapshot above may predate the previous turn's writes.
         session = await _owned_session(sid, current_user["id"])
+        if retry_of is None and len(session.get("messages") or []) >= MAX_SESSION_MESSAGES:
+            raise BusinessLogicException("This session is full. Start a new session to continue.")
         if retry_of is not None:
             text = diagnosis.retry_target(session.get("messages") or [], retry_of)["content"] or None
         uploads: list[Upload] = []

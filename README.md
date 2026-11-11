@@ -139,8 +139,8 @@ Interactive reference: `http://localhost:8000/docs`, served only when `ENABLE_DO
 | Auth | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/google`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout` |
 | Cars | `GET /api/v1/cars`, `POST /api/v1/cars` (`{"make", "model", "year", "transmission"?}`, transmission is `manual`, `automatic`, `cvt` or `dual_clutch`), `PATCH /api/v1/cars/{car_id}` (`{"transmission"}`), `DELETE /api/v1/cars/{car_id}` |
 | Vehicle visuals | `GET /api/v1/cars/{car_id}/visual`, `POST /api/v1/cars/{car_id}/visual/prepare` (`{}` or `{"variant_key"}`), `GET /api/v1/visuals/files/{sha256}.webp?exp&sig` (no token; see [docs/VEHICLE_VISUALS.md](docs/VEHICLE_VISUALS.md)) |
-| Sessions | `POST /api/v1/sessions` (`{"car_id"}`), `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
-| Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE) |
+| Sessions | `POST /api/v1/sessions` (`{"car_id"}`), `GET /api/v1/sessions` (the newest 100), `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
+| Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE). A session holds at most 400 messages; a new one past that gets `422` (`BIZ_001`, `This session is full. Start a new session to continue.`), retrying a failed reply still works. The diagnosis state keeps the newest 30 findings, tests, ruled-out causes and topics, and the top 8 suspected causes. |
 
 Car `make` and `model` must be 1 to 64 characters and `year` between 1900 and next year; car ids are at most 200 characters; NUL characters are refused. Such input gets `422`. Adding a car starts a background ingest of its manuals: startmycar first, then up to `MANUAL_MAX_SOURCES` (default 3) PDFs in total found with the Brave Search API when `BRAVE_API_KEY` is set; the car's `kb_status` (`pending`, `ready`, `failed`, `no_manual`) tracks progress. Deleting a session deletes its media.
 

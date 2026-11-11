@@ -115,11 +115,7 @@ class UserProfileService:
             # Get full car details
             details = {r["car_id"]: r["transmission"] for r in await pool.fetch(
                 "SELECT car_id, transmission FROM user_car_details WHERE user_id = $1::uuid", user_id)}
-            cars = []
-            for car_id in car_ids:
-                car = await self.car_crud.get_car_by_id(car_id)
-                if car:
-                    cars.append({**car, "transmission": details.get(car_id)})
+            cars = [{**car, "transmission": details.get(car["id"])} for car in await self.car_crud.get_many(car_ids)]
             
             await self.logger.info(f"Retrieved {len(cars)} cars for user {user_id}")
             return cars

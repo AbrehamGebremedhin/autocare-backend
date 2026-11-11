@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 TITLE_MAX_CHARS = 60  # the state prompt asks for at most 60; enforced here because the model may not comply
 DEFAULT_TITLE = "New diagnosis"  # the "Chatsession".title column default
 MAX_FLAGS = 6  # safety flags kept and shown: critical first, then important, then info
+# The state goes to the state model and comes back whole every turn, so lists that only accumulate would end in
+# truncated JSON (and a state that silently stops updating) in a long session.
+MAX_ESTABLISHED = 30  # findings, tests, ruled-out causes, topics: the newest are kept
+MAX_CAUSES = 8  # suspected causes: the model lists them most likely first
 
 Rank = Literal["most_likely", "likely", "possible"]
 Severity = Literal["critical", "important", "info"]
@@ -83,6 +87,16 @@ class DiagnosisState(BaseModel):
     @classmethod
     def _cap_title(cls, title: str) -> str:
         return title.strip()[:TITLE_MAX_CHARS].rstrip()
+
+    @field_validator("confirmed_findings", "tests_done", "ruled_out", "topic_history")
+    @classmethod
+    def _keep_the_newest(cls, items: list) -> list:
+        return items[-MAX_ESTABLISHED:]
+
+    @field_validator("suspected_causes")
+    @classmethod
+    def _keep_the_top_causes(cls, causes: list) -> list:
+        return causes[:MAX_CAUSES]
 
     @field_validator("safety_flags")
     @classmethod

@@ -837,3 +837,48 @@ async def test_shutdown_waits_for_pending_lease_releases(fake_store, session):
     assert fake_store.busy(session["id"])  # the release is scheduled, not done
     await session_route.drain_releases()
     assert not fake_store.busy(session["id"])
+
+
+def test_get_session_with_an_oversized_legacy_state_is_200(client, auth_headers, existing_session, fake_store):
+    fake_store.rows[existing_session["id"]]["state"] = {"confirmed_findings": [f"f{i}" for i in range(50)]}
+    r = client.get(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
+    assert r.status_code == 200 and r.json()["state"]["confirmed_findings"] == [f"f{i}" for i in range(20, 50)]
+
+
+def _fill(fake_store, session, n=400):
+    fake_store.rows[session["id"]]["messages"] = [
+        {"id": f"m{i}", "role": "user" if i % 2 == 0 else "assistant", "content": "x", "status": "ok"} for i in range(n)
+    ]
+
+
+def test_a_full_session_refuses_a_new_message_and_frees_the_lease(client, auth_headers, existing_session, fake_llm, fake_store):
+    _fill(fake_store, existing_session)
+    r = client.post(_url(existing_session["id"]), data={"text": "one more"}, headers=auth_headers)
+    assert r.status_code == 422 and r.json()["error_code"] == "BIZ_001"
+    assert r.json()["message"] == "This session is full. Start a new session to continue."
+    assert not fake_store.busy(existing_session["id"])
+    assert len(fake_store.messages(existing_session["id"])) == 400 and fake_llm.calls == 0
+
+
+def test_a_session_just_under_the_cap_still_takes_a_message(client, auth_headers, existing_session, fake_llm, fake_store):
+    _fill(fake_store, existing_session, 399)
+    assert client.post(_url(existing_session["id"]), data={"text": "last one"}, headers=auth_headers).status_code == 200
+
+
+def test_a_full_session_can_still_retry_its_last_message(client, auth_headers, existing_session, fake_llm, fake_store):
+    sid = existing_session["id"]
+    fake_llm.fail_stream_after = 1
+    mid = _parse(client.post(_url(sid), data={"text": "fan clicks"}, headers=auth_headers).text)[-1][1]["retry_message_id"]
+    fake_llm.fail_stream_after = None
+    fake_store.rows[sid]["messages"] = [
+        *[{"id": f"m{i}", "role": "assistant", "content": "x", "status": "ok"} for i in range(398)],
+        *fake_store.messages(sid),
+    ]
+    r = client.post(f"{_url(sid)}/{mid}/retry", headers=auth_headers)
+    assert r.status_code == 200 and _parse(r.text)[-1][0] == "done"
+
+
+async def test_session_list_is_limited_to_100(fake_pool):
+    await ChatSessionCRUD().list_for_user("u1")
+    [(_, sql, _)] = fake_pool.calls
+    assert sql.rstrip().endswith("LIMIT 100")

@@ -125,57 +125,8 @@ class CarCRUD(BaseCRUD):
 
     async def get_car_by_id(self, car_id: str):
         """Retrieve a car by its unique id."""
-        # Normalize car_id to handle different formats
-        normalized_id = self._normalize_car_id(car_id)
-        
-        # First try with the original car_id
         cars = await self.read({'id': car_id})
-        
-        # If not found, try with normalized ID
-        if not cars or not isinstance(cars, list) or not cars:
-            if normalized_id != car_id:
-                # Try again with normalized ID
-                cars = await self.read({'id': normalized_id})
-                
-                # Log attempt with normalized ID
-                if cars and isinstance(cars, list) and cars:
-                    await self.logger.info(
-                        f"Found car with normalized ID: {log_id(normalized_id)} (original: {log_id(car_id)})"
-                    )
-                else:
-                    await self.logger.warning(
-                        f"Car not found with original ID '{log_id(car_id)}' or normalized ID '{log_id(normalized_id)}'"
-                    )
-        
-        if cars and isinstance(cars, list) and cars:
-            return cars[0]
-            
-        return None
-        
-    def _normalize_car_id(self, car_id: str) -> str:
-        """
-        Normalize car ID to handle different formats and common variations.
-        For example: "echo-toyota-2001" -> "toyota-echo-2001"
-        """
-        if not car_id:
-            return car_id
-            
-        # Try to parse parts from the car_id
-        parts = car_id.lower().strip().split('-')
-        if len(parts) >= 3:
-            # Check for common pattern where make and model are reversed
-            # Common car makes that we can detect
-            common_makes = ['toyota', 'honda', 'ford', 'chevrolet', 'bmw', 'audi', 'mercedes', 'nissan', 
-                           'mazda', 'subaru', 'hyundai', 'kia', 'lexus', 'acura', 'volkswagen', 'vw']
-            
-            # If the first part isn't a known make but the second is, swap them
-            if parts[0] not in common_makes and parts[1] in common_makes:
-                model, make = parts[0], parts[1]
-                remaining = '-'.join(parts[2:])
-                return f"{make}-{model}-{remaining}"
-        
-        # If we couldn't normalize it, return the original
-        return car_id
+        return cars[0] if cars else None
 
 
 _logger = get_logger_instance("car_ingest")

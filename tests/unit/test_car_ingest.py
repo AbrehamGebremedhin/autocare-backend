@@ -236,18 +236,6 @@ def test_delete_car_rejects_bad_ids_with_422(client, auth_headers, mocker, car_i
     remove.assert_not_called()
 
 
-async def test_car_lookup_logs_at_most_64_chars_of_the_id(fake_pool, caplog):
-    import logging
-
-    from app.CRUD.car_crud import CarCRUD
-
-    long_id = "y" * 9990 + "-toyota-2001"  # make/model swapped, so both lookups are logged
-    with caplog.at_level(logging.DEBUG):
-        assert await CarCRUD().get_car_by_id(long_id) is None
-    assert "y" * 65 not in caplog.text
-    assert "y" * 50 in caplog.text  # still recognisable
-
-
 def test_delete_car_not_in_garage_is_404(client, auth_headers, fake_pool):
     fake_pool.status = "UPDATE 0"
     r = client.delete(f"/api/v1/cars/{CAR['id']}", headers=auth_headers)

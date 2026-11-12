@@ -14,7 +14,6 @@ import json
 import re
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -144,7 +143,6 @@ def _reset_rate_limits():
 @pytest.fixture(autouse=True)
 def _no_startup_ingest_resume():
     """The app's start-up retries cars left `pending`; no test wants an extra statement on its fake pool or its rows ingested."""
-    import main
 
     with patch("main.resume_pending_ingests", AsyncMock()):
         yield

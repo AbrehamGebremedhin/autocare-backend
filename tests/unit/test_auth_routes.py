@@ -453,7 +453,7 @@ def test_refresh_rejects_bad_expired_and_foreign_tokens_alike(client, fake_users
     no_iat = jwt.encode({"sub": user_id, "type": "refresh", "exp": time.time() + 600}, jwt_handler.secret_key, "HS256")
     with caplog.at_level(logging.DEBUG):
         responses = [_refresh(client, t) for t in ("not-a-jwt", expired, foreign, no_iat)]
-    for token, r in zip(("not-a-jwt", expired, foreign, no_iat), responses):
+    for token, r in zip(("not-a-jwt", expired, foreign, no_iat), responses, strict=True):
         assert r.status_code == 401 and _strip(r) == REFRESH_401
         assert token not in caplog.text
 

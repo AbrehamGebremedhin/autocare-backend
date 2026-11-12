@@ -80,7 +80,7 @@ async def test_the_new_hub_is_established_for_the_next_turn_and_nothing_syntheti
     assert saved["title"] == EXPORT["state"]["title"]  # the title did not move
     assert SYNTHETIC not in [m["content"] for m in saved["messages"]]
     roles = [m["role"] for m in saved["messages"]]
-    assert all(a != b for a, b in zip(roles, roles[1:]))  # strictly alternating
+    assert all(a != b for a, b in zip(roles, roles[1:], strict=False))  # strictly alternating
     await _next(fake_llm, fake_store, session)
     follow_up = fake_llm.prompt[-1]["content"][0]["text"]
     assert "test done: fitted a new wheel hub -> new hub on the car" in follow_up

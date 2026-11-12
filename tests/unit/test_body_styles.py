@@ -95,7 +95,7 @@ async def test_the_prompt_renders_for_every_market(monkeypatch, db):
     assert await bs.lookup("Lada", "Niva", 1990) == []  # nothing known in either market
     systems = [c["messages"][0]["content"] for c in calls]
     assert len(systems) == len(bs.MARKETS)
-    for system, market in zip(systems, bs.MARKETS):
+    for system, market in zip(systems, bs.MARKETS, strict=True):
         assert market in system and "{market}" not in system and '{"body_styles": [...]}' in system
 
 

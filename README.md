@@ -1,6 +1,6 @@
 # AutoCare Backend
 
-FastAPI backend for an AI car-diagnosis assistant. A user signs up, adds a car, opens a diagnosis session and chats about a problem with text, photos, audio or video. Each turn streams back as Server-Sent Events. Answers are grounded in a Postgres full-text knowledge base (car manuals and books) and use DeepSeek as the LLM (at most 2 LLM calls per turn: one streamed reply, one state update). Audio is transcribed with faster-whisper and engine sounds are tagged with CLAP.
+FastAPI backend for an AI car-diagnosis assistant. A user signs up, adds a car, opens a diagnosis session and chats about a problem with text, photos, audio or video. Each turn streams back as Server-Sent Events. Answers are grounded in a Postgres full-text knowledge base (car manuals and books) and use DeepSeek as the LLM (3 LLM calls per turn: the streamed reply, a fact extraction that runs alongside it, and a state update). Audio is transcribed with faster-whisper and engine sounds are tagged with CLAP.
 
 It runs as three containers from `docker-compose.yml`: `db` (Postgres 16, not published to the host), `api` (this app, published on `127.0.0.1:8000` only, for a reverse proxy on the same host) and `visuals-worker` (vehicle artwork jobs, same image, no published port). Uploaded media lives on a Docker volume.
 
@@ -141,7 +141,7 @@ Interactive reference: `http://localhost:8000/docs`, served only when `ENABLE_DO
 | Cars | `GET /api/v1/cars`, `POST /api/v1/cars` (`{"make", "model", "year", "transmission"?}`, transmission is `manual`, `automatic`, `cvt` or `dual_clutch`), `PATCH /api/v1/cars/{car_id}` (`{"transmission"}`), `DELETE /api/v1/cars/{car_id}` |
 | Vehicle visuals | `GET /api/v1/cars/{car_id}/visual`, `POST /api/v1/cars/{car_id}/visual/prepare` (`{}` or `{"variant_key"}`), `GET /api/v1/visuals/files/{sha256}.webp?exp&sig` (no token; see [docs/VEHICLE_VISUALS.md](docs/VEHICLE_VISUALS.md)) |
 | Sessions | `POST /api/v1/sessions` (`{"car_id"}`), `GET /api/v1/sessions` (the newest 100), `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
-| Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE). Session JSON carries no `user_id`, `busy_until` or `busy_by`. A session holds at most 400 messages; a new one past that gets `422` (`BIZ_001`, `This session is full. Start a new session to continue.`), retrying a failed reply still works. The diagnosis state keeps the newest 30 findings, tests, ruled-out causes and topics, and the top 8 suspected causes. |
+| Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE). `POST /api/v1/sessions/{id}/messages/{message_id}/retry` re-runs a failed reply; the SSE `error` event carries `retry_message_id`, the id to pass here. Session JSON carries no `user_id`, `busy_until` or `busy_by`. A session holds at most 400 messages; a new one past that gets `422` (`BIZ_001`, `This session is full. Start a new session to continue.`), retrying a failed reply still works. The diagnosis state keeps the newest 30 findings, tests, ruled-out causes and topics, and the top 8 suspected causes. |
 
 Car `make` and `model` must be 1 to 64 characters and `year` between 1900 and next year; car ids are at most 200 characters; NUL characters are refused. Such input gets `422`. Adding a car starts a background ingest of its manuals: startmycar first, then up to `MANUAL_MAX_SOURCES` (default 3) PDFs in total found with the Brave Search API when `BRAVE_API_KEY` is set; the car's `kb_status` (`pending`, `ready`, `failed`, `no_manual`) tracks progress. An ingest a restart interrupted is retried once at the next start (the car shows `failed` until it finishes). Deleting a session deletes its media.
 
@@ -214,6 +214,7 @@ The API is meant to be reachable from the internet, so these limits are on by de
 uv sync
 uv run uvicorn main:app --reload          # needs DATABASE_URL pointing at a Postgres with schema.sql applied
 uv run pytest -q                          # offline: fakes only, no database or network
+uv run ruff check .                       # lint
 ```
 
 The real-database tests are marked `db` and need a throwaway database in `TEST_DATABASE_URL` (they apply the schema and write rows):

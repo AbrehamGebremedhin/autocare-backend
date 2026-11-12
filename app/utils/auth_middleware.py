@@ -59,9 +59,9 @@ class JWTHandler:
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
             return payload
         except jwt.ExpiredSignatureError:
-            raise AuthenticationError("Token has expired")
+            raise AuthenticationError("Token has expired") from None
         except (jwt.PyJWTError, jwt.DecodeError, jwt.InvalidSignatureError):
-            raise AuthenticationError("Invalid token")
+            raise AuthenticationError("Invalid token") from None
 
 # Global JWT handler instance
 jwt_handler = JWTHandler()
@@ -130,7 +130,7 @@ async def get_current_user(
         raise
     except Exception as e:
         await logger.error(f"Authentication error: {type(e).__name__}")
-        raise AuthenticationError("Authentication failed")
+        raise AuthenticationError("Authentication failed") from None
 
 async def validate_user(user_id: str, issued_at: float) -> bool:
     """Check that the token's user still exists and accepts tokens issued at `issued_at` (else 401).

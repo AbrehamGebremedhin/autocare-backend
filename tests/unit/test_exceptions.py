@@ -2,7 +2,6 @@
 Unit tests for custom exception classes and error handling.
 """
 import pytest
-from unittest.mock import MagicMock
 from fastapi import status
 import uuid
 from datetime import datetime

@@ -306,7 +306,6 @@ async def test_finalize_accepts_float_seconds(real_pool):
 
 # --- the worker over the real functions ----------------------------------------------------------------
 
-import io  # noqa: E402
 
 from PIL import Image, ImageDraw  # noqa: E402
 

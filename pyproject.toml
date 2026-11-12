@@ -36,6 +36,7 @@ dev = [
     "pytest-mock==3.14.0",
     "pytest-cov==6.0.0",
     "pyyaml>=6.0.3",
+    "ruff==0.17.4",
 ]
 
 [[tool.uv.index]]
@@ -72,24 +73,12 @@ addopts = [
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "db: needs a real Postgres in TEST_DATABASE_URL (run with -m db)",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests",
-    "database: marks tests that require database",
-    "external: marks tests that require external services",
     "asyncio: marks tests that use asyncio",
-    "parametrize: marks parametrized tests",
-    "smoke: marks tests as smoke tests",
-    "regression: marks tests as regression tests",
-    "performance: marks tests as performance tests",
 ]
 
 # Async support
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-
-# Test timeout (in seconds)
-timeout = 30
-timeout_method = "thread"
 
 # Coverage settings (when using pytest-cov)
 [tool.coverage.run]
@@ -131,3 +120,10 @@ directory = "htmlcov"
 
 [tool.coverage.xml]
 output = "coverage.xml"
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E9", "F", "B"]
+ignore = ["B008"]  # FastAPI Depends() in defaults

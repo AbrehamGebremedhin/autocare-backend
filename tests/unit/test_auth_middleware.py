@@ -3,7 +3,7 @@ Unit tests for authentication middleware and JWT handling.
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
 import jwt
 from datetime import datetime, timedelta
@@ -132,7 +132,6 @@ class TestAuthenticationMiddleware:
     def valid_credentials(self):
         """Create valid HTTP authorization credentials"""
         # Use the test environment JWT secret directly
-        import os
         jwt_handler = JWTHandler()
         # Ensure we're using the test secret from environment
         jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
@@ -159,7 +158,6 @@ class TestAuthenticationMiddleware:
     @pytest.mark.asyncio
     async def test_get_current_user_valid_token(self, mock_request, valid_credentials):
         """Test getting current user with valid token"""
-        import os
         from app.utils.auth_middleware import jwt_handler
         
         # Patch the global JWT handler to use test environment secret
@@ -198,7 +196,6 @@ class TestAuthenticationMiddleware:
     async def test_get_current_user_refresh_token(self, mock_request):
         """Test rejection of refresh token for access"""
         # Use the test environment JWT secret directly
-        import os
         from app.utils.auth_middleware import jwt_handler as global_jwt_handler
         
         jwt_handler = JWTHandler()
@@ -227,7 +224,6 @@ class TestAuthenticationMiddleware:
     async def test_get_current_user_missing_subject(self, mock_request):
         """Test handling of token without subject"""
         # Use the test environment JWT secret directly
-        import os
         jwt_handler = JWTHandler()
         jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
         

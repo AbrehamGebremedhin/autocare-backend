@@ -128,3 +128,41 @@ async def test_ingest_indexes_web_manuals_after_startmycar(mocker):
     await ingest_car_manual(CAR)
     assert ingest.call_args.kwargs["title"] == "Toyota Echo 2001 manual (b.test)"
     assert update.call_args.args[1] == {"kb_status": "ready", "kb_passage_count": 10}
+
+
+async def test_fetch_pdf_keeps_a_public_pdf(tmp_path, brave_key):
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=_pdf("anything")))
+    dest = tmp_path / "m.pdf"
+    assert await manual_search.fetch_pdf("https://a.test/m.pdf", dest, transport=transport)
+    assert dest.read_bytes().startswith(b"%PDF-")
+
+
+async def test_fetch_pdf_refuses_a_private_address(tmp_path, brave_key):
+    never = httpx.MockTransport(lambda r: pytest.fail("fetched a private host"))
+    assert not await manual_search.fetch_pdf("http://internal.test/m.pdf", tmp_path / "m.pdf", transport=never)
+
+
+async def test_fetch_pdf_refuses_a_body_that_is_not_a_pdf(tmp_path, brave_key):
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=b"<html>"))
+    assert not await manual_search.fetch_pdf("https://a.test/m.pdf", tmp_path / "m.pdf", transport=transport)
+
+
+async def test_fetch_pdf_stops_at_the_size_cap(tmp_path, brave_key):  # brave_key sets MANUAL_MAX_MB=1
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=b"%PDF-" + b"0" * 2_000_000))
+    assert not await manual_search.fetch_pdf("https://a.test/m.pdf", tmp_path / "m.pdf", transport=transport)
+
+
+async def test_fetch_pdf_rechecks_the_address_after_a_redirect(tmp_path, brave_key):
+    def serve(request):
+        if request.url.host == "a.test":
+            return httpx.Response(302, headers={"location": "http://internal.test/m.pdf"})
+        pytest.fail("followed a redirect to a private host")
+
+    assert not await manual_search.fetch_pdf("https://a.test/m.pdf", tmp_path / "m.pdf", transport=httpx.MockTransport(serve))
+
+
+def test_build_url_quotes_make_and_model():
+    from app.services.fetch_car_data_service import FetchCarDataService
+
+    urls = FetchCarDataService().build_url("a/b?x", "c#d", 2001)
+    assert urls["Owner_Manual"] == "https://www.startmycar.com/a%2Fb%3Fx/c%23d/info/manuals/2001"

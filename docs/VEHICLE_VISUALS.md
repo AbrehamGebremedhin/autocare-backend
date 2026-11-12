@@ -76,7 +76,7 @@ Operator. `scripts/visuals_admin.py` is a CLI, not an HTTP route. Nothing is ser
   `sha256`. Ownership of the car is checked when the descriptor is requested and again when the URL is signed.
 - Every refusal of a URL (bad name, bad or expired signature, missing or corrupt object) is the same `404 File not
   found`; the route also answers 429 (rate limit) and 405 (wrong method). Refusals carry
-  `Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate`; a successful download carries `private, max-age=<remaining lifetime, at
+  `Cache-Control: no-store`; a successful download carries `private, max-age=<remaining lifetime, at
   most the TTL>`, `Content-Type: image/webp`, `Content-Length` and `X-Content-Type-Options: nosniff`.
 - Rotating `JWT_SECRET_KEY` invalidates outstanding download URLs; they live 15 minutes by default, so
   the effect is a short window until fresh descriptors are requested.
@@ -265,8 +265,9 @@ per client address.
 - The host file passed to `seed` must be world-readable: the container user is uid 10001.
 - Adding the `02-` init mount to `db` makes `docker compose up -d --build` recreate the `db` container (a few seconds of
   downtime; the data volume is kept).
-- The `visuals` volume is not part of `scripts/backup.sh`. The rows live in the database dump; the images can be
-  re-created by seeding again from the source artwork.
+- `scripts/backup.sh` archives the `visuals` volume as `backups/YYYY-MM-DD-visuals.tar.gz` next to the database dump.
+  Restore both together: after a restore of the dump alone, rows say `ready` and their image files are missing
+  (provider-generated artwork costs money to regenerate).
 
 ## Owner deploy checklist
 

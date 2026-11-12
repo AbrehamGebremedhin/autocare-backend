@@ -1,14 +1,17 @@
 from datetime import date
 from typing import Annotated, List, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Path
+from fastapi import APIRouter, BackgroundTasks, Depends, Path, Request
 from pydantic import BaseModel, Field, field_validator
 
 from app.CRUD.car_crud import ingest_car_manual
+from app.core.config import get_settings
 from app.schemas.Car import MAX_CAR_ID_CHARS, MAX_CAR_NAME_CHARS, MIN_CAR_YEAR, NO_NUL, CarBase
+from app.services import usage_limits
 from app.services.user_profile_service import UserProfileService
 from app.utils.auth_middleware import get_current_user
-from app.utils.exceptions import RecordNotFoundException, ValidationException
+from app.utils.exceptions import BusinessLogicException, RecordNotFoundException, ValidationException
+from app.utils.limiter import limiter
 
 router = APIRouter(prefix="/cars", tags=["Cars"])
 
@@ -36,9 +39,20 @@ async def list_cars(current_user: dict = Depends(get_current_user)):
 
 
 @router.post("", response_model=CarBase, summary="Add a car to the current user")
+@limiter.limit("10/minute")
 async def add_car(
-    car: CarCreate, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)
+    request: Request,
+    car: CarCreate,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
 ):
+    # Every new car starts paid background work (LLM, searches, downloads), so the cost per account is bounded here.
+    cap = get_settings().MAX_CARS_PER_USER
+    if cap > 0:
+        garage = await user_profile_service.garage_ids(current_user["id"])
+        if len(garage) >= cap and user_profile_service.car_crud.unique_logic(car.make, car.model, car.year) not in garage:
+            raise BusinessLogicException(f"A garage holds at most {cap} cars. Remove one to add another.")
+    usage_limits.count_daily_car_add(current_user["id"])
     result = await user_profile_service.add_car_to_user(
         user_id=current_user["id"], make=car.make, model=car.model, year=car.year, transmission=car.transmission
     )

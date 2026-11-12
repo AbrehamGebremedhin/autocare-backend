@@ -48,15 +48,10 @@ class AuditLogger:
             "status_code": status_code,
             "risk_level": risk_level,
             "details": details or {},
-            "session_id": getattr(details, 'session_id', None) if details else None
         }
         
         # Log to structured logger
         await self._log_to_file(audit_record)
-        
-        # Alert on high-risk events
-        if risk_level in ["high", "critical"]:
-            await self._handle_high_risk_event(audit_record)
     
     async def _log_to_file(self, audit_record: Dict[str, Any]):
         """Log audit record to file with structured format"""
@@ -71,22 +66,6 @@ class AuditLogger:
         else:
             await self.logger.info(f"AUDIT: {log_line}")
     
-    async def _handle_high_risk_event(self, audit_record: Dict[str, Any]):
-        """Handle high-risk security events"""
-        event_type = audit_record["event_type"]
-        risk_level = audit_record["risk_level"]
-        
-        # Log critical alert
-        await self.logger.critical(
-            f"HIGH RISK AUDIT EVENT: {event_type} - "
-            f"Risk Level: {risk_level} - "
-            f"Details: {json.dumps(audit_record)}"
-        )
-        
-        # Additional alerting mechanisms could be added here:
-        # - Send to security team
-        # - Trigger automated responses
-        # - Update threat intelligence
 
 # Global audit logger instance
 audit_logger = AuditLogger()

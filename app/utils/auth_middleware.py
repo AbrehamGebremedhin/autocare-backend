@@ -23,14 +23,6 @@ class AuthenticationError(HTTPException):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-class AuthorizationError(HTTPException):
-    """Custom authorization error"""
-    def __init__(self, detail: str = "Insufficient permissions"):
-        super().__init__(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=detail
-        )
-
 class JWTHandler:
     """JWT token handling utilities"""
     
@@ -67,12 +59,25 @@ class JWTHandler:
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
             return payload
         except jwt.ExpiredSignatureError:
-            raise AuthenticationError("Token has expired")
+            raise AuthenticationError("Token has expired") from None
         except (jwt.PyJWTError, jwt.DecodeError, jwt.InvalidSignatureError):
-            raise AuthenticationError("Invalid token")
+            raise AuthenticationError("Invalid token") from None
 
 # Global JWT handler instance
 jwt_handler = JWTHandler()
+
+def access_claims(token: str | None) -> Dict[str, Any]:
+    """The verified payload of an access token (401 otherwise). Checks the token alone, never the database."""
+    if not token:
+        raise AuthenticationError("Missing authentication token")
+    payload = jwt_handler.verify_token(token)
+    if payload.get("type") != "access":
+        raise AuthenticationError("Invalid token type")
+    issued_at = payload.get("iat")
+    if not payload.get("sub") or isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
+        raise AuthenticationError("Invalid token payload")
+    return payload
+
 
 async def get_current_user(
     request: Request,
@@ -93,17 +98,9 @@ async def get_current_user(
         raise AuthenticationError("Missing authentication token")
     
     try:
-        payload = jwt_handler.verify_token(credentials.credentials)
-        
-        # Validate token type
-        if payload.get("type") != "access":
-            raise AuthenticationError("Invalid token type")
-        
-        user_id = payload.get("sub")
-        issued_at = payload.get("iat")
-        if not user_id or isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
-            raise AuthenticationError("Invalid token payload")
-        
+        payload = access_claims(credentials.credentials)
+        user_id, issued_at = payload["sub"], payload["iat"]
+
         # The user must still exist and the token must not predate a revocation (deleted account, Google link)
         await validate_user(user_id, issued_at)
         
@@ -133,7 +130,7 @@ async def get_current_user(
         raise
     except Exception as e:
         await logger.error(f"Authentication error: {type(e).__name__}")
-        raise AuthenticationError("Authentication failed")
+        raise AuthenticationError("Authentication failed") from None
 
 async def validate_user(user_id: str, issued_at: float) -> bool:
     """Check that the token's user still exists and accepts tokens issued at `issued_at` (else 401).
@@ -146,62 +143,3 @@ async def validate_user(user_id: str, issued_at: float) -> bool:
     if not exists:
         raise AuthenticationError("Token validation failed")
     return True
-
-async def get_current_active_user(
-    current_user: Dict[str, Any] = Depends(get_current_user)
-) -> Dict[str, Any]:
-    """
-    Get current active user (additional validation if needed)
-    """
-    # Add additional checks here if needed (user status, etc.)
-    return current_user
-
-def require_permissions(required_permissions: list):
-    """
-    Decorator to require specific permissions
-    """
-    def permission_checker(current_user: Dict[str, Any] = Depends(get_current_user)):
-        user_permissions = current_user.get("permissions", [])
-        user_role = current_user.get("role", "user")
-        
-        # Admin has all permissions
-        if user_role == "admin":
-            return current_user
-        
-        # Check specific permissions
-        if not any(perm in user_permissions for perm in required_permissions):
-            raise AuthorizationError(f"Required permissions: {', '.join(required_permissions)}")
-        
-        return current_user
-    
-    return permission_checker
-
-def require_role(required_role: str):
-    """
-    Decorator to require specific role
-    """
-    def role_checker(current_user: Dict[str, Any] = Depends(get_current_user)):
-        user_role = current_user.get("role", "user")
-        
-        if user_role != required_role and user_role != "admin":
-            raise AuthorizationError(f"Required role: {required_role}")
-        
-        return current_user
-    
-    return role_checker
-
-# Optional authentication (for public endpoints that can benefit from user context)
-async def get_optional_user(
-    request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
-) -> Optional[Dict[str, Any]]:
-    """
-    Get current user if authenticated, otherwise return None
-    """
-    if not credentials:
-        return None
-    
-    try:
-        return await get_current_user(request, credentials)
-    except (AuthenticationError, AuthorizationError):
-        return None

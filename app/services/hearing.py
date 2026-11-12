@@ -148,7 +148,7 @@ def _tag_sync(pcm: np.ndarray, sr: int, top_k: int) -> list[SoundTag]:
     floor = get_settings().SOUND_MIN_SCORE
     tags = [
         SoundTag(label=lbl, score=float(s))
-        for lbl, s in zip(CAR_SOUND_LABELS, best)
+        for lbl, s in zip(CAR_SOUND_LABELS, best, strict=True)
         if lbl not in _DROPPED and s >= floor
     ]
     tags.sort(key=lambda t: t.score, reverse=True)

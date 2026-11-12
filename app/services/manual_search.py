@@ -135,8 +135,9 @@ async def _is_public(url: str) -> bool:
     return bool(infos) and all(ipaddress.ip_address(i[4][0]).is_global for i in infos)
 
 
-async def download_manual(url: str, dest: Path, models: list[str], year: int | None = None, transport: httpx.AsyncBaseTransport | None = None) -> bool:
-    """Download `url` to `dest` if it is a public, size-capped PDF about `models` (car's own name first). False if not."""
+async def fetch_pdf(url: str, dest: Path, transport: httpx.AsyncBaseTransport | None = None) -> bool:
+    """Download `url` to `dest` if it is a public (checked before every redirect hop), size-capped file that starts
+    with %PDF-. False if not."""
     cap = get_settings().MANUAL_MAX_MB * 1024 * 1024
     async with httpx.AsyncClient(transport=transport, timeout=DOWNLOAD_TIMEOUT, follow_redirects=False) as client:
         for _ in range(MAX_REDIRECTS + 1):
@@ -158,16 +159,19 @@ async def download_manual(url: str, dest: Path, models: list[str], year: int | N
             break
         else:
             return False
-    return await asyncio.to_thread(_looks_right, dest, models, year)
+    with dest.open("rb") as f:
+        return f.read(5) == b"%PDF-"
+
+
+async def download_manual(url: str, dest: Path, models: list[str], year: int | None = None, transport: httpx.AsyncBaseTransport | None = None) -> bool:
+    """fetch_pdf, then keep it only if it is about `models` (car's own name first). False if not."""
+    return await fetch_pdf(url, dest, transport) and await asyncio.to_thread(_looks_right, dest, models, year)
 
 
 def _looks_right(path: Path, models: list[str], year: int | None) -> bool:
     """A real PDF whose first pages name one of the models (so a Camry manual is not stored for a Corolla)."""
     from pypdf import PdfReader
 
-    with path.open("rb") as f:
-        if f.read(5) != b"%PDF-":
-            return False
     try:
         pages = PdfReader(path).pages[:RELEVANCE_PAGES]
         text = _norm(" ".join(p.extract_text() or "" for p in pages))

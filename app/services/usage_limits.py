@@ -10,30 +10,40 @@ from app.core.config import get_settings
 from app.utils.exceptions import RateLimitExceededException
 
 _counts: dict[tuple[str, date], int] = {}  # (user id, UTC day) -> accepted messages
+_car_adds: dict[tuple[str, date], int] = {}  # (user id, UTC day) -> accepted POST /cars calls
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def count_daily_message(user_id: str) -> None:
-    """Count one message for the account today (UTC), or raise a 429 with Retry-After when it has used up
-    DAILY_MESSAGE_LIMIT (0 turns the cap off). Days before today are dropped on every call."""
-    limit = get_settings().DAILY_MESSAGE_LIMIT
+def _count_daily(counts: dict, user_id: str, limit: int, refusal: str) -> None:
+    """Count one use for the account today (UTC), or raise a 429 with Retry-After (`refusal` with {limit} filled in)
+    when it has used up `limit` (0 turns the cap off). Days before today are dropped on every call."""
     if limit <= 0:
         return
     now = _utc_now()
     today = now.date()
-    for key in [k for k in _counts if k[1] != today]:
-        del _counts[key]
+    for key in [k for k in counts if k[1] != today]:
+        del counts[key]
     key = (user_id, today)
-    if _counts.get(key, 0) >= limit:
+    if counts.get(key, 0) >= limit:
         midnight = datetime.combine(today + timedelta(days=1), time.min, tzinfo=timezone.utc)
         raise RateLimitExceededException(
-            f"Daily message limit of {limit} reached. Try again after midnight UTC.",
-            retry_after=math.ceil((midnight - now).total_seconds()),
+            refusal.format(limit=limit), retry_after=math.ceil((midnight - now).total_seconds())
         )
-    _counts[key] = _counts.get(key, 0) + 1
+    counts[key] = counts.get(key, 0) + 1
+
+
+def count_daily_message(user_id: str) -> None:
+    _count_daily(_counts, user_id, get_settings().DAILY_MESSAGE_LIMIT,
+                 "Daily message limit of {limit} reached. Try again after midnight UTC.")
+
+
+def count_daily_car_add(user_id: str) -> None:
+    _count_daily(_car_adds, user_id, get_settings().DAILY_CAR_ADD_LIMIT,
+                 "Daily limit of {limit} added cars reached. Try again after midnight UTC.")
+
 
 _media_users: set[str] = set()  # accounts with a media turn running now: one each, so len() is the process total
 

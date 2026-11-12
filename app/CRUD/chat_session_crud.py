@@ -9,6 +9,9 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+SESSION_LIST_LIMIT = 100  # the newest sessions; the list reads every session's message array to count it
+
+
 class ChatSessionCRUD(BaseCRUD):
     def __init__(self):
         super().__init__('Chatsession')
@@ -59,7 +62,7 @@ class ChatSessionCRUD(BaseCRUD):
     async def list_for_user(self, user_id: str) -> list[dict]:
         return await pool.fetch(
             'SELECT id, car_id, title, updated_at, jsonb_array_length(messages) AS message_count'
-            ' FROM "Chatsession" WHERE user_id = $1 ORDER BY updated_at DESC',
+            ' FROM "Chatsession" WHERE user_id = $1 ORDER BY updated_at DESC LIMIT ' + str(SESSION_LIST_LIMIT),
             user_id,
         )
 

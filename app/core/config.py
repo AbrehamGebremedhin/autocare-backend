@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import List
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +43,9 @@ class Settings(BaseSettings):
 
     ENABLE_DOCS: bool = False  # serves /docs, /redoc and /openapi.json; off for a public deployment
     DAILY_MESSAGE_LIMIT: int = 200  # messages per account per UTC day, counted in memory per process; 0 turns the cap off
+    MAX_CARS_PER_USER: int = 20  # cars in one garage; 0 turns the cap off
+    DAILY_CAR_ADD_LIMIT: int = 20  # POST /cars calls per account per UTC day, counted in memory per process; 0 turns the cap off
+    PRELOAD_MODELS: bool = False  # load Whisper and CLAP at start-up, not in the first media turn's request (the image bakes them in)
     MAX_CONCURRENT_MEDIA_TURNS: int = 2  # media turns running at once in this process, one per account; 0 turns the limits off
 
     # Comma-separated Google OAuth client ids accepted as an ID token audience; empty turns Google sign-in off.
@@ -72,6 +75,12 @@ class Settings(BaseSettings):
 
     def get_google_client_ids(self) -> List[str]:
         return [c.strip() for c in self.GOOGLE_CLIENT_IDS.split(",") if c.strip()]
+
+    @model_validator(mode="after")
+    def _no_debug_in_production(self):
+        if self.is_production() and self.DEBUG:
+            raise ValueError("DEBUG must be false when ENV=production: debug mode returns tracebacks to clients")
+        return self
 
     def is_production(self) -> bool:
         return self.ENV.lower() == "production"

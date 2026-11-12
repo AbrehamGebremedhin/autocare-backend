@@ -1,4 +1,3 @@
-from app.services.base_service import BaseService
 from app.CRUD.car_crud import CarCRUD, log_id
 from app.db import pool
 from app.db.crud import BaseCRUD
@@ -8,26 +7,14 @@ from app.utils.logger import get_logger_instance
 from typing import List, Dict, Any, Optional
 
 
-class UserProfileService(BaseService):
+class UserProfileService:
     """Service for managing user profiles and car associations"""
     
     def __init__(self, car_crud: Optional[CarCRUD] = None):
-        super().__init__()
         self.car_crud = car_crud or CarCRUD()
         self.profiles = BaseCRUD("user_profiles")
         self.logger = get_logger_instance("user_profile")
     
-    async def perform_action(self, action: str, *args, **kwargs):
-        """
-        Perform action for BaseService compatibility
-        """
-        if action == "add_car":
-            return await self.add_car_to_user(*args, **kwargs)
-        elif action == "remove_car":
-            return await self.remove_car_from_user(*args, **kwargs)
-        else:
-            return {"success": False, "error": f"Unknown action: {action}"}
-        
     async def add_car_to_user(
         self, 
         user_id: str, 
@@ -96,6 +83,10 @@ class UserProfileService(BaseService):
             await self.logger.error(f"Error adding car to user {user_id}: {type(e).__name__}")
             raise DatabaseException("Could not add car") from e
 
+    async def garage_ids(self, user_id: str) -> List[str]:
+        """The ids of the cars in the user's garage (one query); [] without a profile."""
+        return await pool.fetchval("SELECT cars FROM user_profiles WHERE user_id = $1::uuid", user_id) or []
+
     async def set_transmission(self, user_id: str, car_id: str, transmission: str) -> bool:
         """Set the owner's transmission for a car in their garage; False when the car is not in it."""
         status = await pool.execute(
@@ -124,11 +115,7 @@ class UserProfileService(BaseService):
             # Get full car details
             details = {r["car_id"]: r["transmission"] for r in await pool.fetch(
                 "SELECT car_id, transmission FROM user_car_details WHERE user_id = $1::uuid", user_id)}
-            cars = []
-            for car_id in car_ids:
-                car = await self.car_crud.get_car_by_id(car_id)
-                if car:
-                    cars.append({**car, "transmission": details.get(car_id)})
+            cars = [{**car, "transmission": details.get(car["id"])} for car in await self.car_crud.get_many(car_ids)]
             
             await self.logger.info(f"Retrieved {len(cars)} cars for user {user_id}")
             return cars

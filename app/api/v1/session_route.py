@@ -37,9 +37,17 @@ BUSY = "This session is busy: a reply is still being generated, or it is being d
 # across every worker. Scheduled lease releases, kept here so they are not garbage-collected mid-flight.
 _releasing: set[asyncio.Task] = set()
 
+# Columns that stay on the server: the owner is the caller, and the lease holder token is a secret of the turn.
+INTERNAL_FIELDS = {"user_id", "busy_until", "busy_by"}
+MAX_SESSION_MESSAGES = 400  # a session's messages are one jsonb array that every turn rewrites
+
 
 class SessionCreate(BaseModel):
     car_id: str = Field(min_length=1, max_length=MAX_CAR_ID_CHARS, pattern=NO_NUL)
+
+
+def _public(session: dict) -> dict:
+    return {k: v for k, v in session.items() if k not in INTERNAL_FIELDS}
 
 
 async def _owned_session(session_id: str, user_id: str) -> dict:
@@ -72,6 +80,11 @@ def _spawn_release(lease: Lease, media_user: str | None = None) -> asyncio.Task:
     _releasing.add(task)
     task.add_done_callback(_releasing.discard)
     return task
+
+
+async def drain_releases() -> None:
+    """Wait for the lease releases still scheduled (shutdown: they need the pool, which closes next)."""
+    await asyncio.gather(*_releasing, return_exceptions=True)
 
 
 def _release(
@@ -147,11 +160,13 @@ def _events(
 
 
 @router.post("", summary="Start a diagnosis session for one of the user's cars")
-async def create_session(payload: SessionCreate, current_user: dict = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def create_session(request: Request, payload: SessionCreate, current_user: dict = Depends(get_current_user)):
     cars = await profiles.get_user_cars(current_user["id"])
     if not any(c.get("id") == payload.car_id for c in cars):
         raise RecordNotFoundException("Car")
-    return await diagnosis.sessions.create({"user_id": current_user["id"], "car_id": payload.car_id})
+    created = await diagnosis.sessions.create({"user_id": current_user["id"], "car_id": payload.car_id})
+    return _public(created)
 
 
 @router.get("", summary="List the user's sessions")
@@ -163,7 +178,7 @@ async def list_sessions(current_user: dict = Depends(get_current_user)):
 async def get_session(session_id: str, current_user: dict = Depends(get_current_user)):
     session = await _owned_session(session_id, current_user["id"])
     # Sessions saved before ranks and severities are upgraded on the way out (no float likelihoods leave the API).
-    return {**session, "state": DiagnosisState.model_validate(session.get("state") or {}).model_dump()}
+    return {**_public(session), "state": DiagnosisState.model_validate(session.get("state") or {}).model_dump()}
 
 
 @router.delete("/{session_id}", summary="Delete a session and its media")
@@ -235,6 +250,8 @@ async def _start_turn(
     try:
         # Re-read under the lease: the snapshot above may predate the previous turn's writes.
         session = await _owned_session(sid, current_user["id"])
+        if retry_of is None and len(session.get("messages") or []) >= MAX_SESSION_MESSAGES:
+            raise BusinessLogicException("This session is full. Start a new session to continue.")
         if retry_of is not None:
             text = diagnosis.retry_target(session.get("messages") or [], retry_of)["content"] or None
         uploads: list[Upload] = []

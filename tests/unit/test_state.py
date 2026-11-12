@@ -48,3 +48,28 @@ def test_merge_never_drops_what_is_established_and_keeps_the_title():
     assert [t.test for t in m.tests_done] == ["spun hub", "reseated connector"]
     assert [c.cause for c in m.suspected_causes] == ["connector"]  # a ruled-out cause is not suggested again
     assert m.safety_flags[0].text == "check hub nut"
+
+
+def test_established_lists_keep_the_newest_30():
+    state = DiagnosisState(
+        confirmed_findings=[f"f{i}" for i in range(50)],
+        tests_done=[TestDone(test=f"t{i}") for i in range(50)],
+        ruled_out=[RuledOut(cause=f"c{i}") for i in range(50)],
+        topic_history=[f"h{i}" for i in range(50)],
+    )
+    assert state.confirmed_findings == [f"f{i}" for i in range(20, 50)]
+    assert [t.test for t in state.tests_done] == [f"t{i}" for i in range(20, 50)]
+    assert [r.cause for r in state.ruled_out] == [f"c{i}" for i in range(20, 50)]
+    assert state.topic_history == [f"h{i}" for i in range(20, 50)]
+
+
+def test_suspected_causes_keep_the_first_8():
+    state = DiagnosisState(suspected_causes=[SuspectedCause(cause=f"c{i}") for i in range(12)])
+    assert [c.cause for c in state.suspected_causes] == [f"c{i}" for i in range(8)]
+
+
+def test_merge_state_cannot_grow_past_the_caps():
+    prev = DiagnosisState(confirmed_findings=[f"f{i}" for i in range(30)])
+    merged = merge_state(prev, DiagnosisState(confirmed_findings=[f"n{i}" for i in range(5)]))
+    assert len(merged.confirmed_findings) == 30
+    assert merged.confirmed_findings[-5:] == [f"n{i}" for i in range(5)] and "f0" not in merged.confirmed_findings

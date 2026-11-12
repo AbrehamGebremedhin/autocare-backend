@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 # Request limits for car input. Postgres text cannot hold NUL, so it is refused up front (422, not a 500).
 NO_NUL = r"^[^\x00]*$"

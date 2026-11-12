@@ -824,3 +824,72 @@ def test_retry_route_answers_the_failed_message_without_a_new_user_message(
     # a second retry has nothing to retry
     assert client.post(f"{_url(existing_session['id'])}/{mid}/retry", headers=auth_headers).status_code == 422
     assert client.post(f"{_url(existing_session['id'])}/nope/retry", headers=auth_headers).status_code == 404
+
+
+def test_create_session_is_rate_limited(client, auth_headers, fake_store, fake_garage, car):
+    codes = [client.post("/api/v1/sessions", json={"car_id": car["id"]}, headers=auth_headers).status_code for _ in range(31)]
+    assert codes[:30] == [200] * 30 and codes[30] == 429
+
+
+async def test_shutdown_waits_for_pending_lease_releases(fake_store, session):
+    holder = fake_store.hold(session["id"])
+    session_route._release(asyncio.get_running_loop(), Lease(session["id"], holder), None)
+    assert fake_store.busy(session["id"])  # the release is scheduled, not done
+    await session_route.drain_releases()
+    assert not fake_store.busy(session["id"])
+
+
+def test_get_session_with_an_oversized_legacy_state_is_200(client, auth_headers, existing_session, fake_store):
+    fake_store.rows[existing_session["id"]]["state"] = {"confirmed_findings": [f"f{i}" for i in range(50)]}
+    r = client.get(f"/api/v1/sessions/{existing_session['id']}", headers=auth_headers)
+    assert r.status_code == 200 and r.json()["state"]["confirmed_findings"] == [f"f{i}" for i in range(20, 50)]
+
+
+def _fill(fake_store, session, n=400):
+    fake_store.rows[session["id"]]["messages"] = [
+        {"id": f"m{i}", "role": "user" if i % 2 == 0 else "assistant", "content": "x", "status": "ok"} for i in range(n)
+    ]
+
+
+def test_a_full_session_refuses_a_new_message_and_frees_the_lease(client, auth_headers, existing_session, fake_llm, fake_store):
+    _fill(fake_store, existing_session)
+    r = client.post(_url(existing_session["id"]), data={"text": "one more"}, headers=auth_headers)
+    assert r.status_code == 422 and r.json()["error_code"] == "BIZ_001"
+    assert r.json()["message"] == "This session is full. Start a new session to continue."
+    assert not fake_store.busy(existing_session["id"])
+    assert len(fake_store.messages(existing_session["id"])) == 400 and fake_llm.calls == 0
+
+
+def test_a_session_just_under_the_cap_still_takes_a_message(client, auth_headers, existing_session, fake_llm, fake_store):
+    _fill(fake_store, existing_session, 399)
+    assert client.post(_url(existing_session["id"]), data={"text": "last one"}, headers=auth_headers).status_code == 200
+
+
+def test_a_full_session_can_still_retry_its_last_message(client, auth_headers, existing_session, fake_llm, fake_store):
+    sid = existing_session["id"]
+    fake_llm.fail_stream_after = 1
+    mid = _parse(client.post(_url(sid), data={"text": "fan clicks"}, headers=auth_headers).text)[-1][1]["retry_message_id"]
+    fake_llm.fail_stream_after = None
+    fake_store.rows[sid]["messages"] = [
+        *[{"id": f"m{i}", "role": "assistant", "content": "x", "status": "ok"} for i in range(398)],
+        *fake_store.messages(sid),
+    ]
+    r = client.post(f"{_url(sid)}/{mid}/retry", headers=auth_headers)
+    assert r.status_code == 200 and _parse(r.text)[-1][0] == "done"
+
+
+async def test_session_list_is_limited_to_100(fake_pool):
+    await ChatSessionCRUD().list_for_user("u1")
+    [(_, sql, _)] = fake_pool.calls
+    assert sql.rstrip().endswith("LIMIT 100")
+
+
+INTERNAL = {"user_id", "busy_until", "busy_by"}
+
+
+def test_session_json_has_no_internal_fields(client, auth_headers, fake_store, fake_garage, car):
+    created = client.post("/api/v1/sessions", json={"car_id": car["id"]}, headers=auth_headers).json()
+    assert not INTERNAL & set(created) and created["car_id"] == car["id"]
+    fake_store.rows[created["id"]].update(busy_until="2099-01-01T00:00:00+00:00", busy_by="holder-token")
+    got = client.get(f"/api/v1/sessions/{created['id']}", headers=auth_headers).json()
+    assert not INTERNAL & set(got) and got["id"] == created["id"] and "messages" in got and "state" in got

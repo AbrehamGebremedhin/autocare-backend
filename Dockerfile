@@ -37,6 +37,7 @@ RUN JWT_SECRET_KEY=build-time-placeholder-not-a-secret-000 \
 
 EXPOSE 8000
 
-# One worker only: the in-flight session lock lives in process memory.
+# One worker: rate limits, the daily caps and the media slots are counted in this process's memory (see README, Workers).
+# --timeout-graceful-shutdown: on stop, replies in flight get 45 s before uvicorn gives up (compose allows 60 s).
 # --proxy-headers trusts X-Forwarded-For only from the addresses in $FORWARDED_ALLOW_IPS (uvicorn's default: 127.0.0.1).
-CMD ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+CMD ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--timeout-graceful-shutdown", "45"]

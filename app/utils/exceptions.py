@@ -104,12 +104,9 @@ class BaseAPIException(HTTPException):
         self.timestamp = _utc_now_iso()
         self.details = details or {}
         
-        # Safe message for client (no internal details exposed)
-        safe_message = self._get_safe_message(message)
-        
         detail = {
             "error_code": error_code.value,
-            "message": safe_message,
+            "message": message,
             "correlation_id": self.correlation_id,
             "timestamp": self.timestamp,
             **self.details
@@ -117,34 +114,11 @@ class BaseAPIException(HTTPException):
         
         super().__init__(status_code=status_code, detail=detail, headers=headers)
     
-    def _get_safe_message(self, message: str) -> str:
-        """Return a safe message that doesn't expose internal details"""
-        # Override in production to return generic messages for certain error types
-        return message
-
 # Authentication Exceptions
 class AuthenticationException(BaseAPIException):
     def __init__(self, message: str = "Authentication failed", details: Optional[Dict[str, Any]] = None):
         super().__init__(
             error_code=ErrorCode.AUTHENTICATION_FAILED,
-            message=message,
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            details=details
-        )
-
-class InvalidTokenException(BaseAPIException):
-    def __init__(self, message: str = "Invalid or malformed token", details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            error_code=ErrorCode.INVALID_TOKEN,
-            message=message,
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            details=details
-        )
-
-class TokenExpiredException(BaseAPIException):
-    def __init__(self, message: str = "Token has expired", details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            error_code=ErrorCode.TOKEN_EXPIRED,
             message=message,
             status_code=status.HTTP_401_UNAUTHORIZED,
             details=details
@@ -169,21 +143,12 @@ class ValidationException(BaseAPIException):
             details=details
         )
 
-class SecurityViolationException(BaseAPIException):
-    def __init__(self, message: str = "Security violation detected", details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            error_code=ErrorCode.SECURITY_VIOLATION,
-            message=message,
-            status_code=status.HTTP_400_BAD_REQUEST,
-            details=details
-        )
-
 class PayloadTooLargeException(BaseAPIException):
     def __init__(self, message: str = "Request body too large", details: Optional[Dict[str, Any]] = None):
         super().__init__(
             error_code=ErrorCode.PAYLOAD_TOO_LARGE,
             message=message,
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             details=details
         )
 
@@ -216,15 +181,6 @@ class DuplicateRecordException(BaseAPIException):
         )
 
 # External Service Exceptions
-class ExternalServiceException(BaseAPIException):
-    def __init__(self, service: str, message: str = "External service error", details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            error_code=ErrorCode.EXTERNAL_SERVICE_UNAVAILABLE,
-            message=f"{service}: {message}",
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            details=details
-        )
-
 class RateLimitExceededException(BaseAPIException):
     def __init__(self, message: str = "Rate limit exceeded", retry_after: int = 60, details: Optional[Dict[str, Any]] = None):
         details = details or {}
@@ -243,7 +199,7 @@ class BusinessLogicException(BaseAPIException):
         super().__init__(
             error_code=ErrorCode.INVALID_OPERATION,
             message=message,
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             details=details
         )
 
@@ -257,81 +213,11 @@ class ResourceConflictException(BaseAPIException):
         )
 
 # System Exceptions
-class SystemException(BaseAPIException):
-    def __init__(self, message: str = "Internal system error", details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            error_code=ErrorCode.INTERNAL_SERVER_ERROR,
-            message=message,
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details=details
-        )
-
 class ServiceUnavailableException(BaseAPIException):
     def __init__(self, message: str = "Service temporarily unavailable", details: Optional[Dict[str, Any]] = None):
         super().__init__(
             error_code=ErrorCode.SERVICE_UNAVAILABLE,
             message=message,
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            details=details
-        )
-
-class ConfigurationException(BaseAPIException):
-    def __init__(self, message: str = "System configuration error", details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            error_code=ErrorCode.CONFIGURATION_ERROR,
-            message=message,
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details=details
-        )
-
-# Session Management Exceptions
-class SessionException(BaseAPIException):
-    def __init__(self, message: str = "Session operation failed", details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            error_code=ErrorCode.INVALID_OPERATION,
-            message=message,
-            status_code=status.HTTP_400_BAD_REQUEST,
-            details=details
-        )
-
-class SessionExpiredException(SessionException):
-    def __init__(self, message: str = "Session has expired", details: Optional[Dict[str, Any]] = None):
-        super().__init__(message=message, details=details)
-
-class SessionNotFoundException(SessionException):
-    def __init__(self, session_id: str = None, details: Optional[Dict[str, Any]] = None):
-        message = f"Session not found"
-        if session_id:
-            message += f": {session_id}"
-        super().__init__(message=message, details=details)
-
-# Service Exceptions
-class ServiceException(BaseAPIException):
-    def __init__(self, service_name: str, message: str = "Service operation failed", details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            error_code=ErrorCode.INVALID_OPERATION,
-            message=f"{service_name}: {message}",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details=details
-        )
-
-# Agent Exceptions
-class AgentException(BaseAPIException):
-    def __init__(self, agent_type: str = None, message: str = "Agent operation failed", details: Optional[Dict[str, Any]] = None):
-        formatted_message = f"{agent_type} agent: {message}" if agent_type else message
-        super().__init__(
-            error_code=ErrorCode.INVALID_OPERATION,
-            message=formatted_message,
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details=details
-        )
-
-class ResourceException(BaseAPIException):
-    def __init__(self, resource_type: str = None, message: str = "Resource operation failed", details: Optional[Dict[str, Any]] = None):
-        formatted_message = f"{resource_type} resource: {message}" if resource_type else message
-        super().__init__(
-            error_code=ErrorCode.RESOURCE_CONFLICT,
-            message=formatted_message,
-            status_code=status.HTTP_409_CONFLICT,
             details=details
         )

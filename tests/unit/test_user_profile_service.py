@@ -96,3 +96,30 @@ async def test_add_car_stores_the_transmission(fake_pool):
     result = await service.add_car_to_user(USER, "Toyota", "Corolla", 2006, "automatic")
     assert result["car_info"]["transmission"] == "automatic"
     assert any("INSERT INTO user_car_details" in c[1] and c[2] == (USER, "c1", "automatic") for c in fake_pool.calls)
+
+
+async def test_listing_cars_is_three_statements_whatever_the_garage_size(fake_pool, monkeypatch):
+    ids = [f"make-model-{2000 + i}" for i in range(5)]
+    answers = iter([
+        [{"user_id": USER, "cars": ids, "preferences": {}}],
+        [],
+        [{"id": i, "make": "make", "model": "model", "year": 2000} for i in ids],
+    ])
+
+    async def fetch(sql, *args):
+        fake_pool.calls.append(("fetch", sql, args))
+        return next(answers)
+
+    monkeypatch.setattr(fake_pool, "fetch", fetch)
+    cars = await UserProfileService().get_user_cars(USER)
+    assert [c["id"] for c in cars] == ids and len(fake_pool.calls) == 3
+
+
+async def test_get_many_keeps_the_garage_order_and_leaves_out_unknown_ids(fake_pool):
+    from app.CRUD.car_crud import CarCRUD
+
+    fake_pool.rows = [{"id": "b", "make": "m", "model": "m", "year": 1}, {"id": "a", "make": "m", "model": "m", "year": 1}]
+    cars = await CarCRUD().get_many(["a", "gone", "b"])
+    assert [c["id"] for c in cars] == ["a", "b"]
+    [(_, sql, args)] = fake_pool.calls
+    assert "ANY($1::text[])" in sql and args == (["a", "gone", "b"],)

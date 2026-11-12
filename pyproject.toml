@@ -4,21 +4,18 @@ version = "0.1.0"
 description = "AutoCare FastAPI backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "fastapi==0.115.12",
+    "fastapi==0.162.2",
     "uvicorn[standard]==0.34.2",
     "pydantic==2.11.4",
     "pydantic-settings==2.9.1",
-    "python-multipart==0.0.20",
+    "python-multipart==0.0.33",
     "slowapi==0.1.9",
-    "PyJWT==2.10.1",
+    "PyJWT==2.15.1",
     "email-validator==2.2.0",
     "openai==1.82.0",
     "httpx==0.28.1",
     "beautifulsoup4==4.13.4",
-    "aiofiles==24.1.0",
-    "tenacity==9.1.2",
-    "chardet==5.2.0",
-    "pypdf==5.4.0",
+    "pypdf==7.0.0",
     "numpy==2.5.4",
     "pillow==13.0.0",
     "torch==2.7.1",
@@ -39,6 +36,7 @@ dev = [
     "pytest-mock==3.14.0",
     "pytest-cov==6.0.0",
     "pyyaml>=6.0.3",
+    "ruff==0.17.4",
 ]
 
 [[tool.uv.index]]
@@ -75,24 +73,12 @@ addopts = [
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "db: needs a real Postgres in TEST_DATABASE_URL (run with -m db)",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests",
-    "database: marks tests that require database",
-    "external: marks tests that require external services",
     "asyncio: marks tests that use asyncio",
-    "parametrize: marks parametrized tests",
-    "smoke: marks tests as smoke tests",
-    "regression: marks tests as regression tests",
-    "performance: marks tests as performance tests",
 ]
 
 # Async support
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-
-# Test timeout (in seconds)
-timeout = 30
-timeout_method = "thread"
 
 # Coverage settings (when using pytest-cov)
 [tool.coverage.run]
@@ -134,3 +120,10 @@ directory = "htmlcov"
 
 [tool.coverage.xml]
 output = "coverage.xml"
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E9", "F", "B"]
+ignore = ["B008"]  # FastAPI Depends() in defaults

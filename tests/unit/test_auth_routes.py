@@ -2,6 +2,7 @@ import logging
 
 import jwt
 import pytest
+from fastapi.routing import iter_route_contexts
 
 PUBLIC = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
 SIGNED_DOWNLOAD = "/api/v1/visuals/files/{name:path}"  # public on purpose: the url's HMAC is the credential
@@ -10,7 +11,7 @@ CLIENT_ID = "client-1.apps.googleusercontent.com"
 
 
 def test_every_non_auth_route_requires_token(client):
-    for route in client.app.routes:
+    for route in iter_route_contexts(client.app.routes):
         path = getattr(route, "path", "")
         if path in PUBLIC or path == SIGNED_DOWNLOAD or path.startswith("/api/v1/auth"):
             continue
@@ -452,7 +453,7 @@ def test_refresh_rejects_bad_expired_and_foreign_tokens_alike(client, fake_users
     no_iat = jwt.encode({"sub": user_id, "type": "refresh", "exp": time.time() + 600}, jwt_handler.secret_key, "HS256")
     with caplog.at_level(logging.DEBUG):
         responses = [_refresh(client, t) for t in ("not-a-jwt", expired, foreign, no_iat)]
-    for token, r in zip(("not-a-jwt", expired, foreign, no_iat), responses):
+    for token, r in zip(("not-a-jwt", expired, foreign, no_iat), responses, strict=True):
         assert r.status_code == 401 and _strip(r) == REFRESH_401
         assert token not in caplog.text
 

@@ -3,7 +3,7 @@ Unit tests for authentication middleware and JWT handling.
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
 import jwt
 from datetime import datetime, timedelta
@@ -11,12 +11,9 @@ import os
 
 from app.utils.auth_middleware import (
     JWTHandler, 
+    access_claims,
     get_current_user, 
-    get_current_active_user,
-    require_permissions,
-    require_role,
     AuthenticationError,
-    AuthorizationError
 )
 
 
@@ -110,7 +107,7 @@ class TestJWTHandler:
         # Create token with different secret
         wrong_token = jwt.encode(
             sample_user_data, 
-            "wrong-secret", 
+            "wrong-secret-that-is-32-bytes-long", 
             algorithm=jwt_handler.algorithm
         )
         
@@ -135,7 +132,6 @@ class TestAuthenticationMiddleware:
     def valid_credentials(self):
         """Create valid HTTP authorization credentials"""
         # Use the test environment JWT secret directly
-        import os
         jwt_handler = JWTHandler()
         # Ensure we're using the test secret from environment
         jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
@@ -162,7 +158,6 @@ class TestAuthenticationMiddleware:
     @pytest.mark.asyncio
     async def test_get_current_user_valid_token(self, mock_request, valid_credentials):
         """Test getting current user with valid token"""
-        import os
         from app.utils.auth_middleware import jwt_handler
         
         # Patch the global JWT handler to use test environment secret
@@ -201,7 +196,6 @@ class TestAuthenticationMiddleware:
     async def test_get_current_user_refresh_token(self, mock_request):
         """Test rejection of refresh token for access"""
         # Use the test environment JWT secret directly
-        import os
         from app.utils.auth_middleware import jwt_handler as global_jwt_handler
         
         jwt_handler = JWTHandler()
@@ -230,7 +224,6 @@ class TestAuthenticationMiddleware:
     async def test_get_current_user_missing_subject(self, mock_request):
         """Test handling of token without subject"""
         # Use the test environment JWT secret directly
-        import os
         jwt_handler = JWTHandler()
         jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
         
@@ -247,109 +240,6 @@ class TestAuthenticationMiddleware:
         with pytest.raises(AuthenticationError):
             await get_current_user(mock_request, credentials)
     
-    @pytest.mark.asyncio
-    async def test_get_current_active_user(self, mock_request, valid_credentials):
-        """Test getting current active user"""
-        import os
-        from app.utils.auth_middleware import jwt_handler
-        
-        # Patch the global JWT handler to use test environment secret
-        original_secret = jwt_handler.secret_key
-        jwt_handler.secret_key = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-for-unit-tests-must-be-32-chars-minimum")
-        
-        try:
-            with patch('app.utils.auth_middleware.validate_user', new_callable=AsyncMock) as mock_validate:
-                mock_validate.return_value = True
-                
-                user = await get_current_user(mock_request, valid_credentials)
-                active_user = await get_current_active_user(user)
-                
-                assert active_user == user
-        finally:
-            # Restore original secret
-            jwt_handler.secret_key = original_secret
-
-
-class TestAuthorizationDecorators:
-    """Test authorization decorator functions"""
-    
-    @pytest.fixture
-    def user_with_permissions(self):
-        """User with specific permissions"""
-        return {
-            "id": "user-123",
-            "email": "test@example.com",
-            "role": "user",
-            "permissions": ["read", "write", "delete"]
-        }
-    
-    @pytest.fixture
-    def admin_user(self):
-        """Admin user"""
-        return {
-            "id": "admin-123",
-            "email": "admin@example.com",
-            "role": "admin",
-            "permissions": ["admin"]
-        }
-    
-    @pytest.fixture
-    def basic_user(self):
-        """Basic user with limited permissions"""
-        return {
-            "id": "basic-123",
-            "email": "basic@example.com",
-            "role": "user",
-            "permissions": ["read"]
-        }
-    
-    def test_require_permissions_success(self, user_with_permissions):
-        """Test successful permission check"""
-        permission_checker = require_permissions(["read", "write"])
-        
-        # Should not raise exception
-        result = permission_checker(user_with_permissions)
-        assert result == user_with_permissions
-    
-    def test_require_permissions_admin_bypass(self, admin_user):
-        """Test that admin bypasses permission checks"""
-        permission_checker = require_permissions(["super_secret_permission"])
-        
-        # Admin should bypass permission check
-        result = permission_checker(admin_user)
-        assert result == admin_user
-    
-    def test_require_permissions_failure(self, basic_user):
-        """Test failed permission check"""
-        permission_checker = require_permissions(["admin", "delete"])
-        
-        with pytest.raises(AuthorizationError) as exc_info:
-            permission_checker(basic_user)
-        
-        assert "required permissions" in str(exc_info.value.detail).lower()
-    
-    def test_require_role_success(self, admin_user):
-        """Test successful role check"""
-        role_checker = require_role("admin")
-        
-        result = role_checker(admin_user)
-        assert result == admin_user
-    
-    def test_require_role_admin_bypass(self, admin_user):
-        """Test that admin can access any role"""
-        role_checker = require_role("user")
-        
-        result = role_checker(admin_user)
-        assert result == admin_user
-    
-    def test_require_role_failure(self, basic_user):
-        """Test failed role check"""
-        role_checker = require_role("admin")
-        
-        with pytest.raises(AuthorizationError) as exc_info:
-            role_checker(basic_user)
-        
-        assert "required role" in str(exc_info.value.detail).lower()
 
 
 class TestValidateUser:
@@ -486,3 +376,49 @@ class TestErrorLogsHideDetails:
                 await get_current_user(mock_request, creds)
         assert "ValueError" in caplog.text
         assert "secret internals" not in caplog.text
+
+
+class TestAccessClaims:
+    """access_claims: the token checks of get_current_user, without the database."""
+
+    def _handler(self):
+        return JWTHandler()
+
+    def test_valid_access_token_returns_its_payload(self):
+        token = self._handler().create_access_token({"sub": "u1", "email": "a@b.c"})
+        assert access_claims(token)["sub"] == "u1"
+
+    @pytest.mark.parametrize("token", [None, ""])
+    def test_missing_token(self, token):
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(token)
+        assert exc.value.detail == "Missing authentication token"
+
+    def test_expired_token(self):
+        token = self._handler().create_access_token({"sub": "u1"}, issued_at=datetime.now().timestamp() - 7200)
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(token)
+        assert exc.value.detail == "Token has expired"
+
+    def test_garbage_token(self):
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims("not-a-jwt")
+        assert exc.value.detail == "Invalid token"
+
+    def test_refresh_token_is_the_wrong_type(self):
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(self._handler().create_refresh_token({"sub": "u1"}))
+        assert exc.value.detail == "Invalid token type"
+
+    @pytest.mark.parametrize("data", [{}, {"sub": ""}])
+    def test_token_without_a_subject_is_an_invalid_payload(self, data):
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(self._handler().create_access_token(data))
+        assert exc.value.detail == "Invalid token payload"
+
+    def test_token_with_a_boolean_iat_is_an_invalid_payload(self):
+        h = self._handler()
+        token = jwt.encode({"sub": "u1", "type": "access", "iat": True}, h.secret_key, algorithm=h.algorithm)
+        with pytest.raises(AuthenticationError) as exc:
+            access_claims(token)
+        assert exc.value.detail == "Invalid token payload"

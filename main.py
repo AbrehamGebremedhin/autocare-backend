@@ -2,6 +2,9 @@
 import asyncio
 import logging
 import os
+import shutil
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,10 +17,13 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.routes import router as v1_router
+from app.api.v1.session_route import drain_releases
+from app.CRUD.car_crud import resume_pending_ingests
 from app.core.config import get_settings
 from app.db import pool
 from app.db.pool import DatabaseUnavailable
-from app.services import llm
+from app.services import hearing, llm
+from app.utils.auth_middleware import access_claims
 from app.utils.body_limit import BodySizeLimitMiddleware
 from app.utils.correlation import CorrelationIdMiddleware
 from app.utils.exceptions import ErrorCode, ServiceUnavailableException, error_body, http_error_body
@@ -26,6 +32,7 @@ from app.utils.log_redaction import install_redaction
 from app.utils.security_middleware import SecurityHeadersMiddleware
 
 settings = get_settings()
+DEFAULT_EXECUTOR_THREADS = 32  # asyncio's default is min(32, cpus + 4): two media turns would fill it on a small host
 logger = logging.getLogger("autocare")
 install_redaction()  # uvicorn's access log prints the query string; signed artwork urls must not reach it
 
@@ -38,14 +45,45 @@ def media_dir_writable(path: str) -> bool:
     return current.is_dir() and os.access(current, os.W_OK | os.X_OK)
 
 
+def sweep_stale_tmp() -> int:
+    """Remove the turn and manual-ingest directories a killed process left in the temp dir; how many were removed."""
+    removed = 0
+    for pattern in ("autocare-turn-*", "autocare-manual-*"):
+        for path in Path(tempfile.gettempdir()).glob(pattern):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+    return removed
+
+
+async def _preload_models() -> None:
+    try:
+        await asyncio.to_thread(hearing.prefetch)
+    except Exception as exc:  # the models then load on the first media turn, as before
+        logger.warning("model preload failed: %s", type(exc).__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    sweep_stale_tmp()
+    # Whisper, CLAP, argon2, pypdf and DNS lookups share the default executor: give it room so media work cannot starve logins.
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=DEFAULT_EXECUTOR_THREADS, thread_name_prefix="autocare")
+    )
     if not media_dir_writable(settings.MEDIA_DIR):
         logger.warning("MEDIA_DIR %s is not writable by this process; media uploads will fail", settings.MEDIA_DIR)
     await pool.init_pool()
+    # Background work of start-up: it must not delay the first request, and it stops with the app.
+    background = [asyncio.create_task(resume_pending_ingests())]
+    if settings.PRELOAD_MODELS:
+        background.append(asyncio.create_task(_preload_models()))
     try:
         yield
     finally:
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        await drain_releases()  # lease releases still pending need the pool
         await pool.close_pool()
 
 
@@ -65,6 +103,7 @@ app.add_middleware(
     max_bytes=_MB,
     upload_max_bytes=(max(settings.MAX_IMAGES * settings.MAX_IMAGE_MB, settings.MAX_MEDIA_MB) + 1) * _MB,
     upload_path=r"/api/v1/sessions/[^/]+/messages",
+    upload_auth=access_claims,
 )
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
@@ -90,7 +129,12 @@ MAX_LOGGED_PATH_CHARS = 100
 
 def _route(request: Request) -> str:
     """The matched route's template (no ids from the URL), else the raw path, truncated."""
-    return getattr(request.scope.get("route"), "path", None) or request.url.path[:MAX_LOGGED_PATH_CHARS]
+    route = request.scope.get("route")
+    if not getattr(route, "path", None):
+        return request.url.path[:MAX_LOGGED_PATH_CHARS]
+    # FastAPI keeps a route's path relative to the router it sits on: put the include prefix back.
+    rendered = route.path_format.format(**request.scope.get("path_params", {}))
+    return request.url.path.removesuffix(rendered) + route.path
 
 
 def _error_response(request: Request, status_code: int, body: dict, cause: str, headers=None) -> JSONResponse:

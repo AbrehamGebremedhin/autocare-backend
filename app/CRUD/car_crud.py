@@ -114,59 +114,19 @@ class CarCRUD(BaseCRUD):
         """Create a car record - now redirects to create_or_get_car for uniqueness"""
         return await self.create_or_get_car(data)
 
+    async def get_many(self, ids: List[str]) -> List[Dict[str, Any]]:
+        """The cars with these ids in one query, in the order of `ids`; unknown ids are left out."""
+        rows = {r["id"]: r for r in await pool.fetch(f"SELECT * FROM {self._table} WHERE id = ANY($1::text[])", ids)}
+        cars = [rows[i] for i in ids if i in rows]
+        for car in cars:
+            if "car_guide_links" in car:
+                car["car_guide_links"] = self.ensure_list(car["car_guide_links"])
+        return cars
+
     async def get_car_by_id(self, car_id: str):
         """Retrieve a car by its unique id."""
-        # Normalize car_id to handle different formats
-        normalized_id = self._normalize_car_id(car_id)
-        
-        # First try with the original car_id
         cars = await self.read({'id': car_id})
-        
-        # If not found, try with normalized ID
-        if not cars or not isinstance(cars, list) or not cars:
-            if normalized_id != car_id:
-                # Try again with normalized ID
-                cars = await self.read({'id': normalized_id})
-                
-                # Log attempt with normalized ID
-                if cars and isinstance(cars, list) and cars:
-                    await self.logger.info(
-                        f"Found car with normalized ID: {log_id(normalized_id)} (original: {log_id(car_id)})"
-                    )
-                else:
-                    await self.logger.warning(
-                        f"Car not found with original ID '{log_id(car_id)}' or normalized ID '{log_id(normalized_id)}'"
-                    )
-        
-        if cars and isinstance(cars, list) and cars:
-            return cars[0]
-            
-        return None
-        
-    def _normalize_car_id(self, car_id: str) -> str:
-        """
-        Normalize car ID to handle different formats and common variations.
-        For example: "echo-toyota-2001" -> "toyota-echo-2001"
-        """
-        if not car_id:
-            return car_id
-            
-        # Try to parse parts from the car_id
-        parts = car_id.lower().strip().split('-')
-        if len(parts) >= 3:
-            # Check for common pattern where make and model are reversed
-            # Common car makes that we can detect
-            common_makes = ['toyota', 'honda', 'ford', 'chevrolet', 'bmw', 'audi', 'mercedes', 'nissan', 
-                           'mazda', 'subaru', 'hyundai', 'kia', 'lexus', 'acura', 'volkswagen', 'vw']
-            
-            # If the first part isn't a known make but the second is, swap them
-            if parts[0] not in common_makes and parts[1] in common_makes:
-                model, make = parts[0], parts[1]
-                remaining = '-'.join(parts[2:])
-                return f"{make}-{model}-{remaining}"
-        
-        # If we couldn't normalize it, return the original
-        return car_id
+        return cars[0] if cars else None
 
 
 _logger = get_logger_instance("car_ingest")
@@ -182,14 +142,43 @@ async def _set_kb_status(car_id: str, status: str, count: int = 0) -> None:
 async def _startmycar_manual(fetcher: FetchCarDataService, car: dict, pdf_path: Path) -> str | None:
     """Download startmycar's owner manual to pdf_path; the title to index it under, or None when it has none."""
     url = fetcher.build_url(car["make"], car["model"], car["year"])["Owner_Manual"]
-    link = await fetcher.scrape_links(url, "owner_manual")
-    if not link:
+    link = await fetcher.scrape_links(url)
+    if not link or not await manual_search.fetch_pdf(urljoin(fetcher.BASE_URL, link), pdf_path):
         return None
-    await fetcher.download_pdf(urljoin(fetcher.BASE_URL, link), str(pdf_path))
     return f"{car['make']} {car['model']} {car['year']} owner's manual"
 
 
+_ingesting: set[str] = set()  # car ids whose manual ingest is running in this process
+
+
 async def ingest_car_manual(car: dict) -> None:
+    """Run the manual ingest unless one is already running for this car (two quick adds start one, not two)."""
+    if car["id"] in _ingesting:
+        return
+    _ingesting.add(car["id"])
+    try:
+        await _ingest_car_manual(car)
+    finally:
+        _ingesting.discard(car["id"])
+
+
+async def resume_pending_ingests() -> None:
+    """At start-up: ingests a restart interrupted left their cars `pending` for good. Mark them `failed` first (one
+    statement, so a car whose ingest keeps killing the process is retried once per interruption, not on every start),
+    then ingest them one after another. Never raises."""
+    try:
+        cars = await pool.fetch("UPDATE \"Car\" SET kb_status = 'failed' WHERE kb_status = 'pending' RETURNING *")
+    except Exception as e:
+        await _logger.error(f"Could not look for interrupted ingests: {type(e).__name__}")
+        return
+    for car in cars:
+        try:
+            await ingest_car_manual(car)
+        except Exception as e:
+            await _logger.error(f"Resumed ingest failed for {log_id(car['id'])}: {type(e).__name__}")
+
+
+async def _ingest_car_manual(car: dict) -> None:
     """Background task: index up to MANUAL_MAX_SOURCES manuals (startmycar, then Brave Search hits) into kb_passages.
 
     A source that fails or is not about this car is skipped. Never raises.
@@ -202,7 +191,7 @@ async def ingest_car_manual(car: dict) -> None:
     total = indexed = 0
     failed = False
     try:
-        tmp_dir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="manual_"))
+        tmp_dir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="autocare-manual-"))
         label = f"{car['make']} {car['model']} {car['year']}"
 
         async def index(title: str, pdf_path: Path) -> None:

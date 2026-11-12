@@ -1,6 +1,6 @@
 # AutoCare Backend
 
-FastAPI backend for an AI car-diagnosis assistant. A user signs up, adds a car, opens a diagnosis session and chats about a problem with text, photos, audio or video. Each turn streams back as Server-Sent Events. Answers are grounded in a Postgres full-text knowledge base (car manuals and books) and use DeepSeek as the LLM (at most 2 LLM calls per turn: one streamed reply, one state update). Audio is transcribed with faster-whisper and engine sounds are tagged with CLAP.
+FastAPI backend for an AI car-diagnosis assistant. A user signs up, adds a car, opens a diagnosis session and chats about a problem with text, photos, audio or video. Each turn streams back as Server-Sent Events. Answers are grounded in a Postgres full-text knowledge base (car manuals and books) and use DeepSeek as the LLM (3 LLM calls per turn: the streamed reply, a fact extraction that runs alongside it, and a state update). Audio is transcribed with faster-whisper and engine sounds are tagged with CLAP.
 
 It runs as three containers from `docker-compose.yml`: `db` (Postgres 16, not published to the host), `api` (this app, published on `127.0.0.1:8000` only, for a reverse proxy on the same host) and `visuals-worker` (vehicle artwork jobs, same image, no published port). Uploaded media lives on a Docker volume.
 
@@ -10,14 +10,14 @@ Settings come from `.env` (`.env.example` lists every name with its default; `ap
 
 Required: `JWT_SECRET_KEY` (32+ chars), `POSTGRES_PASSWORD`, `DATABASE_URL`, `DEEPSEEK_API_KEY`.
 
-Optional: `REGISTRATION_CODE`, `ENABLE_DOCS`, `DAILY_MESSAGE_LIMIT`, `MAX_CONCURRENT_MEDIA_TURNS`, `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_VIDEO_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`, `MEDIA_USER_QUOTA_MB`, `VISUALS_DIR`, `PUBLIC_BASE_URL`, `VISUAL_URL_TTL_SECONDS`, `VISUAL_PREPARE_PER_HOUR`, `VISUAL_JOBS_PER_HOUR`, `VISUAL_POLL_SECONDS`, `VISUAL_PROVIDER_ENABLED`, `VISUAL_PROVIDER_DAILY_BUDGET`, `VISUAL_CURATED_DIR`.
+Optional: `REGISTRATION_CODE`, `ENABLE_DOCS`, `DAILY_MESSAGE_LIMIT`, `MAX_CARS_PER_USER`, `DAILY_CAR_ADD_LIMIT`, `PRELOAD_MODELS` (load Whisper and CLAP at start-up instead of in the first media turn; compose turns it on for the api), `MAX_CONCURRENT_MEDIA_TURNS`, `GOOGLE_CLIENT_IDS`, `FORWARDED_ALLOW_IPS`, `ENV`, `DEBUG`, `ALLOWED_ORIGINS`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, `WHISPER_MODEL`, `CLAP_MODEL`, `SOUND_MIN_SCORE`, `MAX_FRAMES`, `MAX_MEDIA_SECONDS`, `MAX_VIDEO_SECONDS`, `MAX_MEDIA_MB`, `MAX_IMAGES`, `MAX_IMAGE_MB`, `KB_TOP_K`, `HISTORY_MESSAGES`, `MEDIA_DIR`, `MEDIA_MIN_FREE_MB`, `MEDIA_USER_QUOTA_MB`, `VISUALS_DIR`, `PUBLIC_BASE_URL`, `VISUAL_URL_TTL_SECONDS`, `VISUAL_PREPARE_PER_HOUR`, `VISUAL_JOBS_PER_HOUR`, `VISUAL_POLL_SECONDS`, `VISUAL_PROVIDER_ENABLED`, `VISUAL_PROVIDER_DAILY_BUDGET`, `VISUAL_CURATED_DIR`.
 
 Vehicle artwork (the `visuals-worker` service, signed download URLs, the operator CLI and the deploy steps, including the migration `app/db/sql/vehicle_visuals.sql`) is documented in [docs/VEHICLE_VISUALS.md](docs/VEHICLE_VISUALS.md).
 
 - `POSTGRES_PASSWORD` is also pasted into the api's `DATABASE_URL`, so it must be URL-safe (letters, digits, `-_.~`). Generate it with `openssl rand -hex 24`.
 - Inside compose, the api's `DATABASE_URL` is set by `docker-compose.yml` (host `db`) and overrides `.env`. The `.env` value is only for running the app or scripts outside compose, e.g. `postgresql://autocare:<password>@localhost:5432/autocare`.
 - `JWT_SECRET_KEY` signs the app's own tokens (HS256): `openssl rand -hex 32`.
-- Set `ENV=production` on the server (adds the HSTS header).
+- Set `ENV=production` on the server (adds the HSTS header; the app refuses to start with `DEBUG=true` in production).
 - Set `REGISTRATION_CODE` on any public deployment: it is how sign-up is restricted (see [Abuse protection](#abuse-protection)). Left empty, anyone can register.
 
 ## VPS setup
@@ -40,6 +40,13 @@ docker compose run --rm -v ./car_data:/app/car_data:ro api uv run --no-sync pyth
 ```
 
 `car_data/` is never copied into the image; it is only mounted for this command. Re-running replaces the passages of each PDF it finds.
+
+### Container limits and shutdown
+
+- **Logs** are rotated by Docker: five files of 10 MB per container (`x-logging` in `docker-compose.yml`).
+- **Memory pressure**: Postgres has `oom_score_adj: -500` and the api and worker `500`, so the kernel kills them before it touches the database. No memory limit is set because the right number depends on the host; add `mem_limit` to the api once you know its normal use (Whisper and CLAP need about 2 GB).
+- **Stopping the api** (`docker compose stop api`, a deploy) waits up to 60 s: uvicorn stops taking requests and gives replies in flight 45 s (`--timeout-graceful-shutdown`) before cutting them, then the remaining session leases are released. A reply cut off after that frees its session at once; only a killed process leaves a lease to expire (5 minutes). At start the api deletes turn and manual-download folders a killed process left in `/tmp`.
+- **Dropped privileges**: the api and worker run with `cap_drop: ["ALL"]`, `no-new-privileges` and `pids_limit: 512`. If a container refuses to start after an update, remove those three keys from that service in `docker-compose.yml` and report it; nothing in the app needs them.
 
 ### Schema changes
 
@@ -95,7 +102,7 @@ API replicas on other hosts must keep their clocks NTP-synced with each other an
 bash scripts/backup.sh
 ```
 
-It writes `backups/YYYY-MM-DD.sql.gz` (`pg_dump --clean --if-exists`) and `backups/YYYY-MM-DD-media.tar.gz` (the media volume), keeps the newest 14 of each and prints a crontab line for a daily run. `backups/` is git-ignored; copy it off the server. The script is committed as executable, but `bash scripts/backup.sh` works without relying on the file mode.
+It writes `backups/YYYY-MM-DD.sql.gz` (`pg_dump --clean --if-exists`), `backups/YYYY-MM-DD-media.tar.gz` (the media volume) and `backups/YYYY-MM-DD-visuals.tar.gz` (the vehicle artwork volume), keeps the newest 14 of each and prints a crontab line for a daily run. `backups/` is git-ignored; copy it off the server. The script is committed as executable, but `bash scripts/backup.sh` works without relying on the file mode.
 
 Restore the database (the dump drops and recreates its tables, so stop the api first):
 
@@ -104,10 +111,11 @@ docker compose stop api
 gunzip -c backups/2026-11-06.sql.gz | docker compose exec -T db psql -U autocare -d autocare -v ON_ERROR_STOP=1
 ```
 
-Restore the media (the volume is `<project>_media`, by default `autocare-backend_media`):
+Restore the media and the artwork (the volumes are `<project>_media` and `<project>_visuals`, by default `autocare-backend_media` and `autocare-backend_visuals`). Restore the artwork together with the database: its rows say `ready` for images that only the volume holds.
 
 ```
 docker run --rm -i -v autocare-backend_media:/data postgres:16-alpine tar -xzf - -C /data < backups/2026-11-06-media.tar.gz
+docker run --rm -i -v autocare-backend_visuals:/data postgres:16-alpine tar -xzf - -C /data < backups/2026-11-06-visuals.tar.gz
 docker compose start api
 ```
 
@@ -132,10 +140,10 @@ Interactive reference: `http://localhost:8000/docs`, served only when `ENABLE_DO
 | Auth | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/google`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout` |
 | Cars | `GET /api/v1/cars`, `POST /api/v1/cars` (`{"make", "model", "year", "transmission"?}`, transmission is `manual`, `automatic`, `cvt` or `dual_clutch`), `PATCH /api/v1/cars/{car_id}` (`{"transmission"}`), `DELETE /api/v1/cars/{car_id}` |
 | Vehicle visuals | `GET /api/v1/cars/{car_id}/visual`, `POST /api/v1/cars/{car_id}/visual/prepare` (`{}` or `{"variant_key"}`), `GET /api/v1/visuals/files/{sha256}.webp?exp&sig` (no token; see [docs/VEHICLE_VISUALS.md](docs/VEHICLE_VISUALS.md)) |
-| Sessions | `POST /api/v1/sessions` (`{"car_id"}`), `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
-| Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE) |
+| Sessions | `POST /api/v1/sessions` (`{"car_id"}`), `GET /api/v1/sessions` (the newest 100), `GET /api/v1/sessions/{id}`, `DELETE /api/v1/sessions/{id}` |
+| Chat | `POST /api/v1/sessions/{id}/messages` (multipart form: `text`, `files`; replies as SSE). `POST /api/v1/sessions/{id}/messages/{message_id}/retry` re-runs a failed reply; the SSE `error` event carries `retry_message_id`, the id to pass here. Session JSON carries no `user_id`, `busy_until` or `busy_by`. A session holds at most 400 messages; a new one past that gets `422` (`BIZ_001`, `This session is full. Start a new session to continue.`), retrying a failed reply still works. The diagnosis state keeps the newest 30 findings, tests, ruled-out causes and topics, and the top 8 suspected causes. |
 
-Car `make` and `model` must be 1 to 64 characters and `year` between 1900 and next year; car ids are at most 200 characters; NUL characters are refused. Such input gets `422`. Adding a car starts a background ingest of its manuals: startmycar first, then up to `MANUAL_MAX_SOURCES` (default 3) PDFs in total found with the Brave Search API when `BRAVE_API_KEY` is set; the car's `kb_status` (`pending`, `ready`, `failed`, `no_manual`) tracks progress. Deleting a session deletes its media.
+Car `make` and `model` must be 1 to 64 characters and `year` between 1900 and next year; car ids are at most 200 characters; NUL characters are refused. Such input gets `422`. Adding a car starts a background ingest of its manuals: startmycar first, then up to `MANUAL_MAX_SOURCES` (default 3) PDFs in total found with the Brave Search API when `BRAVE_API_KEY` is set; the car's `kb_status` (`pending`, `ready`, `failed`, `no_manual`) tracks progress. An ingest a restart interrupted is retried once at the next start (the car shows `failed` until it finishes). Deleting a session deletes its media.
 
 **Errors.** Every error response, whatever the status (validation, body too large, rate limit, unknown route, server error), has the same JSON body: `{"error_code": "VAL_001", "message": "...", "correlation_id": "...", "timestamp": "..."}` (FastAPI's `{"detail": ...}` is not used). A `422` from request validation adds `fields`, the names of the invalid fields; the rejected values are never echoed. `correlation_id` is the request's id, also sent on every response as the `X-Correlation-ID` header and written on the server's log lines for that request (`[ID: ...]`); quote it when reporting a problem. A `409` (`BIZ_002`) on a session means a reply is being generated or the session is being deleted; retry later.
 
@@ -168,7 +176,7 @@ data: {"message_id": "..."}
 
 ## Media
 
-A message needs text (up to 5000 chars) or at least one file: up to 4 images of at most 10 MB each, or one audio file of at most 60 s or one video file of at most 120 s, and at most 100 MB (`MAX_IMAGES`, `MAX_IMAGE_MB`, `MAX_MEDIA_SECONDS`, `MAX_VIDEO_SECONDS`, `MAX_MEDIA_MB`). Bodies are capped before they are read and before auth: the chat route takes up to `max(MAX_IMAGES * MAX_IMAGE_MB, MAX_MEDIA_MB) + 1` MB, every other route 1 MB; larger gets `413` (`VAL_005`).
+A message needs text (up to 5000 chars) or at least one file: up to 4 images of at most 10 MB each, or one audio file of at most 60 s or one video file of at most 120 s, and at most 100 MB (`MAX_IMAGES`, `MAX_IMAGE_MB`, `MAX_MEDIA_SECONDS`, `MAX_VIDEO_SECONDS`, `MAX_MEDIA_MB`). Bodies are capped, and on the chat route the bearer token is checked (signature, expiry, type; the account lookup stays in the route), before the upload is read. The chat route takes up to `max(MAX_IMAGES * MAX_IMAGE_MB, MAX_MEDIA_MB) + 1` MB, every other route 1 MB; larger gets `413` (`VAL_005`).
 
 Originals are kept in `MEDIA_DIR/{user_id}/{session_id}/{message_id}/` (default `/data/media`, the `media` volume) until the session is deleted or `scripts/prune_media.py` removes them, so the volume grows with use; nothing deletes media on its own, so watch the disk, schedule the prune below and include the volume in backups. Two limits keep it in check; when either refuses a file, that original is not stored, the turn still runs and a warning is logged (class name only). When the volume has less than `MEDIA_MIN_FREE_MB` free (default 2048) new originals are not stored. At startup the api logs a warning if `MEDIA_DIR` is not writable.
 
@@ -196,8 +204,9 @@ The API is meant to be reachable from the internet, so these limits are on by de
 - **Invitation code** (`REGISTRATION_CODE`, empty by default = open registration; a value that is only whitespace counts as empty, and leading and trailing whitespace is ignored on both the setting and the client's `invite_code`). Set it on a public deployment. While it is set, `POST /api/v1/auth/register` needs the same value in the body field `invite_code`; a missing and a wrong code both get `403` `Registration is by invitation.`, checked before any hashing or database work, and the code is never logged. `POST /api/v1/auth/google` then signs in or links existing accounts as usual but refuses to create a new one (the same `403`). Existing accounts are not affected.
 - **API docs off** (`ENABLE_DOCS`, default `false`). `/docs`, `/redoc` and `/openapi.json` answer the normal `404` unless it is `true`.
 - **Daily message cap** (`DAILY_MESSAGE_LIMIT`, default 200, `0` turns it off). Each accepted `POST /sessions/{id}/messages` counts one for the account per UTC day. Past the cap the route answers `429` (`EXT_003`) with `Retry-After` set to the seconds until midnight UTC, after the files are validated and before any model work starts. Only a message that gets as far as the model counts: one refused for an unknown session, invalid input or files, a busy session (`409`) or a database outage is not counted.
+- **Cars** (`MAX_CARS_PER_USER`, default 20; `DAILY_CAR_ADD_LIMIT`, default 20; `0` turns either off). Adding a car starts paid background work (a model call, searches, manual downloads), so `POST /cars` is limited to 10 a minute per address, answers `422` (`BIZ_001`, `A garage holds at most {n} cars. Remove one to add another.`) when the garage is full (a car already in it is still returned), and past the daily count answers `429` (`EXT_003`) with `Retry-After` like the message cap. Only one manual ingest runs per car at a time. `POST /sessions` is limited to 30 a minute per address.
 - **Media ceiling** (`MAX_CONCURRENT_MEDIA_TURNS`, default 2, `0` turns both limits off). At most this many turns that carry files (images, audio, video) run at once in the process, and one account never has more than one running (so it cannot hold every slot). A media turn over either limit is answered `429` at once (`Retry-After: 15`, `The server is busy processing other media. Try again shortly.`) before anything is claimed or stored. Text-only turns are not limited.
-- **Per process.** The daily counts and the media slots live in the process's memory: they reset when it restarts, and with several workers each would allow its own share (like the rate limits, see [Workers](#workers)). The image runs one worker.
+- **Per process.** The daily counts (messages and added cars) and the media slots live in the process's memory: they reset when it restarts, and with several workers each would allow its own share (like the rate limits, see [Workers](#workers)). The image runs one worker.
 
 ## Development and tests
 
@@ -205,6 +214,7 @@ The API is meant to be reachable from the internet, so these limits are on by de
 uv sync
 uv run uvicorn main:app --reload          # needs DATABASE_URL pointing at a Postgres with schema.sql applied
 uv run pytest -q                          # offline: fakes only, no database or network
+uv run ruff check .                       # lint
 ```
 
 The real-database tests are marked `db` and need a throwaway database in `TEST_DATABASE_URL` (they apply the schema and write rows):

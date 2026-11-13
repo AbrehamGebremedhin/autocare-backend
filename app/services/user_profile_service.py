@@ -136,6 +136,7 @@ class UserProfileService:
             )
             if status == "UPDATE 1":
                 await pool.execute("DELETE FROM user_car_details WHERE user_id = $1::uuid AND car_id = $2", user_id, car_id)
+                await pool.execute("DELETE FROM car_findings WHERE user_id = $1::uuid AND car_id = $2", user_id, car_id)
                 await self.logger.info(f"Removed car {log_id(car_id)} from user {user_id}'s profile")
                 return {"success": True, "message": "Car removed from your garage"}
             else:

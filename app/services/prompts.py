@@ -111,13 +111,20 @@ Keep the language of the conversation."""
 
 FACTS_PROMPT = """From the user's latest message in a car-repair conversation, extract what the user reports having
 done or observed. Output ONLY a JSON object, with no prose and no code fences:
-{"facts": [{"test": str, "result": str, "part": str, "symptom_change": str}]}
+{"facts": [{"test": str, "result": str, "part": str, "symptom_change": str, "finding": str, "repair": str, "quote": str, "basis": str}]}
 - "test": a check or action the user performed ("spun the bare hub with the tire off"); "" if none.
 - "result": what happened ("noise still there, once per revolution").
 - "part": the part touched or involved, "" if none.
 - "symptom_change": how the symptom changed (better, worse, same, new, gone); "" if not reported.
-Only include what the user actually said; never infer or add facts. If the message reports nothing,
-output {"facts": []}. Keep the language of the user."""
+- "finding": a conclusion the user themselves states as established ("the bearing spins rough"); "" if none.
+- "repair": a repair or part replacement the user says they did ("replaced the rear-left hub"); "" if none.
+- "quote": the user's own words for this fact, copied exactly from the latest message; "" if none.
+- "basis": "stated" when the user says it in their own words; "answered_question" when the message is a
+  short answer such as "yes" to the assistant's direct question about a physical observation or a repair
+  the user did; "agreed_diagnosis" when the user only agrees with the assistant's diagnosis or suggestion
+  ("yes, that sounds right"). Never use "answered_question" for agreement with a diagnosis.
+Only include what the user actually said; never infer or add facts, and never turn the assistant's words
+into a user's fact. If the message reports nothing, output {"facts": []}. Keep the language of the user."""
 
 _PASSAGE_CHARS = 1500
 _HOST_NOTE = re.compile(r"\s*\((?:https?://)?(?:[\w-]+\.)+[a-z]{2,}(?:/[^\s)]*)?\)", re.IGNORECASE)

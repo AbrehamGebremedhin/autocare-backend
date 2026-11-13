@@ -142,6 +142,10 @@ class Fact(BaseModel):
     result: str = ""
     part: str = ""
     symptom_change: str = ""
+    finding: str = ""  # a conclusion the user states as established ("the bearing spins rough")
+    repair: str = ""  # a repair or part replacement the user says they did ("replaced the rear-left hub")
+    quote: str = ""  # the user's own words for it, copied from their message
+    basis: str = ""  # "stated", "answered_question" or "agreed_diagnosis" (see FACTS_PROMPT)
 
 
 class SoundTag(BaseModel):

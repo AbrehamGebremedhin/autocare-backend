@@ -14,7 +14,7 @@ CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", 
 KB_PASSAGE_COLUMNS = {"source_type", "car_id", "title", "page", "content"}  # kb.ingest_pdf rows and its delete filter
 PROFILE_COLUMNS_WRITTEN = {"user_id", "cars", "preferences", "created_at", "updated_at"}  # user_profile_service
 USER_COLUMNS = {"id", "email", "password_hash", "google_sub", "created_at", "tokens_valid_after"}  # accounts (email+password, Google sign-in)
-TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages", "user_car_details"}
+TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages", "user_car_details", "car_findings"}
 
 _CONSTRAINT_WORDS = {"constraint", "primary", "unique", "check", "foreign", "exclude"}
 _IDENT = r'("[^"]+"|\w+)'
@@ -184,3 +184,13 @@ def test_visuals_sql_is_idempotent_text():
     assert not re.search(r"\b(?:drop|truncate)\b", sql, re.IGNORECASE)
     statements = [s.strip().lower() for s in sql.split(";") if s.strip()]
     assert statements[0] == "begin" and statements[-1] == "commit"
+
+
+def test_car_findings_table():
+    body = " ".join(_table_bodies(_sql())["car_findings"].split()).lower()
+    assert "user_id uuid not null references users (id) on delete cascade" in body
+    assert "session_id uuid references \"chatsession\" (id) on delete set null" in body
+    assert "superseded_by uuid references car_findings (id) on delete set null" in body
+    assert "source = 'model_suggested' or evidence_quote is not null" in body
+    sql = " ".join(_sql().split()).lower()
+    assert "create unique index if not exists car_findings_active_dedupe_idx on car_findings (user_id, car_id, kind, norm) where status = 'active';" in sql

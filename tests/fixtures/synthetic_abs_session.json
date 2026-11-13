@@ -1,0 +1,94 @@
+{
+  "note": "Synthetic session invented for tests (Toyota Echo, rear-left bearing, then an intermittent ABS light after a hub replacement). It mirrors the shape of an old export: float likelihoods, string flags and a synthetic 'Please continue' user turn at message 3. No real person's data.",
+  "car": {
+    "id": "toyota-echo-2001",
+    "make": "Toyota",
+    "model": "Echo",
+    "year": 2001
+  },
+  "state": {
+    "title": "Bumpy-road ABS light after new hub",
+    "safety_flags": [
+      "Do not reuse the old hub nut: it is normally a one-use nut; fit a new one and tighten it to the specified torque",
+      "Verify the new hub nut was torqued to specification; an under-torqued hub can shift and damage the wheel end. Do not drive until checked",
+      "If the new hub shows play or makes noise, stop driving and have it checked",
+      "With the ABS light on, anti-lock braking may be disabled; the ordinary brakes still work, so leave longer gaps",
+      "Reconnect the ABS sensor fully after testing until it clicks",
+      "Support the rear on jack stands on flat ground; never work under a car held only by a jack"
+    ],
+    "suspected_causes": [
+      {
+        "cause": "ABS sensor connector half-latched or a terminal disturbed during the hub work",
+        "likelihood": 0.85,
+        "evidence": "The light started after the sensor was unplugged and flickers on rough roads.",
+        "next_check": "Reseat the connector until it clicks and inspect both halves for corrosion or a bent pin."
+      },
+      {
+        "cause": "ABS sensor wire strained near the new hub",
+        "likelihood": 0.7,
+        "evidence": "A new hub can pull or twist the flexible wire; a broken strand shows up over bumps.",
+        "next_check": "Trace the wire from the hub and look for a missing clip or a rub mark."
+      },
+      {
+        "cause": "Sensor air gap or tone ring on the new hub",
+        "likelihood": 0.5,
+        "evidence": "A new hub brings a new tone ring; a sensor not fully seated changes the signal.",
+        "next_check": "Pull the sensor, clean its tip and check the ring for grit."
+      }
+    ]
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "there is a rhythmic humming from the rear of the car between 30 and 50 km/h. it gets louder in long left bends"
+    },
+    {
+      "role": "assistant",
+      "content": "A hum from the rear that changes in bends often points at a wheel bearing. Lift one rear wheel at a time and spin it by hand: listen and feel for roughness. Which wheel is louder?"
+    },
+    {
+      "role": "user",
+      "content": "I lifted both rear wheels and spun them. the left one feels gritty and sounds like the hum, the right is smooth"
+    },
+    {
+      "role": "user",
+      "content": "Please continue from my last saved message. Do not repeat it."
+    },
+    {
+      "role": "assistant",
+      "content": "A gritty rear-left wheel points at its bearing. Next, take the wheel off and spin only the hub: if the roughness stays, the bearing is the cause."
+    },
+    {
+      "role": "user",
+      "content": "wheel off and spinning only the hub, it is rough once per revolution"
+    },
+    {
+      "role": "assistant",
+      "content": "That confirms a worn rear-left bearing. Replace the hub assembly, torque the new hub nut to the specified figure and do not reuse the old nut."
+    },
+    {
+      "role": "user",
+      "content": "I replaced the hub. now the ABS light flickers on and off"
+    },
+    {
+      "role": "assistant",
+      "content": "After hub work an intermittent ABS light usually points at the wheel speed sensor connector, its wiring, or the sensor seating. Reseat the connector first."
+    },
+    {
+      "role": "user",
+      "content": "only on rough roads"
+    },
+    {
+      "role": "assistant",
+      "content": "Bump-triggered flicker fits a half-latched connector or a strained sensor wire near the new hub. Check both before suspecting the sensor itself."
+    },
+    {
+      "role": "user",
+      "content": "it is a new wheel hub on the car"
+    },
+    {
+      "role": "assistant",
+      "content": "Then the sensor air gap and the tone ring on the new hub are worth checking too: look for grit, paint or a sensor that is not fully seated."
+    }
+  ]
+}

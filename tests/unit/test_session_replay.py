@@ -1,4 +1,4 @@
-"""Replay of a real exported session (Toyota Platz, rear bearing, then an intermittent ABS light after a hub swap).
+"""Replay of a synthetic session shaped like an old export (rear bearing, then an intermittent ABS light after a hub swap).
 
 The model is stubbed, so this checks everything the code controls about the final turn: what the model is shown
 (the open critical hub-nut flag first, the new hub already established, no float likelihoods, clean citation
@@ -10,7 +10,7 @@ from pathlib import Path
 from app.schemas.session import Fact
 from app.services.diagnosis import run_turn
 
-EXPORT = json.loads((Path(__file__).parent.parent / "fixtures" / "platz_abs_session.json").read_text(encoding="utf-8"))
+EXPORT = json.loads((Path(__file__).parent.parent / "fixtures" / "synthetic_abs_session.json").read_text(encoding="utf-8"))
 SYNTHETIC = "Please continue from my last saved message. Do not repeat it."
 FINAL_USER = "it is a new wheel hub on the car"
 FLOAT = re.compile(r"likelihood|\b0\.\d+\b")
@@ -30,10 +30,10 @@ def _seed(fake_store, session):
 async def _final_turn(fake_llm, fake_kb, fake_store, session):
     car = EXPORT["car"]
     row = _seed(fake_store, session)
-    fake_kb.passages = [{"source_type": "manual", "title": "Toyota Platz 2001 manual (s3.amazonaws.com)", "page": 140,
+    fake_kb.passages = [{"source_type": "manual", "title": "Toyota Echo 2001 manual (s3.amazonaws.com)", "page": 140,
                          "content": "ABS warning light: conventional brakes still work."}]
     fake_llm.reply = ("Check the hub nut torque before you drive again. Brakes still work "
-                      "(<Toyota Platz 2001 manual (s3.amazonaws.com), p. 140>).")
+                      "(<Toyota Echo 2001 manual (s3.amazonaws.com), p. 140>).")
     fake_llm.facts = [Fact(test="fitted a new wheel hub", result="new hub on the car", part="rear left hub")]
     fake_llm.state = None  # the state call keeps the migrated state
     events = [x async for x in run_turn(row, car, FINAL_USER, [])]
@@ -65,9 +65,9 @@ async def test_final_turn_has_no_float_likelihoods_anywhere(fake_llm, fake_kb, f
 
 async def test_final_turn_citations_are_clean(fake_llm, fake_kb, fake_store, session):
     row, events = await _final_turn(fake_llm, fake_kb, fake_store, session)
-    assert "[Toyota Platz 2001 manual, p. 140]" in fake_llm.prompt[-1]["content"][0]["text"]
+    assert "[Toyota Echo 2001 manual, p. 140]" in fake_llm.prompt[-1]["content"][0]["text"]
     stored = fake_store.messages(session["id"])[-1]["content"]
-    assert "(Toyota Platz 2001 manual, p. 140)" in stored
+    assert "(Toyota Echo 2001 manual, p. 140)" in stored
     assert not re.search(r"amazonaws|[<>]", stored)
 
 

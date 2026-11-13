@@ -89,3 +89,22 @@ async def test_memory_sessions_mirror_the_crud_calls():
     await s.update_message("s", "1", {"media": []})
     await s.save_state("s", {"k": 1}, "T")
     assert row == {"messages": [{"id": "1", "content": "a", "media": []}], "state": {"k": 1}, "title": "T"}
+
+
+def test_history_case_is_synthetic_and_seeds_findings_the_prompt_can_render():
+    from app.services.findings import render_history
+
+    [case] = [c for c in run_cases.load_cases() if c["id"] == "abs-after-new-hub"]
+    assert all(set(h) == set(run_cases.HISTORY_FIELDS) for h in case["history"])
+    block = render_history(run_cases.history_rows(case))
+    assert "2026-11-05 (repair): new rear-left hub fitted" in block and "2026-11-02: rear-left wheel bearing worn" in block
+    assert "rear-left" not in case["text"] and "bearing" not in case["text"]  # the check needs the history to pass
+    assert [c["id"] for c in run_cases.load_cases() if c.get("history")] == ["abs-after-new-hub"]
+
+
+@pytest.mark.asyncio
+async def test_memory_findings_serve_the_seed_and_drop_writes():
+    rows = run_cases.history_rows({"history": [{"kind": "repair_done", "source": "user_confirmed", "date": "2026-11-05", "text": "new hub"}]})
+    store = run_cases.MemoryFindings(rows)
+    assert await store.history("u", "c", "s") == rows and await store.for_car("u", "c") == []
+    assert await store.apply("u", "c", "s", [("insert", {})]) is None

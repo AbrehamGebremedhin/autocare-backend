@@ -1,7 +1,8 @@
 """Run the diagnosis quality cases through run_turn and write a Markdown report.
 
 Uses the real DeepSeek client and KB (needs the .env settings and the applied schema), with an in-memory
-session store and no Storage uploads. Checkboxes are pre-marked by case-insensitive substring and meant
+session store, no Storage uploads, and the findings a case's optional `history:` seeds (never read from or
+written to the database). Checkboxes are pre-marked by case-insensitive substring and meant
 to be confirmed by a person: [x] means satisfied (a must_mention is present, a must_not is absent).
 Media cases are skipped, with a notice, while their files are missing.
 Usage: uv run scripts/run_cases.py [--only id,id] [--out reports/cases-<timestamp>.md]
@@ -20,10 +21,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import yaml  # noqa: E402
 
 from app.db import pool  # noqa: E402
+from app.schemas.session import _norm  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES_FILE = ROOT / "tests" / "cases" / "diagnosis_cases.yaml"
 REQUIRED_FIELDS = ("id", "car_id", "must_mention", "must_not", "expects_citation")
+HISTORY_FIELDS = ("kind", "text", "source", "date")  # a case's optional `history:` seeds the car's earlier findings
 CARS = {"toyota-echo-2001": {"id": "toyota-echo-2001", "make": "Toyota", "model": "Echo", "year": 2001}}
 
 
@@ -90,6 +93,35 @@ class MemorySessions:
         self.row["state"], self.row["title"] = state, title
 
 
+def history_rows(case: dict) -> list[dict]:
+    """The case's `history:` entries as car_findings rows, as if an earlier session had stored them."""
+    rows = []
+    for i, h in enumerate(case.get("history") or []):
+        text = " ".join(h["text"].split())
+        rows.append({
+            "id": f"seed-{i}", "kind": h["kind"], "text": text, "norm": _norm(text), "status": "active", "source": h["source"],
+            "evidence_quote": text if h["source"] == "user_confirmed" else None,
+            "created_at": datetime.fromisoformat(str(h["date"])).replace(tzinfo=timezone.utc),
+        })
+    return rows
+
+
+class MemoryFindings:
+    """The FindingCRUD methods run_turn calls, over the case's seed; what the turn writes is dropped."""
+
+    def __init__(self, rows: list[dict]):
+        self.rows = rows
+
+    async def history(self, user_id, car_id, exclude_session):
+        return self.rows
+
+    async def for_car(self, user_id, car_id):
+        return []
+
+    async def apply(self, user_id, car_id, session_id, ops):
+        pass
+
+
 class NoStore:
     async def upload(self, user_id, session_id, message_id, n, kind, ext, src):
         return {"kind": kind, "path": f"{user_id}/{session_id}/{message_id}/{n}{ext}"}
@@ -102,11 +134,12 @@ async def run_case(case: dict) -> tuple[str, dict | None, str | None]:
     """Run one case through the real pipeline; returns (reply, final state, error message)."""
     from starlette.datastructures import UploadFile
 
-    from app.services import diagnosis
+    from app.services import diagnosis, findings
     from app.services.media import validate_uploads
 
     row = {"id": str(uuid4()), "user_id": "cases", "title": "", "messages": [], "state": {}}
     diagnosis.sessions, diagnosis.media_store = MemorySessions(row), NoStore()
+    findings.crud = MemoryFindings(history_rows(case))
     car = CARS.get(case["car_id"], {"id": case["car_id"]})
     tokens: list[str] = []
     state = error = None

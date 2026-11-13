@@ -113,3 +113,9 @@ async def test_a_findings_outage_never_fails_the_turn(fake_llm, fake_store, sess
     out = await _events(session, "ABS light flickers")
     assert [e for e, _ in out][-2:] == ["state", "done"]
     assert "Car history" not in fake_llm.prompt[-1]["content"][0]["text"]
+
+
+async def test_the_car_comes_from_the_car_not_the_session_row(fake_llm, fake_store, session, fake_findings):
+    """The eval harness's in-memory session row has no car_id; the history must still be read for the car."""
+    await _events({k: v for k, v in session.items() if k != "car_id"}, "ABS light flickers")
+    assert fake_findings.history_args[1] == CAR["id"] and BEARING in fake_llm.prompt[-1]["content"][0]["text"]

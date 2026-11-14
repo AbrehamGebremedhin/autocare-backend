@@ -92,11 +92,14 @@ def missing_media(case: dict, root: Path = ROOT) -> list[str]:
     return [m for m in case.get("media") or [] if not (root / m).is_file()]
 
 
-def checklist(case: dict, reply: str, clarify: list[dict] | None = None) -> list[str]:
+def checklist(case: dict, reply: str, clarify: list[dict] | None = None, state: dict | None = None) -> list[str]:
     low = reply.lower()
     lines = [f"- [{'x' if s.lower() in low else ' '}] mentions: {s}" for s in case["must_mention"]]
     lines += [f"- [{' ' if s.lower() in low else 'x'}] avoids: {s}" for s in case["must_not"]]
     lines += [f"- [{' ' if s.lower() in low else 'x'}] does not name: {s}" for s in case.get("must_not_name") or []]
+    causes = (state or {}).get("suspected_causes") or []
+    top = causes[0]["cause"].lower() if causes else ""
+    lines += [f"- [{' ' if s.lower() in top else 'x'}] first-ranked cause does not name: {s}" for s in case.get("top_cause_must_not_name") or []]
     if "expects_clarify" in case:
         asked = bool(clarify)
         lines.append(f"- [{'x' if asked == case['expects_clarify'] else ' '}] {'asks' if case['expects_clarify'] else 'does not ask'} a clarifying question")
@@ -119,7 +122,7 @@ def render_case(case: dict, reply: str, state: dict | None, error: str | None = 
     if error:
         out += [f"**Error event:** {error}", ""]
     out += ["### Final state", "", "```json", json.dumps(state, indent=2, ensure_ascii=False), "```", ""]
-    out += ["### Checklist", "", *checklist(case, reply, clarify)]
+    out += ["### Checklist", "", *checklist(case, reply, clarify, state)]
     if case["expects_citation"]:
         out.append("- [ ] cites a KB passage (confirm by hand)")
     return "\n".join(out) + "\n"

@@ -182,3 +182,14 @@ async def test_an_answer_case_starts_with_the_question_pending(fake_llm, monkeyp
     reply, state, error, clarify = await run_cases.run_case(_case("clarify-answer-with-speed"))
     prompt = fake_llm.prompt[-1]["content"][0]["text"]
     assert clarify == [] and state["pending_clarification"] is None and "## Pending clarification" in prompt and "about 90 km/h" in prompt
+
+
+def test_the_first_ranked_cause_check_reads_the_final_state():
+    case = {"must_mention": [], "must_not": [], "top_cause_must_not_name": ["door"]}
+    bad = {"suspected_causes": [{"cause": "Door seal wind noise"}, {"cause": "Wheel bearing"}]}
+    good = {"suspected_causes": [{"cause": "Wheel bearing"}, {"cause": "Door seal wind noise"}]}  # lower down is allowed
+    assert run_cases.checklist(case, "x", [], bad) == ["- [ ] first-ranked cause does not name: door"]
+    assert run_cases.checklist(case, "x", [], good) == ["- [x] first-ranked cause does not name: door"]
+    assert run_cases.checklist(case, "x", [], None) == ["- [x] first-ranked cause does not name: door"]
+    answered = [c for c in run_cases.load_cases() if c.get("top_cause_must_not_name")]
+    assert [c["id"] for c in answered] == ["clarify-answer-dont-know", "clarify-answer-with-speed"]

@@ -97,7 +97,8 @@
 # Clarify-gate cases. All synthetic: `seeded_media` sends a placeholder file through the real turn, `observations` stands in
 # for hearing (transcript, sound tags, signal numbers) and `frames` names a Pillow drawing for the video frames.
 # `messages` seeds earlier turns; `pending_clarification: true` makes the last one (an assistant question) the pending
-# question. `expects_clarify` says whether a clarify event is wanted; `must_not_name` lists words the reply must not use.
+# question. `expects_clarify` says whether a clarify event is wanted; `must_not_name` lists words the reply must not use;
+# `top_cause_must_not_name` lists words the first-ranked cause in the final state must not contain.
 - id: clarify-noise-unrelated-frames
   car_id: toyota-echo-2001
   text: There is a noise when I drive. I filmed it.
@@ -172,6 +173,7 @@
   pending_clarification: true
   expects_clarify: false
   max_questions: 0
+  top_cause_must_not_name: [door, seam, panel, trim, weatherstrip]
   must_mention: ["speed"]
   must_not: *must_not
   expects_citation: false
@@ -183,6 +185,7 @@
   pending_clarification: true
   expects_clarify: false
   max_questions: 0
+  top_cause_must_not_name: [door, seam, panel, trim, weatherstrip]
   must_mention: ["90"]
   must_not: *must_not
   expects_citation: false

@@ -136,7 +136,10 @@ Keep the language of the conversation."""
 FACTS_PROMPT = """From the user's latest message in a car-repair conversation, extract what the user reports having
 done or observed. Output ONLY a JSON object, with no prose and no code fences:
 {"facts": [{"test": str, "result": str, "part": str, "symptom_change": str, "finding": str, "repair": str, "quote": str, "basis": str}]}
-- "test": a check or action the user performed ("spun the bare hub with the tire off"); "" if none.
+- "test": something the user did on purpose to find something out ("spun the bare hub with the tire off"), including
+  changing a condition to see its effect (AC off, coasting, turning the wheel, revving in neutral); "" if none.
+  Ordinary driving, filming or sending a clip, and noticing or describing a symptom ("the ABS light comes on and
+  disappears", "here is a video of the noise") are not tests: put what they noticed in "result" and leave "test" empty.
 - "result": what happened ("noise still there, once per revolution").
 - "part": the part touched or involved, "" if none.
 - "symptom_change": how the symptom changed (better, worse, same, new, gone); "" if not reported.
@@ -148,7 +151,9 @@ done or observed. Output ONLY a JSON object, with no prose and no code fences:
   the user did; "agreed_diagnosis" when the user only agrees with the assistant's diagnosis or suggestion
   ("yes, that sounds right"). Never use "answered_question" for agreement with a diagnosis.
 Only include what the user actually said; never infer or add facts, and never turn the assistant's words
-into a user's fact. If the message reports nothing, output {"facts": []}. Keep the language of the user."""
+into a user's fact. State only what the message itself says: infer nothing it does not say (no cause, no timing,
+no "after the repair" or "after the service" unless the user wrote it, no part they did not mention).
+If the message reports nothing, output {"facts": []}. Keep the language of the user."""
 
 _PASSAGE_CHARS = 1500
 _HOST_NOTE = re.compile(r"\s*\((?:https?://)?(?:[\w-]+\.)+[a-z]{2,}(?:/[^\s)]*)?\)", re.IGNORECASE)

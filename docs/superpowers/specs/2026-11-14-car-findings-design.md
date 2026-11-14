@@ -278,6 +278,20 @@ Rollback: redeploy the previous image. `car_findings` is additive and unused by 
 `drop table car_findings` is a manual decision. Between steps 3 and 5 new sessions simply do not see old
 history. Existing sessions are never written by the backfill.
 
+## Extractor eval (added after the first deploy)
+
+`scripts/run_extractor_cases.py` runs `tests/cases/extractor_cases.yaml` against the real `extract_facts` (invented messages, live
+model calls, not part of pytest; `tests/unit/test_run_extractor_cases.py` checks only its shape and checks). It exists because
+`extract_facts` is the only source of `user_confirmed` rows, so its precision matters: on one real session it found every expected
+test, repair and stated finding, but returned a false "test" for symptom-only messages about half the time. The `test` rule in
+`FACTS_PROMPT` now says that driving, sending a clip and describing a symptom are not tests, that deliberately changing a condition
+(AC off, coasting) is, and that nothing is inferred beyond the message.
+
+**Old-client data only:** an early client resumed a failed reply by sending the user message "Please continue from my last saved
+message. Do not repeat it." (it is in the old session export and in `tests/fixtures/synthetic_abs_session.json`). The extractor
+re-extracted the previous message's facts from that text, but the current client uses the retry route, which writes no message, so
+there is no eval case and no code for it.
+
 ## Known limitations
 
 - `car_id` is a model-year, not a vehicle (finding 4).

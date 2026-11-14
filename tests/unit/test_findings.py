@@ -74,7 +74,7 @@ def test_user_facts_are_confirmed_only_with_a_real_quote_and_an_accepted_basis()
 
 
 def test_a_bare_yes_counts_only_for_a_question_about_an_observation_or_repair():
-    [seen] = findings.user_proposals([fact(finding="the hub spins rough", quote="Yes", basis="answered_question")], "Yes")
+    [seen] = findings.user_proposals([fact(repair="replaced the hub", quote="Yes", basis="answered_question")], "Yes")
     [agreed] = findings.user_proposals([fact(finding="it is the bearing", quote="Yes", basis="agreed_diagnosis")], "Yes")
     assert (seen.source, seen.quote) == (USER, "Yes") and agreed.source == MODEL
 
@@ -194,3 +194,16 @@ def test_no_read_takes_an_id_alone(name):
 
     params = list(inspect.signature(getattr(FindingCRUD, name)).parameters)
     assert params[1:3] == ["user_id", "car_id"]
+
+
+def test_a_bare_yes_never_confirms_a_conclusion_only_what_the_user_did_or_saw():
+    said = "yes"
+    facts = [fact(finding="the rear-left bearing is worn", quote="yes", basis="answered_question")]
+    [p] = findings.user_proposals(facts, said)
+    assert (p.kind, p.source, p.quote) == ("confirmed_finding", MODEL, "")
+    both = findings.user_proposals(
+        [fact(test="spun the hub", result="rough", repair="new hub fitted", finding="bearing worn", quote="yes", basis="answered_question")], said
+    )
+    assert {(p.kind, p.source) for p in both} == {("test_done", USER), ("repair_done", USER), ("confirmed_finding", MODEL)}
+    [stated] = findings.user_proposals([fact(finding="the bearing spins rough", quote="the bearing spins rough")], "I checked: the bearing spins rough")
+    assert stated.source == USER  # in their own words, a finding is confirmed

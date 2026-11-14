@@ -19,7 +19,9 @@ TEXT_CHARS = 300
 MAX_MODEL_ROWS = 50  # active model_suggested rows per (user, car): the oldest go first (T6: nothing grows unbounded)
 HISTORY_CHARS = 6000  # about 1,500 tokens at 4 characters each; the provider's tokenizer is not available here
 APP_CONFIRMED = "(confirmed by the owner in the app)"
-_USER_BASES = ("stated", "answered_question")  # Fact.basis values that count; "agreed_diagnosis" does not
+# Fact.basis -> the kinds it can confirm. "agreed_diagnosis" confirms nothing; a bare "yes" can confirm what the user
+# did or saw (a test, a repair) but never a conclusion, which only the user stating it in their own words confirms.
+_CONFIRMS = {"stated": ("test_done", "confirmed_finding", "repair_done"), "answered_question": ("test_done", "repair_done")}
 
 crud = FindingCRUD()
 
@@ -44,21 +46,22 @@ class Proposal:
 
 def user_proposals(facts: Iterable[Fact], said: str) -> list[Proposal]:
     """Findings from what the user said this turn. A fact counts as the user's only when it is a statement, or a
-    short answer to the assistant's direct question about an observation or repair (never agreement with the
-    assistant's diagnosis), and its quote is really in the user's message. Anything else is kept as a suggestion."""
+    short answer to the assistant's direct question about a test or repair (never agreement with the assistant's
+    diagnosis, and never a conclusion: a finding needs the user's own statement), and its quote is really in the
+    user's message. Anything else is kept as a suggestion."""
     said_norm = _norm(said)
     out = []
     for f in facts:
         quote = clean(f.quote)
-        confirmed = f.basis in _USER_BASES and bool(_norm(quote)) and _norm(quote) in said_norm
-        source = USER if confirmed else MODEL
+        quoted = bool(_norm(quote)) and _norm(quote) in said_norm
         for kind, text, key in (
             ("test_done", clean(f"{f.test}: {f.result}" if f.result else f.test), f.test),
             ("confirmed_finding", clean(f.finding), ""),
             ("repair_done", clean(f.repair), ""),
         ):
             if text:
-                out.append(Proposal(kind, text, source, quote if confirmed else "", key))
+                confirmed = quoted and kind in _CONFIRMS.get(f.basis, ())
+                out.append(Proposal(kind, text, USER if confirmed else MODEL, quote if confirmed else "", key))
     return out
 
 

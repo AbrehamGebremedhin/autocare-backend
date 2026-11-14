@@ -143,6 +143,17 @@ def test_an_unknown_reason_is_other_and_long_text_is_capped_to_one_line():
     assert d.reason == "other" and "\n" not in d.safety_note and len(d.safety_note) <= clarify.NOTE_CHARS and len(d.seen) <= clarify.SEEN_CHARS
 
 
+def test_a_long_safety_note_ends_at_a_sentence_never_mid_word():
+    note = "Drive gently and avoid hard stops. " * 30 + "If the red brake light comes on, stop driving and have it checked."
+    d = _parse(safety_note=note)
+    assert len(d.safety_note) <= clarify.NOTE_CHARS and d.safety_note.endswith("stops.")
+    one_long_sentence = "stop driving and have the brakes checked " * 40
+    d = _parse(safety_note=one_long_sentence)
+    assert len(d.safety_note) <= clarify.NOTE_CHARS + 1 and d.safety_note.endswith("…")
+    assert d.safety_note.removesuffix("…").split()[-1] in one_long_sentence.split()  # a whole word, not a stump
+    assert _parse(safety_note="Short note.").safety_note == "Short note."
+
+
 async def _stream(*chunks):
     for c in chunks:
         yield c

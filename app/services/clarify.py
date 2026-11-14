@@ -21,7 +21,7 @@ from app.services.hearing import N_TAG_LABELS
 
 SENTINEL = "CLARIFY"
 MAX_LINE_CHARS = 4000  # how much of a CLARIFY reply is read before it is judged
-QUESTION_CHARS, LABEL_CHARS, NOTE_CHARS, SEEN_CHARS = 200, 80, 400, 200
+QUESTION_CHARS, LABEL_CHARS, NOTE_CHARS, SEEN_CHARS = 200, 80, 600, 200
 
 # question_id -> the English default text and option ids/labels. Ids are fixed and validated; the model may rephrase
 # the wording (and translate it) but not the ids.
@@ -161,7 +161,18 @@ or does not answer, do not ask again: diagnose with what you have and say what r
 
 
 def _line(value, limit: int) -> str:
-    return " ".join(value.split())[:limit].rstrip() if isinstance(value, str) else ""
+    """One line of at most `limit` characters. Over the limit it ends at the last full sentence (else the last word, with
+    an ellipsis), so a safety note is never cut mid-word."""
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    end = max(cut.rfind(mark) for mark in (". ", "! ", "? "))
+    if end >= limit // 2:
+        return cut[: end + 1]
+    return cut[: cut.rfind(" ")].rstrip(" ,;:") + "…" if " " in cut else cut
 
 
 def parse(rest: str) -> Decision:

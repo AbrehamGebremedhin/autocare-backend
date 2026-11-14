@@ -311,3 +311,25 @@ def test_a_reworded_question_with_two_questions_falls_back_to_the_bank_wording()
 
 def test_the_gate_text_asks_for_one_single_question():
     assert "one question mark" in clarify.gate_block([]) and "never add a second thing" in clarify.gate_block([])
+
+
+def test_the_door_seam_rule_is_in_the_system_prompt_for_every_turn_with_earlier_frames():
+    from app.services.prompts import SYSTEM_PROMPT
+
+    for phrase in ("never named as the problem", "do not treat the filmed object as the source of a noise complaint unless the user says it is",
+                   "do not\n  rank it as a cause because it was in frame", "model-written is\n  not a fact"):
+        assert phrase in SYSTEM_PROMPT, phrase
+    media = SYSTEM_PROMPT.split("Media:")[1].split("Style:")[0]
+    assert "filmed object" in media  # in the Media section, not only the answering block
+
+
+def test_the_rule_travels_with_a_seen_label_and_the_answering_block_repeats_it():
+    messages = build_messages(
+        car=CAR, state=DiagnosisState(pending_clarification=_pending()),
+        history=[{"id": "u", "role": "user", "content": "a noise", "media": [{"kind": "video", "path": "x"}],
+                  "observations": {"transcript": "", "sounds": [], "seen": "a door seam"}, "created_at": "t"}],
+        text="over bumps", observations=None, passages=[], images=[], gate=("Pending clarification", clarify.answer_block(_pending())),
+    )
+    assert "do not treat the filmed object as the source" in messages[0]["content"]
+    assert "earlier model-written description of the frames, not a fact: a door seam" in messages[1]["content"]
+    assert "rank it as a cause, unless the user said it is" in messages[-1]["content"][0]["text"].replace("\n", " ")

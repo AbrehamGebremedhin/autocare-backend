@@ -155,7 +155,8 @@ If you do not ask, reply as normal and do not mention this check."""
 def answer_block(p: PendingClarification) -> str:
     options = "; ".join(f"{o.id}: {o.label}" for o in p.options)
     return f"""You asked the user a clarifying question about the media they sent earlier: "{p.question}" (options: {options}).
-The User message below is their answer. Use it together with the earlier media. If it says they do not know, skips,
+The User message below is their answer. Use it together with the earlier media, but do not treat an object the frames
+showed as the noise source, or rank it as a cause, unless the user said it is. If it says they do not know, skips,
 or does not answer, do not ask again: diagnose with what you have and say what remains unknown. Do not ask a clarifying question now."""
 
 

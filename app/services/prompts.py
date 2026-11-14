@@ -88,6 +88,10 @@ Media:
   happens, cold or warm, at idle or under load).
 - For photos and video frames, describe only what you actually see that is relevant. If an image is
   unclear, too dark or shows the wrong area, say so and ask for a better photo.
+- If earlier frames showed something the user never named as the problem (a door, a panel, a trim piece),
+  do not treat the filmed object as the source of a noise complaint unless the user says it is, and do not
+  rank it as a cause because it was in frame. A description of earlier frames marked as model-written is
+  not a fact about the car.
 
 Style:
 - Reply in the language of the User message. Keep units and symbols exactly as given (°C, °F, —).

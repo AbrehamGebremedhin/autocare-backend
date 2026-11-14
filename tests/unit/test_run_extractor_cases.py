@@ -33,7 +33,7 @@ def test_the_cases_have_the_shape_the_runner_reads():
 
 def test_each_kind_of_expectation_has_a_case():
     cases = run.load_cases()
-    for key in ("expect_test", "expect_no_test", "expect_finding", "expect_repair", "repair_basis", "expect_no_confirmed_finding"):
+    for key in ("expect_test", "expect_test_any", "expect_no_test", "expect_finding", "expect_repair", "repair_basis", "expect_no_confirmed_finding"):
         assert any(c.get(key) for c in cases), key
 
 
@@ -103,3 +103,16 @@ def test_the_report_lists_facts_and_checks_and_never_the_context():
     c = _case("new-hub-repair-answer")
     text = run.render_case(c, [Fact(repair="new hub fitted", quote="a brand new hub assembly is fitted", basis="answered_question")])
     assert "### Facts (1)" in text and "- [x] a fact has a repair" in text and c["context"][0]["content"] not in text
+
+
+def test_the_hub_removed_case_wants_a_test_and_a_stated_finding_but_no_result():
+    c = _case("hub-removed-test-and-stated-finding")
+    assert c.get("expect_test_any") is True and "expect_test" not in c and c["expect_finding"] is True
+    finding = Fact(finding="the bearing was the culprit", part="bearing", quote="The bearing was the culprit.", basis="stated")
+    merged = [Fact(test="separated the hub from the drum and unplugged the sensor plug", quote="I separated the hub from the drum and unplugged the wheel speed sensor plug", basis="stated"), finding]
+    split = [Fact(test="separated the hub from the drum", quote="I separated the hub from the drum", basis="stated"),
+             Fact(test="unplugged the wheel speed sensor plug", quote="unplugged the wheel speed sensor plug", basis="stated"), finding]
+    assert all(ok for ok, _ in run.evaluate(c, merged)) and all(ok for ok, _ in run.evaluate(c, split))
+    assert not all(ok for ok, _ in run.evaluate(c, [finding]))  # no test
+    assert not all(ok for ok, _ in run.evaluate(c, merged[:1]))  # no finding
+    assert not all(ok for ok, _ in run.evaluate(c, [merged[0], Fact(finding="the bearing was the culprit", part="bearing", quote="The bearing was the culprit.", basis="agreed_diagnosis")]))

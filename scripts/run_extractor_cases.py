@@ -18,7 +18,7 @@ from app.schemas.session import Fact, _norm  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES_FILE = ROOT / "tests" / "cases" / "extractor_cases.yaml"
-EXPECTATIONS = ("expect_test", "expect_no_test", "expect_finding", "expect_repair", "expect_no_facts", "repair_basis", "expect_no_confirmed_finding", "mention", "must_not_mention")
+EXPECTATIONS = ("expect_test", "expect_test_any", "expect_no_test", "expect_finding", "expect_repair", "expect_no_facts", "repair_basis", "expect_no_confirmed_finding", "mention", "must_not_mention")
 
 
 def load_cases(path: Path = CASES_FILE) -> list[dict]:
@@ -48,6 +48,8 @@ def evaluate(case: dict, facts: list[Fact]) -> list[tuple[bool, str]]:
             checks.append((_norm(f.quote) in message, f"quote is a real substring of the message: {f.quote!r}"))
     if case.get("expect_test"):
         checks.append((any(f.test and f.result for f in facts), "a fact has a test and a result"))
+    if case.get("expect_test_any"):
+        checks.append((any(f.test for f in facts), "a fact has a test (a result is not required)"))
     if case.get("expect_no_test"):
         checks.append((not any(f.test for f in facts), "no fact has a test"))
     if case.get("expect_finding"):

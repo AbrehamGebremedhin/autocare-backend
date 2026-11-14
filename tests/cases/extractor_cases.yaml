@@ -3,6 +3,7 @@
 # Fields:
 #   id; message: the user's latest message; context: the two messages before it ({role, content}), as the turn path passes them.
 #   expect_test: at least one fact has a test and a result.      expect_no_test: no fact has a test.
+#   expect_test_any: at least one fact has a test (a result is not required; one merged fact or several both pass).
 #   expect_finding: a fact states a finding (basis "stated").    expect_repair: a fact has a repair.
 #   expect_no_facts: the extractor returns nothing.               mention: words that must appear in the facts' text.
 #   repair_basis: a fact has a repair with this basis.            expect_no_confirmed_finding: every finding has basis agreed_diagnosis (or there is none).
@@ -31,7 +32,7 @@
   context:
     - {role: user, content: "the thump is still there with the wheel off, once per turn"}
     - {role: assistant, content: "That points at the hub assembly. The decisive test is to separate the hub from the drum and spin it again. Was the drum still on when you spun it?"}
-  expect_test: true
+  expect_test_any: true  # the message gives no result for its actions, so none is required
   expect_finding: true
   mention: [bearing]
 

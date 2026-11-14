@@ -1,0 +1,66 @@
+# Live cases for llm.extract_facts, run by scripts/run_extractor_cases.py (real DeepSeek calls; not part of pytest).
+# Every text here is an invented paraphrase of the kinds of message a real session has: nothing is copied from a user.
+# Fields:
+#   id; message: the user's latest message; context: the two messages before it ({role, content}), as the turn path passes them.
+#   expect_test: at least one fact has a test and a result.      expect_no_test: no fact has a test.
+#   expect_finding: a fact states a finding (basis "stated").    expect_repair: a fact has a repair.
+#   expect_no_facts: the extractor returns nothing.               mention: words that must appear in the facts' text.
+#   must_not_mention: words that must not (nothing inferred beyond the message).
+# Checked for every case: each non-empty quote is a real substring of the message (after normalising case and punctuation).
+- id: tyre-spin-test-with-result
+  message: >-
+    Looked over both front tyres, no damage. Jacked up each side and turned the wheels by hand: no play, but the
+    front right one makes the same thump as on the road, just fainter.
+  context:
+    - {role: user, content: "There is a rhythmic thump from the front of my car at low speed."}
+    - {role: assistant, content: "A rhythmic thump that follows road speed usually points at a tyre or wheel bearing. Two questions: 1. Have you looked over the front tyres? 2. With the front wheels off the ground, does either feel rough or have play?"}
+  expect_test: true
+  mention: [front right]
+
+- id: bare-hub-spin-once-per-turn
+  message: wheel off and turning only the hub by hand, the thump is still there, one thump per turn
+  context:
+    - {role: user, content: "tyres look fine and nothing wobbles, but the front right one thumps when I spin it"}
+    - {role: assistant, content: "Then the tyre may not be the cause. Take the wheel off and spin the bare hub by hand: does the thump stay? Is it once per turn?"}
+  expect_test: true
+  mention: [hub]
+
+- id: hub-removed-test-and-stated-finding
+  message: Ok, I separated the hub from the drum and unplugged the wheel speed sensor plug. The bearing was the culprit.
+  context:
+    - {role: user, content: "the thump is still there with the wheel off, once per turn"}
+    - {role: assistant, content: "That points at the hub assembly. The decisive test is to separate the hub from the drum and spin it again. Was the drum still on when you spun it?"}
+  expect_test: true
+  expect_finding: true
+  mention: [bearing]
+
+- id: new-hub-repair-answer
+  message: yes, a brand new hub assembly is fitted
+  context:
+    - {role: user, content: "the warning light flickers over rough roads"}
+    - {role: assistant, content: "A flickering light over bumps often means a loose connector or a disturbed sensor. Has the hub actually been replaced yet, or is the old one still on the car?"}
+  expect_repair: true
+  mention: [hub]
+
+- id: symptom-report-is-not-a-test
+  message: I use the car every day and the warning light flickers on, then goes off again
+  context:
+    - {role: user, content: "I changed the hub last week and now there is a warning light"}
+    - {role: assistant, content: "Does the light stay on, or does it come and go?"}
+  expect_no_test: true
+  must_not_mention: [after, repair, because]
+
+- id: sending-a-clip-is-not-a-test
+  message: here is a short clip of the noise while the car is moving
+  context:
+    - {role: user, content: "there is a thump from the front when I drive slowly"}
+    - {role: assistant, content: "Can you describe it more, or send a short recording of it?"}
+  expect_no_test: true
+  must_not_mention: [after, repair, because]
+
+- id: continuation-message-yields-no-facts
+  message: Please carry on from where we stopped. Do not say it all again.
+  context:
+    - {role: user, content: "Looked over both front tyres, no damage. Jacked up each side and turned the wheels by hand: no play, but the front right one thumps as on the road, fainter."}
+    - {role: assistant, content: "Good result: the noise is at the front right corner and survives with no load. Next, take that wheel off and spin the bare hub by hand. Does the thump stay?"}
+  expect_no_facts: true

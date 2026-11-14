@@ -300,3 +300,14 @@ async def test_the_state_model_never_sees_the_pending_question_and_cannot_set_on
     body = json.dumps(client.chat.completions.create.call_args.kwargs["messages"])
     assert "pending_clarification" not in body and "When?" not in body
     assert merge_state(previous, sent).pending_clarification == _pending()  # whatever the model returned, the turn's stands
+
+
+def test_a_reworded_question_with_two_questions_falls_back_to_the_bank_wording():
+    two = "When do you hear the noise? And does the ABS light come on at the same moment?"
+    assert _parse(question=two).question == clarify.BANK["when"]["question"]
+    assert _parse(question="When do you hear the noise?").question == "When do you hear the noise?"
+    assert _parse(question="Wann hören Sie das Geräusch").question == "Wann hören Sie das Geräusch"  # no mark at all is fine
+
+
+def test_the_gate_text_asks_for_one_single_question():
+    assert "one question mark" in clarify.gate_block([]) and "never add a second thing" in clarify.gate_block([])

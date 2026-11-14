@@ -144,7 +144,9 @@ To ask, begin your reply with exactly CLARIFY and then one JSON object on one li
 CLARIFY {{"reason": "<code>", "question_id": "<id>", "question": "<optional rewording>", "options": [{{"id": "<option id>", "label": "<label>"}}], "safety_note": "<text>", "seen": "<text>"}}
 - reason: one of {", ".join(REASONS)}.
 - question_id and option ids come from this list; choose the question that best separates your top suspected causes, and 2 to 4 of its options: {bank}.
-- question and labels: reword in the language of the User message if you like; never change an id.
+- question and labels: reword in the language of the User message if you like; never change an id. The question
+  asks only what the bank question asks, as one question with one question mark: never add a second thing to it
+  (for example a warning light, or a second symptom).
 - safety_note: required when the user's text or an open safety flag involves brakes, steering, ABS, overheating, smoke or fuel: say in the user's language what to do now. Otherwise "".
 - seen: one sentence on what the photos or frames show, or "" if none.
 If you do not ask, reply as normal and do not mention this check."""
@@ -200,8 +202,11 @@ def parse(rest: str) -> Decision:
     if len(options) < 2:
         raise ClarifyError("bad_options")
     reason = obj.get("reason") if obj.get("reason") in REASONS else OTHER
+    question = _line(obj.get("question"), QUESTION_CHARS)
+    if not question or sum(question.count(mark) for mark in "?？؟") > 1:  # none given, or two in one: the bank's wording
+        question = bank["question"]
     return Decision(
-        question=_line(obj.get("question"), QUESTION_CHARS) or bank["question"],
+        question=question,
         options=options,
         reason=reason,
         question_id=obj["question_id"],

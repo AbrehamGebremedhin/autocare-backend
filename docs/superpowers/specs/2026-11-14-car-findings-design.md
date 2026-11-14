@@ -98,7 +98,8 @@ Two entry points, and the source is fixed by which one is called, never passed i
   states as established") becomes `confirmed_finding`; `Fact.repair` becomes `repair_done`. The extractor also
   returns `quote` (the user's own words, copied from the latest message) and `basis`. A fact is
   `user_confirmed` only when `basis` is `stated`, or `answered_question` (a short answer such as "yes" to the
-  assistant's direct question about a physical observation or a repair the user did), **and** its quote,
+  assistant's direct question about a physical observation or a repair the user did; it can confirm only a
+  `test_done` or `repair_done`, never a `confirmed_finding`, which needs `stated`), **and** its quote,
   normalised, is found in the user's message (checked in code, not trusted). `agreed_diagnosis` ("yes, that
   sounds right"), an empty or missing basis, or a quote that is not in the message leaves the finding
   `model_suggested` with no quote. The quote is stored as `evidence_quote`. The two-message context is kept,
@@ -181,7 +182,9 @@ only to that block.
 
 ### API (`app/api/v1/finding_route.py`, new; router under `/cars/{car_id}/findings`)
 
-All require auth and answer 404 for a car that is not in the caller's garage or a finding that is not theirs.
+All require auth. They are scoped by the caller and the car id in every query and do not consult the garage:
+what is stored about a car stays listable and deletable after the car is removed from the garage. A car that is
+not theirs has no rows (an empty list; 404 for a finding id).
 
 | Route | Effect |
 | --- | --- |
@@ -274,6 +277,18 @@ on, but `DELETE /cars/{id}` and the findings routes fail.
 Rollback: redeploy the previous image. `car_findings` is additive and unused by the old code, so it can stay;
 `drop table car_findings` is a manual decision. Between steps 3 and 5 new sessions simply do not see old
 history. Existing sessions are never written by the backfill.
+
+## Known limitations
+
+- `car_id` is a model-year, not a vehicle (finding 4).
+- **Supersede and insert race (accepted).** `plan_writes` reads the owner's rows, then `apply` writes them in one
+  transaction. Two turns for the same owner and car at the same moment (two sessions open at once) can both plan
+  the same insert; the partial unique index skips the second insert, and its `supersede` op then points at a row
+  that was not inserted, so the transaction fails on the foreign key and that turn's findings are not saved
+  (logged, the turn itself succeeds). The next turn plans again against the committed rows. No lock was added.
+- A turn on an old session of a car that has left the garage still reads and writes findings for it (the turn
+  path looks the car up by id, not by garage). Proposed, not done: skip both when the car is not in the garage.
+- A backfilled row the owner hard-deletes (rather than retracts) returns on a rerun.
 
 ## Goals
 

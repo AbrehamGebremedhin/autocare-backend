@@ -5,7 +5,6 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from app.api.v1 import finding_route
 from app.services import findings
 
 CAR = "toyota-echo-2001"
@@ -33,6 +32,17 @@ class FakeFindingStore:
     @staticmethod
     def _out(row):
         return None if row is None else {k: v for k, v in row.items() if k != "user_id"}
+
+    async def for_car(self, user_id, car_id):
+        return [dict(r) for r in self._mine(user_id, car_id)]
+
+    async def history(self, user_id, car_id, exclude_session):
+        return [r for r in await self.for_car(user_id, car_id) if r["status"] == "active"]
+
+    async def apply(self, user_id, car_id, session_id, ops):
+        for op in ops:
+            if op[0] == "insert":
+                self.add(user_id, op[1]["kind"], op[1]["text"], op[1]["source"], car_id=car_id)
 
     async def listing(self, user_id, car_id, status):
         return [self._out(r) for r in self._mine(user_id, car_id) if status in (None, r["status"])]
@@ -73,14 +83,9 @@ class FakeFindingStore:
 
 
 @pytest.fixture
-def store(monkeypatch, user_id):
+def store(monkeypatch):
     fake = FakeFindingStore()
     monkeypatch.setattr(findings, "crud", fake)
-
-    async def garage_ids(uid):
-        return [CAR] if uid == user_id else []
-
-    monkeypatch.setattr(finding_route.profiles, "garage_ids", garage_ids)
     return fake
 
 
@@ -101,12 +106,12 @@ def test_list_shows_everything_of_mine_and_nothing_internal(client, auth_headers
 
 def test_another_users_car_and_findings_are_404(client, auth_headers_other_user, store, user_id):
     row = store.add(user_id, "confirmed_finding", "mine", "user_confirmed")
-    assert client.get(url(), headers=auth_headers_other_user).status_code == 404  # the car is not in their garage
+    assert client.get(url(), headers=auth_headers_other_user).json() == []  # no rows of theirs for this car
     for call in (lambda: client.patch(url(row["id"]), json={"confirm": True}, headers=auth_headers_other_user),
                  lambda: client.post(url(row["id"], "/retract"), headers=auth_headers_other_user),
-                 lambda: client.delete(url(row["id"]), headers=auth_headers_other_user),
-                 lambda: client.delete(url(), headers=auth_headers_other_user)):
+                 lambda: client.delete(url(row["id"]), headers=auth_headers_other_user)):
         assert call().status_code == 404
+    assert client.delete(url(), headers=auth_headers_other_user).json() == {"deleted": 0}  # nothing of theirs to delete
     assert [r["text"] for r in store.rows] == ["mine"]
 
 
@@ -166,3 +171,23 @@ def test_delete_one_and_delete_all(client, auth_headers, store, user_id, other_u
 def test_every_route_needs_a_login(client, store):
     assert client.get(url()).status_code in (401, 403)
     assert client.delete(url()).status_code in (401, 403)
+
+
+def test_findings_stay_visible_and_deletable_after_the_car_leaves_the_garage(client, auth_headers, store, user_id, fake_pool):
+    import asyncio
+
+    from app.schemas.session import DiagnosisState, SuspectedCause
+    from app.services.user_profile_service import UserProfileService
+
+    fake_pool.status = "UPDATE 1"
+    assert asyncio.run(UserProfileService().remove_car_from_user(user_id, CAR))["success"] is True
+    # a later turn on an old session of that car still writes findings (see the PR note on stopping that)
+    state = DiagnosisState(suspected_causes=[SuspectedCause(cause="ABS tone ring damaged")])
+    asyncio.run(findings.record_turn(user_id, CAR, str(uuid4()), [], "", state))
+    listed = client.get(url(), headers=auth_headers)
+    assert listed.status_code == 200 and [f["text"] for f in listed.json()] == ["ABS tone ring damaged"]
+    one = listed.json()[0]["id"]
+    assert client.post(url(one, "/retract"), headers=auth_headers).status_code == 200
+    assert client.delete(url(one), headers=auth_headers).json() == {"deleted": one}
+    assert client.delete(url(), headers=auth_headers).json() == {"deleted": 0}
+    assert client.get(url(), headers=auth_headers).json() == []

@@ -138,3 +138,22 @@ async def test_backfill_twice_adds_nothing_the_second_time_and_respects_retracti
     assert (await backfill.backfill(dry_run=False))[1] == 0
     assert len(await _all(uid)) == 3 and (await findings.crud.get(uid, CAR, rows["suspected_cause"]["id"]))["status"] == "retracted"
     assert (await backfill.backfill(dry_run=True))[1] == 0
+
+
+async def test_after_the_car_leaves_the_garage_a_later_turn_writes_and_the_owner_can_still_list_and_delete(real_pool):
+    uid = await _user()
+    old = await _session(uid)
+    assert (await UserProfileService().remove_car_from_user(uid, CAR))["success"] is True
+    await findings.record_turn(uid, CAR, old, [], "", DiagnosisState(suspected_causes=[SuspectedCause(cause="Tone ring")]))
+    [row] = await findings.crud.listing(uid, CAR, None)  # no garage involved
+    assert row["text"] == "Tone ring"
+    assert await findings.crud.delete_one(uid, CAR, row["id"]) is True and await findings.crud.listing(uid, CAR, None) == []
+
+
+async def test_resolve_never_touches_another_owners_row(real_pool):
+    uid, other = await _user(), await _user()
+    await findings.record_turn(uid, CAR, await _session(uid), [], "", DiagnosisState(confirmed_findings=["bearing worn"]))
+    [mine] = await _all(uid)
+    new_row = {"id": str(uuid4()), "text": "replaced the hub", "norm": "replaced the hub", "evidence_quote": "q"}
+    assert await findings.crud.resolve(other, CAR, mine["id"], new_row) is None
+    assert (await findings.crud.get(uid, CAR, mine["id"]))["status"] == "active"

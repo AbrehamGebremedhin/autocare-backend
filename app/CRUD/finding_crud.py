@@ -104,8 +104,8 @@ class FindingCRUD:
             )
             await conn.execute(
                 "UPDATE car_findings SET status = 'superseded', superseded_by = $2::uuid, updated_at = now()"
-                " WHERE id = $1::uuid AND id <> $2::uuid",
-                finding_id, created["id"],
+                " WHERE id = $1::uuid AND id <> $2::uuid AND user_id = $3::uuid AND car_id = $4",
+                finding_id, created["id"], user_id, car_id,
             )
             return created
 

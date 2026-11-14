@@ -251,3 +251,17 @@ def test_the_state_prompt_rules_out_only_on_the_users_test_or_word():
     for phrase in ('Add to "ruled_out" only when a test the user did, or something the user said, excludes the cause',
                    '"The user did not name it" is not a reason', "filmed or photographed but did not name\n  is unknown: neither a suspected cause nor ruled out"):
         assert phrase in STATE_PROMPT, phrase
+
+
+def test_the_facts_prompt_separates_tests_from_symptoms_and_forbids_inference():
+    from app.services.prompts import FACTS_PROMPT
+
+    for phrase in ("something the user did on purpose to find something out",
+                   "changing a condition to see its effect (AC off, coasting, turning the wheel, revving in neutral)",
+                   "Ordinary driving, filming or sending a clip, and noticing or describing a symptom",
+                   'are not tests: put what they noticed in "result" and leave "test" empty',
+                   "State only what the message itself says: infer nothing it does not say",
+                   'no "after the repair" or "after the service" unless the user wrote it'):
+        assert phrase in FACTS_PROMPT, phrase
+    assert "facts only from the latest message" not in FACTS_PROMPT.lower()  # deliberately not added: the client no longer sends the continuation text
+    assert '"answered_question"' in FACTS_PROMPT and "agreed_diagnosis" in FACTS_PROMPT  # the short-answer rules are untouched

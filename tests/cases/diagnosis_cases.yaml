@@ -1,6 +1,7 @@
 # Quality cases for scripts/run_cases.py. Fields:
 #   id, car_id, text, must_mention, must_not, expects_citation,
 #   media (optional): paths under tests/fixtures/e2e/. Media cases are skipped while the files are missing.
+#   history (optional): earlier findings for the car, each {kind, text, source, date}: what a previous session stored.
 # The must_not list is the same for every case, so it is anchored once here.
 - id: overheat-fan-cycling
   car_id: toyota-echo-2001
@@ -78,5 +79,17 @@
   car_id: toyota-echo-2001
   media: [tests/fixtures/e2e/engine-bay.mp4]
   must_mention: ["engine"]
+  must_not: *must_not
+  expects_citation: false
+
+# History case: synthetic findings from an "earlier session" (no real data). The complaint itself says "hub" but
+# not "rear-left" or "bearing", so those two can only come from the history.
+- id: abs-after-new-hub
+  car_id: toyota-echo-2001
+  history:
+    - {kind: confirmed_finding, source: user_confirmed, date: 2026-11-02, text: "rear-left wheel bearing worn, confirmed by wheel-off spin test"}
+    - {kind: repair_done, source: user_confirmed, date: 2026-11-05, text: "new rear-left hub fitted"}
+  text: ABS light comes on over bumps after the new hub
+  must_mention: ["rear-left", "bearing", "sensor"]
   must_not: *must_not
   expects_citation: false

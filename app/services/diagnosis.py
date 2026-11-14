@@ -10,7 +10,7 @@ from uuid import uuid4
 from app.core.config import get_settings
 from app.CRUD.chat_session_crud import ChatSessionCRUD
 from app.schemas.session import DiagnosisState, MediaRef, Message, Observations, TestDone, merge_state
-from app.services import hearing, kb, llm, media
+from app.services import findings, hearing, kb, llm, media
 from app.services.media import MediaError, Upload
 from app.services.media_store import MediaStore
 from app.services.prompts import build_messages, clean_citations, history_turn, prompt_content
@@ -245,6 +245,19 @@ async def _turn(
         except Exception as exc:
             await logger.warning(f"kb.search failed, replying without passages: {type(exc).__name__}")
 
+    # Findings belong to a car in the owner's garage: once it is removed an old session still works, but neither
+    # reads nor writes them (the owner deleted them with the car). A failed lookup also skips them.
+    try:
+        keep_findings = await findings.crud.in_garage(session["user_id"], car["id"])
+    except Exception as exc:
+        await logger.warning(f"garage lookup failed, skipping car findings this turn: {type(exc).__name__}")
+        keep_findings = False
+    earlier = []
+    if keep_findings:
+        try:
+            earlier = await findings.car_history(session["user_id"], car["id"], session["id"])
+        except Exception as exc:  # the history is context: a turn goes on without it
+            await logger.warning(f"car history unavailable, replying without it: {type(exc).__name__}")
     prompt = build_messages(
         car=car,
         state=previous,
@@ -253,6 +266,7 @@ async def _turn(
         observations=observations,
         passages=passages,
         images=images,
+        findings=earlier,
     )
     n = settings.HISTORY_MESSAGES
     recent = [history_turn(m) for m in (history[-n:] if n > 0 else [])]
@@ -300,5 +314,10 @@ async def _turn(
     if facts:
         await sessions.update_message(session["id"], user["id"], {"observations": (observations or Observations()).model_copy(update={"facts": facts}).model_dump()})
     await sessions.save_state(session["id"], state.model_dump(), state.title or session.get("title", ""))  # the title is stable: merge_state keeps the first
+    try:  # after the state is saved, before the terminal events: a findings failure never fails the turn
+        if keep_findings:
+            await findings.record_turn(session["user_id"], car["id"], session["id"], facts, said, state)
+    except Exception as exc:
+        await logger.warning(f"findings not saved: {type(exc).__name__}")
     yield "state", state.model_dump()
     yield "done", {"message_id": assistant["id"]}

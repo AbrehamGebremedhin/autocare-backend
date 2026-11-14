@@ -51,10 +51,11 @@ async def test_add_car_already_present_is_still_success(fake_pool):
 async def test_remove_car_is_one_guarded_array_remove(fake_pool):
     fake_pool.status = "UPDATE 1"
     assert (await _service().remove_car_from_user(USER, "c1"))["success"] is True
-    (method, sql, args), (detail_method, detail_sql, detail_args) = fake_pool.calls
+    (method, sql, args), (detail_method, detail_sql, detail_args), (find_method, find_sql, find_args) = fake_pool.calls
     assert method == "execute" and args == (USER, "c1")
     assert "SET cars = array_remove(cars, $2::text)" in sql and "AND $2::text = ANY(cars)" in sql
     assert detail_method == "execute" and detail_args == (USER, "c1") and "DELETE FROM user_car_details" in detail_sql
+    assert find_method == "execute" and find_args == (USER, "c1") and "DELETE FROM car_findings" in find_sql
 
 
 async def test_remove_car_not_in_garage(fake_pool):

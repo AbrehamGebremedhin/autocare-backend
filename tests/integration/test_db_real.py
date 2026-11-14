@@ -248,8 +248,12 @@ async def test_ingest_pdf_replaces_rolls_back_and_finds_ranked_passages(real_poo
     try:
         _pdf(mocker, [f"The radiator fan relay {tag} clicks. Check the fan relay first.", f"Brake pads {tag} wear."])
         assert await kb.ingest_pdf(tmp_path / "a.pdf", source_type="manual", title=title, car_id=car_id) == 2
-        hits = await kb.search(f"radiator fan {tag}", car_id, 5)
-        assert hits[0]["page"] == 1 and hits[0]["title"] == title and len(hits) == 2
+        query = f"radiator fan {tag}"
+        ranked = await pool.fetch("SELECT * FROM search_kb($1, $2, 5)", kb.build_tsquery(query), car_id)
+        assert [r["page"] for r in ranked] == [1, 2]  # the database ORs the terms and ranks page 1 first
+        hits = await kb.search(query, car_id, 5)
+        # kb.relevant (97cc6d9) then drops page 2: it shares one term of three, not "about the question"
+        assert [h["page"] for h in hits] == [1] and hits[0]["title"] == title
 
         # Re-ingest replaces (no duplicates).
         assert await kb.ingest_pdf(tmp_path / "a.pdf", source_type="manual", title=title, car_id=car_id) == 2

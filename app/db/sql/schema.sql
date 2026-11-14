@@ -126,4 +126,36 @@ create table if not exists user_car_details (
     primary key (user_id, car_id)
 );
 
+-- What an owner has established about their own car, across sessions (app/services/findings.py). Per owner
+-- and car, never shared. user_confirmed rows carry the owner's own words in evidence_quote; model_suggested
+-- rows are hypotheses the model proposed and are shown to it as such. A contradicted row is marked superseded
+-- and linked, never deleted. A deleted session keeps its findings. backfill_key is set only by
+-- scripts/backfill_findings.py, so running it twice adds nothing.
+create table if not exists car_findings (
+    id             uuid primary key default gen_random_uuid(),
+    user_id        uuid not null references users (id) on delete cascade,
+    car_id         text not null,
+    kind           text not null
+        constraint car_findings_kind_check
+        check (kind in ('confirmed_finding', 'suspected_cause', 'ruled_out', 'test_done', 'repair_done')),
+    text           text not null
+        constraint car_findings_text_check check (length(text) between 1 and 300),
+    norm           text not null,
+    status         text not null default 'active'
+        constraint car_findings_status_check check (status in ('active', 'superseded', 'retracted')),
+    source         text not null
+        constraint car_findings_source_check check (source in ('user_confirmed', 'model_suggested')),
+    evidence_quote text,
+    session_id     uuid references "Chatsession" (id) on delete set null,
+    created_at     timestamptz not null default now(),
+    updated_at     timestamptz not null default now(),
+    superseded_by  uuid references car_findings (id) on delete set null,
+    backfill_key   text unique,
+    constraint car_findings_quote_check check (source = 'model_suggested' or evidence_quote is not null)
+);
+
+create index if not exists car_findings_owner_idx on car_findings (user_id, car_id, status);
+create unique index if not exists car_findings_active_dedupe_idx
+    on car_findings (user_id, car_id, kind, norm) where status = 'active';
+
 commit;

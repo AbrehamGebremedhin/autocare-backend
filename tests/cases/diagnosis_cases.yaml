@@ -98,7 +98,8 @@
 # for hearing (transcript, sound tags, signal numbers) and `frames` names a Pillow drawing for the video frames.
 # `messages` seeds earlier turns; `pending_clarification: true` makes the last one (an assistant question) the pending
 # question. `expects_clarify` says whether a clarify event is wanted; `must_not_name` lists words the reply must not use;
-# `top_cause_must_not_name` lists words the first-ranked cause in the final state must not contain.
+# `top_cause_must_not_name` lists words the first-ranked cause in the final state must not contain, and
+# `ruled_out_must_not_name` words that must not appear in any ruled_out entry (cause or reason).
 - id: clarify-noise-unrelated-frames
   car_id: toyota-echo-2001
   text: There is a noise when I drive. I filmed it.
@@ -173,7 +174,8 @@
   pending_clarification: true
   expects_clarify: false
   max_questions: 0
-  top_cause_must_not_name: [door, seam, panel, trim, weatherstrip]
+  top_cause_must_not_name: [door, seam, panel, trim, weatherstrip, knock]  # knock: the weak tag alone must not lead
+  ruled_out_must_not_name: [door, seam, panel, trim]
   must_mention: ["speed"]
   must_not: *must_not
   expects_citation: false
@@ -186,6 +188,7 @@
   expects_clarify: false
   max_questions: 0
   top_cause_must_not_name: [door, seam, panel, trim, weatherstrip]
+  ruled_out_must_not_name: [door, seam, panel, trim]
   must_mention: ["90"]
   must_not: *must_not
   expects_citation: false

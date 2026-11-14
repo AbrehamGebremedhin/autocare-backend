@@ -100,6 +100,8 @@ def checklist(case: dict, reply: str, clarify: list[dict] | None = None, state: 
     causes = (state or {}).get("suspected_causes") or []
     top = causes[0]["cause"].lower() if causes else ""
     lines += [f"- [{' ' if s.lower() in top else 'x'}] first-ranked cause does not name: {s}" for s in case.get("top_cause_must_not_name") or []]
+    ruled_out = " ".join(f"{r.get('cause', '')} {r.get('reason', '')}" for r in (state or {}).get("ruled_out") or []).lower()
+    lines += [f"- [{' ' if s.lower() in ruled_out else 'x'}] ruled_out does not name: {s}" for s in case.get("ruled_out_must_not_name") or []]
     if "expects_clarify" in case:
         asked = bool(clarify)
         lines.append(f"- [{'x' if asked == case['expects_clarify'] else ' '}] {'asks' if case['expects_clarify'] else 'does not ask'} a clarifying question")

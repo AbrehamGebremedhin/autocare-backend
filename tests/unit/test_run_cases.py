@@ -193,3 +193,18 @@ def test_the_first_ranked_cause_check_reads_the_final_state():
     assert run_cases.checklist(case, "x", [], None) == ["- [x] first-ranked cause does not name: door"]
     answered = [c for c in run_cases.load_cases() if c.get("top_cause_must_not_name")]
     assert [c["id"] for c in answered] == ["clarify-answer-dont-know", "clarify-answer-with-speed"]
+
+
+def test_the_ruled_out_check_reads_cause_and_reason_of_the_final_state():
+    case = {"must_mention": [], "must_not": [], "ruled_out_must_not_name": ["door", "seam"]}
+    bad = {"ruled_out": [{"cause": "Body trim", "reason": "the video showed a door seam the user did not name"}]}
+    assert run_cases.checklist(case, "x", [], bad) == ["- [ ] ruled_out does not name: door", "- [ ] ruled_out does not name: seam"]
+    ok = {"ruled_out": [{"cause": "Low coolant", "reason": "level checked by the user"}]}
+    assert run_cases.checklist(case, "x", [], ok) == ["- [x] ruled_out does not name: door", "- [x] ruled_out does not name: seam"]
+    assert run_cases.checklist(case, "x", [], {}) == ["- [x] ruled_out does not name: door", "- [x] ruled_out does not name: seam"]
+
+
+def test_the_answering_cases_carry_the_new_checks():
+    dont_know = next(c for c in run_cases.load_cases() if c["id"] == "clarify-answer-dont-know")
+    assert {"door", "seam", "panel", "trim"} <= set(dont_know["ruled_out_must_not_name"])
+    assert "knock" in dont_know["top_cause_must_not_name"] and "door" in dont_know["top_cause_must_not_name"]

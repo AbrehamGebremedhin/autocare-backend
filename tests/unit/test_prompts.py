@@ -243,3 +243,11 @@ def test_a_weak_tag_alone_never_makes_a_cause_first():
     for phrase in ("A weak sound tag alone never makes a cause first", "the evidence does not separate the causes",
                    "lead with the single most discriminating\n  test", "do not rank by the tag"):
         assert phrase in reasoning, phrase
+
+
+def test_the_state_prompt_rules_out_only_on_the_users_test_or_word():
+    from app.services.prompts import STATE_PROMPT
+
+    for phrase in ('Add to "ruled_out" only when a test the user did, or something the user said, excludes the cause',
+                   '"The user did not name it" is not a reason', "filmed or photographed but did not name\n  is unknown: neither a suspected cause nor ruled out"):
+        assert phrase in STATE_PROMPT, phrase

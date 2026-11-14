@@ -127,6 +127,9 @@ Rules:
 - "confirmed_findings" are facts the user reported or a test proved ("rear-left wheel bearing is
   noisy with the tire off"), written as short statements. "ruled_out" are causes the evidence
   excluded, with the reason. Keep everything from the previous state and add to it.
+- Add to "ruled_out" only when a test the user did, or something the user said, excludes the cause.
+  "The user did not name it" is not a reason. An object the user filmed or photographed but did not name
+  is unknown: neither a suspected cause nor ruled out.
 - The title names the whole session. Keep the previous title; only set one if there is none.
 Keep the language of the conversation."""
 

@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import numpy as np
+
 from app.core.config import get_settings
 from app.CRUD.chat_session_crud import ChatSessionCRUD
-from app.schemas.session import DiagnosisState, MediaRef, Message, Observations, TestDone, merge_state
-from app.services import findings, hearing, kb, llm, media
+from app.schemas.session import DiagnosisState, MediaRef, Message, Observations, PendingClarification, TestDone, merge_state
+from app.services import clarify, findings, hearing, kb, llm, media
 from app.services.media import MediaError, Upload
 from app.services.media_store import MediaStore
 from app.services.prompts import build_messages, clean_citations, history_turn, prompt_content
@@ -102,9 +104,9 @@ async def _store_originals(session: dict, message_id: str, uploads: list[Upload]
 # ffmpeg processes) and awaited, so none of a turn's work outlives the turn.
 
 
-async def _sounds(u: Upload) -> list:
+async def _sounds(u: Upload) -> tuple[list, np.ndarray]:
     pcm = await media.audio_pcm(u.path, sr=hearing.CLAP_SR)
-    return await hearing.tag_sounds(pcm, sr=hearing.CLAP_SR)
+    return await hearing.tag_sounds(pcm, sr=hearing.CLAP_SR), pcm
 
 
 async def _hear(u: Upload) -> Observations:
@@ -112,7 +114,9 @@ async def _hear(u: Upload) -> Observations:
     async with asyncio.TaskGroup() as tg:
         tags = tg.create_task(_sounds(u))
         transcript = tg.create_task(hearing.transcribe(u.path))
-    return Observations(transcript=transcript.result(), sounds=tags.result())
+    sounds, pcm = tags.result()
+    text = transcript.result()
+    return Observations(transcript=text, sounds=sounds, signal=clarify.audio_signal(pcm, hearing.CLAP_SR, sounds, text))
 
 
 async def _look_and_listen(u: Upload, max_frames: int) -> tuple[list[bytes], Observations | None]:
@@ -138,7 +142,18 @@ async def _observe(uploads: list[Upload]) -> tuple[list[bytes], Observations | N
     if not heard:
         return images, None
     transcript = " ".join(o.transcript for o in heard if o.transcript)
-    return images, Observations(transcript=transcript, sounds=[s for o in heard for s in o.sounds])
+    signal = next((o.signal for o in heard if o.signal is not None), None)
+    return images, Observations(transcript=transcript, sounds=[s for o in heard for s in o.sounds], signal=signal)
+
+
+async def _log_gate(mode, codes, asking, bad_line, observations, history, cap) -> None:
+    """The gate's line in the log: reason code, signal codes and raw numbers. Never any content."""
+    sig = observations.signal if observations else None
+    numbers = f" top_scores={sig.top_scores} margin={sig.margin} seconds={sig.seconds} rms_dbfs={sig.rms_dbfs}" if sig else ""
+    await logger.info(
+        f"clarify gate: mode={mode} fired={asking is not None} reason={asking.reason if asking else '-'}"
+        f" signals={','.join(codes) or '-'} bad_line={bad_line or '-'} asked={clarify.asked(history) + (asking is not None)}/{cap}{numbers}"
+    )
 
 
 async def _heartbeat(lease: Lease) -> None:
@@ -258,6 +273,21 @@ async def _turn(
             earlier = await findings.car_history(session["user_id"], car["id"], session["id"])
         except Exception as exc:  # the history is context: a turn goes on without it
             await logger.warning(f"car history unavailable, replying without it: {type(exc).__name__}")
+    # The clarify gate: "open" (media turn, a question is still allowed), "answering" (a question is pending: this
+    # message is its answer, no new question) or "off". Text-only turns are never open and carry no gate text.
+    mode = clarify.gate_mode(history, previous, bool(uploads), settings.MAX_CLARIFICATIONS_PER_SESSION)
+    codes = (
+        clarify.signal_codes(observations, any(u.kind == "video" and not u.has_audio for u in uploads), settings)
+        if mode == "open"
+        else []
+    )
+    gate = (
+        ("Clarify check", clarify.gate_block(codes))
+        if mode == "open"
+        else ("Pending clarification", clarify.answer_block(previous.pending_clarification))
+        if mode == "answering"
+        else None
+    )
     prompt = build_messages(
         car=car,
         state=previous,
@@ -267,6 +297,7 @@ async def _turn(
         passages=passages,
         images=images,
         findings=earlier,
+        gate=gate,
     )
     n = settings.HISTORY_MESSAGES
     recent = [history_turn(m) for m in (history[-n:] if n > 0 else [])]
@@ -274,14 +305,26 @@ async def _turn(
     said = text or (observations.transcript if observations else "")
     facts_task = asyncio.create_task(llm.extract_facts(said, recent[-2:])) if said else None
     parts: list[str] = []
+    asking: clarify.Decision | None = None
+    bad_line: str | None = None
     try:
         async with aclosing(llm.stream_reply(prompt)) as stream:
-            async for token in stream:
+            async for kind, value in clarify.sniff(stream, mode == "open"):
                 if _lost(lease):
                     raise _LeaseLost
-                parts.append(token)
-                yield "token", {"text": token}
-        reply = clean_citations("".join(parts))
+                if kind == "clarify":
+                    asking = value
+                elif kind == "bad":
+                    bad_line = value  # the model's text follows as a normal reply
+                else:
+                    parts.append(value)
+                    yield "token", {"text": value}
+        if asking is not None:
+            note = clarify.safety_note(asking.safety_note, text, previous)
+            reply = clarify.render(asking.question, asking.options, note)
+            yield "token", {"text": reply}
+        else:
+            reply = clean_citations("".join(parts))
         if not reply.strip():
             raise _EmptyReply
         facts = await facts_task if facts_task else []
@@ -293,6 +336,17 @@ async def _turn(
             ),
             [TestDone(test=f.test, result=f.result) for f in facts if f.test],
         )
+        assistant = _message("assistant", reply, clarify=clarify.stored(asking).model_dump() if asking else None)
+        # The turn alone sets and clears the pending question (merge_state carries the old one; the state model never sees it).
+        pending = (
+            PendingClarification(
+                message_id=assistant["id"], media_message_id=user["id"], question_id=asking.question_id,
+                question=asking.question, options=asking.options,
+            )
+            if asking
+            else None
+        )
+        state = state.model_copy(update={"pending_clarification": pending})
         if _lost(lease):
             raise _LeaseLost
     except _LeaseLost:
@@ -309,15 +363,22 @@ async def _turn(
         if facts_task is not None:
             facts_task.cancel()  # a no-op once it has finished
 
-    assistant = _message("assistant", reply)
     await sessions.append_messages(session["id"], [assistant])
-    if facts:
-        await sessions.update_message(session["id"], user["id"], {"observations": (observations or Observations()).model_copy(update={"facts": facts}).model_dump()})
+    if facts or (asking and asking.seen):
+        update = {"facts": facts, **({"seen": asking.seen} if asking else {})}
+        await sessions.update_message(session["id"], user["id"], {"observations": (observations or Observations()).model_copy(update=update).model_dump()})
     await sessions.save_state(session["id"], state.model_dump(), state.title or session.get("title", ""))  # the title is stable: merge_state keeps the first
     try:  # after the state is saved, before the terminal events: a findings failure never fails the turn
         if keep_findings:
-            await findings.record_turn(session["user_id"], car["id"], session["id"], facts, said, state)
+            # A clarifying question diagnosed nothing: the user's own facts are kept, the model's proposals are not.
+            await findings.record_turn(
+                session["user_id"], car["id"], session["id"], facts, said, state, model_findings=asking is None
+            )
     except Exception as exc:
         await logger.warning(f"findings not saved: {type(exc).__name__}")
+    if uploads:  # one line per media turn, counts and numbers only, so the gate rate is fired / media turns
+        await _log_gate(mode, codes, asking, bad_line, observations, history, settings.MAX_CLARIFICATIONS_PER_SESSION)
+    if asking:
+        yield "clarify", {"question": asking.question, "options": [o.model_dump() for o in asking.options], "reason": asking.reason}
     yield "state", state.model_dump()
     yield "done", {"message_id": assistant["id"]}

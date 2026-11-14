@@ -57,6 +57,18 @@ WINDOW_SECONDS = 10
 MIN_TAIL_SECONDS = 2
 _DROPPED = {"human speech", "background noise"}
 
+N_TAG_LABELS = len(CAR_SOUND_LABELS) - len(_DROPPED)  # the labels a tag competes among (the scores are a softmax over them)
+
+
+class Tags(list):
+    """The sound tags (a plain list) plus `top_scores`: the best raw scores whether or not they cleared the floor,
+    so a caller can log how flat the distribution was. Numbers only."""
+
+    def __init__(self, tags=(), top_scores: list[float] | None = None):
+        super().__init__(tags)
+        self.top_scores: list[float] = list(top_scores or [])
+
+
 _lock = threading.Lock()
 _whisper_model = None
 _clap_model = None
@@ -146,13 +158,13 @@ def _tag_sync(pcm: np.ndarray, sr: int, top_k: int) -> list[SoundTag]:
         probs = model(**text, **audio).logits_per_audio.softmax(dim=-1)  # (windows, labels)
     best = probs.max(dim=0).values.tolist()
     floor = get_settings().SOUND_MIN_SCORE
-    tags = [
-        SoundTag(label=lbl, score=float(s))
-        for lbl, s in zip(CAR_SOUND_LABELS, best, strict=True)
-        if lbl not in _DROPPED and s >= floor
-    ]
-    tags.sort(key=lambda t: t.score, reverse=True)
-    return tags[:top_k]
+    ranked = sorted(
+        ((lbl, float(s)) for lbl, s in zip(CAR_SOUND_LABELS, best, strict=True) if lbl not in _DROPPED),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    tags = [SoundTag(label=lbl, score=s) for lbl, s in ranked if s >= floor]
+    return Tags(tags[:top_k], top_scores=[s for _, s in ranked[:3]])
 
 
 async def tag_sounds(pcm: np.ndarray, sr: int = CLAP_SR, top_k: int = 3) -> list[SoundTag]:

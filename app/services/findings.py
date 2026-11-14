@@ -121,10 +121,12 @@ def plan_writes(existing: Sequence[Mapping], proposals: Iterable[Proposal], now:
 
 
 async def record_turn(
-    user_id: str, car_id: str, session_id: str, facts: Sequence[Fact], said: str, state: DiagnosisState
+    user_id: str, car_id: str, session_id: str, facts: Sequence[Fact], said: str, state: DiagnosisState,
+    model_findings: bool = True,
 ) -> None:
-    """Store what a finished turn established. Raises on a database error: the caller must not let that fail the turn."""
-    proposals = [*user_proposals(facts, said), *model_proposals(state)]
+    """Store what a finished turn established. Raises on a database error: the caller must not let that fail the turn.
+    `model_findings=False` (a clarifying question, which diagnosed nothing) keeps only what the user said."""
+    proposals = [*user_proposals(facts, said), *(model_proposals(state) if model_findings else [])]
     ops = plan_writes(await crud.for_car(user_id, car_id), proposals)
     if ops:
         await crud.apply(user_id, car_id, session_id, ops)

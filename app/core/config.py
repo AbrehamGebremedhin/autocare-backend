@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     CLAP_MODEL: str = "laion/clap-htsat-unfused"
     SOUND_MIN_SCORE: float = 0.2
 
+    # Clarify-first gate (docs/superpowers/specs/2026-11-14-clarify-gate-design.md). Starting values, not tuned: CLAP
+    # scores are a softmax over the labels, so absolute cutoffs are weak; the logged margin is what to tune on later.
+    MAX_CLARIFICATIONS_PER_SESSION: int = 2  # clarifying questions a session may ask; 0 turns the gate off
+    GATE_MIN_SECONDS: float = 2.0  # audio shorter than this cannot be judged
+    GATE_MIN_RMS_DBFS: float = -50.0  # audio quieter than this cannot be judged
+    GATE_STRONG_TAG: float = 0.5  # a sound tag at or above this is "strong"; below it is weak evidence
+
     MAX_FRAMES: int = 8
     MAX_MEDIA_SECONDS: int = 60  # audio-only clips
     MAX_VIDEO_SECONDS: int = 120  # video clips (their audio track is decoded up to this too)

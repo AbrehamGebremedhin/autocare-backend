@@ -48,6 +48,21 @@ class RuledOut(BaseModel):
     reason: str = ""
 
 
+class ClarifyOption(BaseModel):
+    id: str
+    label: str
+
+
+class PendingClarification(BaseModel):
+    """The clarifying question the user has not answered yet. Owned by the turn, never by the state model."""
+
+    message_id: str  # the assistant message that asked
+    media_message_id: str  # the user message whose media it is about
+    question_id: str
+    question: str
+    options: list[ClarifyOption] = Field(default_factory=list)
+
+
 class DiagnosisState(BaseModel):
     suspected_causes: list[SuspectedCause] = Field(default_factory=list)
     safety_flags: list[SafetyFlag] = Field(default_factory=list)
@@ -57,6 +72,7 @@ class DiagnosisState(BaseModel):
     topic_history: list[str] = Field(default_factory=list)
     current_focus: str = ""
     title: str = ""  # stable: set once, never replaced by a later topic
+    pending_clarification: PendingClarification | None = None  # set and cleared by the turn; merge_state carries it
 
     @model_validator(mode="before")
     @classmethod
@@ -132,6 +148,7 @@ def merge_state(previous: DiagnosisState, new: DiagnosisState, tests: list[TestD
         topic_history=history,
         current_focus=focus,
         title=previous.title or new.title,
+        pending_clarification=previous.pending_clarification,  # the state model neither sets nor clears it
     )
 
 
@@ -153,15 +170,36 @@ class SoundTag(BaseModel):
     score: float
 
 
+class Signal(BaseModel):
+    """Numbers about a clip's audio, for the clarify gate and its log (never content)."""
+
+    seconds: float = 0.0
+    rms_dbfs: float = -120.0
+    speech_only: bool = False  # speech was transcribed and no sound tag cleared the floor
+    top_scores: list[float] = Field(default_factory=list)  # the best raw tag scores, floor or not
+    margin: float | None = None  # top score minus the second; None with fewer than two scores
+
+
 class Observations(BaseModel):
     transcript: str = ""
     sounds: list[SoundTag] = Field(default_factory=list)
     facts: list[Fact] = Field(default_factory=list)
+    signal: Signal | None = None
+    seen: str = ""  # an earlier model-written description of the frames (set only when a clarifying question was asked)
 
 
 class MediaRef(BaseModel):
     kind: Literal["image", "audio", "video"]
     path: str
+
+
+class Clarify(BaseModel):
+    """A clarifying question as stored on the assistant message (its text is also the message content)."""
+
+    question: str
+    options: list[ClarifyOption]
+    reason: str
+    question_id: str
 
 
 class Message(BaseModel):
@@ -173,3 +211,4 @@ class Message(BaseModel):
     created_at: str
     status: Literal["ok", "failed"] = "ok"  # "failed": an assistant attempt that produced no reply
     retry_of: str | None = None  # for a failed attempt, the id of the user message it answers
+    clarify: Clarify | None = None  # set when this reply is a clarifying question

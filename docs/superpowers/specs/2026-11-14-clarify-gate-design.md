@@ -239,25 +239,34 @@ After implementation I run only these, once each, and report every reply in full
 
 ## Decisions
 
-Open (need the owner):
+The owner's answers (2026-11-14), as implemented:
 
-1. **Thresholds.** Proposed: `GATE_MIN_SECONDS` 2.0, `GATE_MIN_RMS_DBFS` -50, `GATE_STRONG_TAG` 0.5, classifier floor
-   unchanged at 0.2. Accept, or give values? I have no real distribution to justify them; they are a starting point that
-   the gate-rate log is meant to correct.
-2. **Where (b conflict), (c), (d) are judged.** Recommended: in the main call (table above). Alternative: a separate vision step.
-3. **Question wording.** Recommended: bank ids, model rephrases into the user's language. Alternative: templated English only
-   (no model needed for the deterministic cases, so those turns skip the main call, the KB search and about two thirds of the
-   cost, but non-English users get English).
-4. **Earlier video frames.** Recommended: the model writes `seen` once (a sentence). Alternative: a `MediaStore.read`
-   plus re-extracting frames on the answering turn (a vision payload again, and it breaks after the 90-day prune).
-5. **Pending state and counters.** Recommended: `pending_clarification` in the state (as you asked), counters derived
-   from messages. Alternative: derive pending from the last assistant message too and add nothing to `DiagnosisState`.
-6. **Do clarify turns write model proposals to findings?** Recommended: yes, unchanged. Alternative: skip `model_proposals` on a
-   clarify turn (one added argument to `record_turn`).
-7. **`state` before `done` on a clarify turn.** Recommended: yes, as every turn today. You wrote "followed by `done`"; this still ends with `done`.
-8. **Eval frames.** A drawing of a door seam is a weak stand-in for a video. Accept, or add one real-looking synthetic
-   generator, or run (c) only as a prompt-assembly test?
-9. **Safety backstop language.** The fixed note is English. Accept, or leave it out and rely on the model plus a test.
+1. **Thresholds**: the placeholders (`GATE_MIN_SECONDS` 2.0, `GATE_MIN_RMS_DBFS` -50, `GATE_STRONG_TAG` 0.5; the classifier floor
+   stays 0.2). Nothing is tuned on one clip. **CLAP scores are a softmax over the labels, so an absolute cutoff is a weak
+   signal; the margin between the top two labels, or how flat the distribution is, is what to tune on later.** Each media turn
+   therefore logs the raw top scores (floor or not) and the margin, numbers only (`Signal.top_scores`, `Signal.margin`).
+2. **Judgment in the main call.** The CLARIFY line fails safe: malformed or partial JSON is shown as a normal reply and
+   logged (`bad_line=<code>`), never an error. Question and option ids are validated against the bank.
+3. **Bank ids with rephrasing**: ids fixed and validated, only the labels (and question wording) are the model's.
+4. **`seen`** on the user message's observations; the next turn's prompt labels it "earlier model-written description of
+   the frames, not a fact".
+5. **`pending_clarification` in state, counters from messages.** Tests: `merge_state` neither drops nor alters it, and the
+   state model neither sees it nor can set it (`llm.extract_state` strips it from its input; `merge_state` ignores the model's).
+6. **Changed: a clarify turn still runs `extract_state` and findings, but stores no model-proposed `suspected_cause`,
+   `ruled_out` or `confirmed_finding` rows** (`record_turn(..., model_findings=False)`). User-stated facts and safety flags persist.
+7. **`state` before `done`**: kept.
+8. **The Pillow door-seam drawing** stays as a cheap regression and for prompt assembly. The real clip is run by hand on the
+   deployed app; no real media in the repo.
+9. **English safety backstop**: kept; it fires only when the model's `safety_note` is empty.
+
+Deviations from the draft above, found while building:
+
+- **A late CLARIFY is not re-asked.** The draft said an unexpected CLARIFY would be dropped and the model re-asked. Instead the
+  sentinel is only read on "open" turns, and the gate text (the only place the model learns the sentinel) is absent on
+  "answering" and text-only turns, so it cannot be produced there; if it is anyway it is shown as plain text.
+- **The safety note cap is 600 characters** and an over-long note ends at its last full sentence (the first live run cut one at 400).
+- **`pending_clarification: true` in an eval case** derives the pending question from the last seeded assistant message.
+
 
 Taken by me (change any):
 

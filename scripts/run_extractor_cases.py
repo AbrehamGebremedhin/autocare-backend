@@ -18,7 +18,7 @@ from app.schemas.session import Fact, _norm  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES_FILE = ROOT / "tests" / "cases" / "extractor_cases.yaml"
-EXPECTATIONS = ("expect_test", "expect_no_test", "expect_finding", "expect_repair", "expect_no_facts", "mention", "must_not_mention")
+EXPECTATIONS = ("expect_test", "expect_no_test", "expect_finding", "expect_repair", "expect_no_facts", "repair_basis", "expect_no_confirmed_finding", "mention", "must_not_mention")
 
 
 def load_cases(path: Path = CASES_FILE) -> list[dict]:
@@ -54,6 +54,10 @@ def evaluate(case: dict, facts: list[Fact]) -> list[tuple[bool, str]]:
         checks.append((any(f.finding and f.basis == "stated" for f in facts), 'a fact states a finding (basis "stated")'))
     if case.get("expect_repair"):
         checks.append((any(f.repair for f in facts), "a fact has a repair"))
+    if case.get("repair_basis"):
+        checks.append((any(f.repair and f.basis == case["repair_basis"] for f in facts), f"a fact has a repair with basis {case['repair_basis']!r}"))
+    if case.get("expect_no_confirmed_finding"):
+        checks.append((all(f.basis == "agreed_diagnosis" for f in facts if f.finding), "no finding is stated or answered: any finding has basis 'agreed_diagnosis'"))
     if case.get("expect_no_facts"):
         checks.append((not facts, "no facts"))
     text = _text(facts)

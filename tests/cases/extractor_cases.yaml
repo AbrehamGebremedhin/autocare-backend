@@ -5,6 +5,7 @@
 #   expect_test: at least one fact has a test and a result.      expect_no_test: no fact has a test.
 #   expect_finding: a fact states a finding (basis "stated").    expect_repair: a fact has a repair.
 #   expect_no_facts: the extractor returns nothing.               mention: words that must appear in the facts' text.
+#   repair_basis: a fact has a repair with this basis.            expect_no_confirmed_finding: every finding has basis agreed_diagnosis (or there is none).
 #   must_not_mention: words that must not (nothing inferred beyond the message).
 # Checked for every case: each non-empty quote is a real substring of the message (after normalising case and punctuation).
 - id: tyre-spin-test-with-result
@@ -58,9 +59,28 @@
   expect_no_test: true
   must_not_mention: [after, repair, because]
 
-- id: continuation-message-yields-no-facts
-  message: Please carry on from where we stopped. Do not say it all again.
+# Short answers: the symptom/test rule must not break a bare "yes".
+- id: bare-yes-answers-a-repair-question
+  message: "yes"
   context:
-    - {role: user, content: "Looked over both front tyres, no damage. Jacked up each side and turned the wheels by hand: no play, but the front right one thumps as on the road, fainter."}
-    - {role: assistant, content: "Good result: the noise is at the front right corner and survives with no load. Next, take that wheel off and spin the bare hub by hand. Does the thump stay?"}
-  expect_no_facts: true
+    - {role: user, content: "the warning light flickers over rough roads"}
+    - {role: assistant, content: "A flickering light over bumps often means a loose connector or a disturbed sensor. Did you replace the hub?"}
+  expect_repair: true
+  repair_basis: answered_question
+  mention: [hub]
+
+- id: bare-yes-agreeing-with-a-diagnosis-confirms-nothing
+  message: "yes"
+  context:
+    - {role: user, content: "the thump is still there with the wheel off, once per turn"}
+    - {role: assistant, content: "A once-per-turn noise that survives with no load on the wheel is the classic sign of a worn hub bearing. So it's the bearing?"}
+  expect_no_confirmed_finding: true
+
+# A condition changed on purpose to see its effect is a test.
+- id: deliberate-condition-change-is-a-test
+  message: I turned the AC off and the noise stayed
+  context:
+    - {role: user, content: "there is a rattle from the engine bay when I idle"}
+    - {role: assistant, content: "A belt-driven accessory can rattle. Does the noise change with the AC on or off?"}
+  expect_test: true
+  mention: ["off"]  # quoted: a bare off is a YAML boolean

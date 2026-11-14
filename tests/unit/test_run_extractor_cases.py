@@ -12,7 +12,8 @@ run = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(run)
 
 IDS = ["tyre-spin-test-with-result", "bare-hub-spin-once-per-turn", "hub-removed-test-and-stated-finding", "new-hub-repair-answer",
-       "symptom-report-is-not-a-test", "sending-a-clip-is-not-a-test", "continuation-message-yields-no-facts"]
+       "symptom-report-is-not-a-test", "sending-a-clip-is-not-a-test", "bare-yes-answers-a-repair-question",
+       "bare-yes-agreeing-with-a-diagnosis-confirms-nothing", "deliberate-condition-change-is-a-test"]
 
 
 def _case(cid):
@@ -26,17 +27,19 @@ def test_the_cases_have_the_shape_the_runner_reads():
         assert c["message"].strip() and len(c["context"]) == 2 and [m["role"] for m in c["context"]] == ["user", "assistant"]
         assert any(k in c for k in run.EXPECTATIONS), c["id"]
         assert set(c) <= {"id", "message", "context", *run.EXPECTATIONS}, c["id"]
+        assert isinstance(c["message"], str)  # a bare yes or off in YAML is a boolean
+        assert all(isinstance(w, str) for w in [*c.get("mention", []), *c.get("must_not_mention", [])]), c["id"]
 
 
 def test_each_kind_of_expectation_has_a_case():
     cases = run.load_cases()
-    for key in ("expect_test", "expect_no_test", "expect_finding", "expect_repair", "expect_no_facts"):
+    for key in ("expect_test", "expect_no_test", "expect_finding", "expect_repair", "repair_basis", "expect_no_confirmed_finding"):
         assert any(c.get(key) for c in cases), key
 
 
-def test_the_continuation_case_has_earlier_facts_in_its_context_to_tempt_the_extractor():
-    c = _case("continuation-message-yields-no-facts")
-    assert "turned the wheels by hand" in c["context"][0]["content"] and c["expect_no_facts"] is True
+def test_the_continuation_message_is_not_a_case_any_more():
+    """Old-client data only: the current client resumes through the retry route and never sends that text."""
+    assert not any("carry on" in c["message"].lower() or "continue" in c["message"].lower() for c in run.load_cases())
 
 
 def test_a_good_extraction_passes_every_check():
@@ -62,10 +65,32 @@ def test_a_test_in_a_symptom_report_and_an_inferred_word_both_fail():
     assert all(ok for ok, _ in run.evaluate(c, good))
 
 
-def test_any_fact_fails_the_no_facts_case_and_none_passes_it():
-    c = _case("continuation-message-yields-no-facts")
-    assert run.evaluate(c, []) == [(True, "no facts")]
-    assert run.evaluate(c, [Fact(test="spun the wheels", result="thump")]) == [(False, "no facts")]
+def test_the_no_facts_check_still_works_for_a_case_that_asks_for_it():
+    case = {"message": "carry on", "expect_no_facts": True}
+    assert run.evaluate(case, []) == [(True, "no facts")]
+    assert run.evaluate(case, [Fact(test="spun the wheels", result="thump")]) == [(False, "no facts")]
+
+
+def test_a_bare_yes_must_give_a_repair_with_basis_answered_question():
+    c = _case("bare-yes-answers-a-repair-question")
+    good = [Fact(repair="replaced the hub", part="hub", quote="yes", basis="answered_question")]
+    assert all(ok for ok, _ in run.evaluate(c, good))
+    for bad in ([], [Fact(repair="replaced the hub", part="hub", quote="yes", basis="stated")], [Fact(repair="replaced the hub", part="hub", quote="yes", basis="")]):
+        assert not all(ok for ok, _ in run.evaluate(c, bad))
+
+
+def test_a_bare_yes_to_a_diagnosis_may_give_agreed_diagnosis_or_nothing_never_a_stated_finding():
+    c = _case("bare-yes-agreeing-with-a-diagnosis-confirms-nothing")
+    assert all(ok for ok, _ in run.evaluate(c, []))
+    assert all(ok for ok, _ in run.evaluate(c, [Fact(finding="it is the bearing", quote="yes", basis="agreed_diagnosis")]))
+    for basis in ("stated", "answered_question", ""):
+        assert not all(ok for ok, _ in run.evaluate(c, [Fact(finding="it is the bearing", quote="yes", basis=basis)]))
+
+
+def test_a_deliberate_condition_change_must_give_a_test_with_a_result():
+    c = _case("deliberate-condition-change-is-a-test")
+    assert all(ok for ok, _ in run.evaluate(c, [Fact(test="turned the AC off", result="the noise stayed", quote="I turned the AC off and the noise stayed", basis="stated")]))
+    assert not all(ok for ok, _ in run.evaluate(c, [Fact(result="the noise stayed with the AC off", quote="the noise stayed", basis="stated")]))
 
 
 def test_select_cases_filters_and_rejects_unknown():

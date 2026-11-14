@@ -187,7 +187,8 @@ def parse(rest: str) -> Decision:
         obj, _ = json.JSONDecoder().raw_decode(rest[start:])
     except ValueError:
         raise ClarifyError("bad_json") from None
-    bank = BANK.get(obj.get("question_id"))
+    qid = obj.get("question_id")
+    bank = BANK.get(qid) if isinstance(qid, str) else None  # a list or dict id would be unhashable
     if bank is None:
         raise ClarifyError("unknown_question")
     raw = obj.get("options")
@@ -197,6 +198,8 @@ def parse(rest: str) -> Decision:
         if not isinstance(raw, list) or not 2 <= len(raw) <= 4 or not all(isinstance(o, dict) for o in raw):
             raise ClarifyError("bad_options")
         ids = [o.get("id") for o in raw]
+        if not all(isinstance(i, str) for i in ids):
+            raise ClarifyError("unknown_option")
         if len(set(ids)) != len(ids) or any(i not in bank["options"] for i in ids):
             raise ClarifyError("unknown_option")
         options = [ClarifyOption(id=o["id"], label=_line(o.get("label"), LABEL_CHARS) or bank["options"][o["id"]]) for o in raw]
@@ -246,9 +249,15 @@ async def sniff(stream: AsyncIterator[str], enabled: bool) -> AsyncIterator[tupl
     if mode == "clarify":
         rest = buf[len(SENTINEL):]
         try:
-            yield "clarify", parse(rest)
+            decision, code = parse(rest), None
         except ClarifyError as exc:
-            yield "bad", exc.code
+            decision, code = None, exc.code
+        except Exception:  # whatever else a strange line does, it is a bad line, never an error
+            decision, code = None, "invalid"
+        if decision is not None:
+            yield "clarify", decision
+        else:
+            yield "bad", code
             yield "text", rest.lstrip(" :\t\r\n")
     elif mode is None and buf:
         yield "text", buf  # a reply shorter than the sentinel

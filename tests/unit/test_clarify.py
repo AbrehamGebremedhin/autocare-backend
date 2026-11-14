@@ -333,3 +333,34 @@ def test_the_rule_travels_with_a_seen_label_and_the_answering_block_repeats_it()
     assert "do not treat the filmed object as the source" in messages[0]["content"]
     assert "earlier model-written description of the frames, not a fact: a door seam" in messages[1]["content"]
     assert "rank it as a cause, unless the user said it is" in messages[-1]["content"][0]["text"].replace("\n", " ")
+
+
+@pytest.mark.parametrize("over,code", [
+    ({"question_id": ["when"]}, "unknown_question"),
+    ({"question_id": {"id": "when"}}, "unknown_question"),
+    ({"question_id": 7}, "unknown_question"),
+    ({"options": [{"id": {"x": 1}, "label": "a"}, {"id": {"y": 2}, "label": "b"}]}, "unknown_option"),
+    ({"options": [{"id": ["braking"], "label": "a"}, {"id": "bumps", "label": "b"}]}, "unknown_option"),
+    ({"options": [{"id": 1, "label": "a"}, {"id": 2, "label": "b"}]}, "unknown_option"),
+    ({"options": "braking, bumps"}, "bad_options"),
+    ({"options": {"id": "braking"}}, "bad_options"),
+])
+def test_parse_never_raises_anything_but_a_clarify_error_for_odd_types(over, code):
+    with pytest.raises(clarify.ClarifyError) as e:
+        _parse(**over)
+    assert e.value.code == code
+
+
+@pytest.mark.parametrize("over", [{"question_id": ["when"]}, {"options": "braking, bumps"}, {"options": [{"id": {"x": 1}}, {"id": {"y": 2}}]}])
+async def test_sniff_turns_odd_types_into_a_bad_line_not_an_exception(over):
+    out = await _sniff(["CLARIFY ", json.dumps({**LINE, **over})])
+    assert out[0][0] == "bad"
+
+
+async def test_sniff_survives_a_parser_that_raises_something_unexpected(monkeypatch):
+    def boom(rest):
+        raise TypeError("unhashable type: 'list'")
+
+    monkeypatch.setattr(clarify, "parse", boom)
+    out = await _sniff(["CLARIFY ", json.dumps(LINE)])
+    assert out[0] == ("bad", "invalid")

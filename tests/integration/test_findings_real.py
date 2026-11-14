@@ -157,3 +157,12 @@ async def test_resolve_never_touches_another_owners_row(real_pool):
     new_row = {"id": str(uuid4()), "text": "replaced the hub", "norm": "replaced the hub", "evidence_quote": "q"}
     assert await findings.crud.resolve(other, CAR, mine["id"], new_row) is None
     assert (await findings.crud.get(uid, CAR, mine["id"]))["status"] == "active"
+
+
+async def test_in_garage_follows_the_profile(real_pool):
+    uid, other = await _user(), await _user(car="honda-fit-2009")
+    assert await findings.crud.in_garage(uid, CAR) is True
+    assert await findings.crud.in_garage(other, CAR) is False  # someone else's garage
+    assert await findings.crud.in_garage(str(uuid4()), CAR) is False  # no profile
+    await UserProfileService().remove_car_from_user(uid, CAR)
+    assert await findings.crud.in_garage(uid, CAR) is False

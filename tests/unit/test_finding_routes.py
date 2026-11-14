@@ -181,7 +181,7 @@ def test_findings_stay_visible_and_deletable_after_the_car_leaves_the_garage(cli
 
     fake_pool.status = "UPDATE 1"
     assert asyncio.run(UserProfileService().remove_car_from_user(user_id, CAR))["success"] is True
-    # a later turn on an old session of that car still writes findings (see the PR note on stopping that)
+    # a write that gets through (record_turn alone does not check the garage; the turn does, see test_car_history)
     state = DiagnosisState(suspected_causes=[SuspectedCause(cause="ABS tone ring damaged")])
     asyncio.run(findings.record_turn(user_id, CAR, str(uuid4()), [], "", state))
     listed = client.get(url(), headers=auth_headers)

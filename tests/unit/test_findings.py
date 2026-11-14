@@ -207,3 +207,12 @@ def test_a_bare_yes_never_confirms_a_conclusion_only_what_the_user_did_or_saw():
     assert {(p.kind, p.source) for p in both} == {("test_done", USER), ("repair_done", USER), ("confirmed_finding", MODEL)}
     [stated] = findings.user_proposals([fact(finding="the bearing spins rough", quote="the bearing spins rough")], "I checked: the bearing spins rough")
     assert stated.source == USER  # in their own words, a finding is confirmed
+
+
+async def test_the_garage_check_names_the_owner_and_the_car(fake_pool):
+    fake_pool.value = True
+    assert await FindingCRUD().in_garage("11111111-1111-1111-1111-111111111111", "toyota-echo-2001") is True
+    [(_, sql, args)] = fake_pool.calls
+    assert "user_id = $1::uuid" in sql and "$2::text = ANY(cars)" in sql and args == ("11111111-1111-1111-1111-111111111111", "toyota-echo-2001")
+    fake_pool.value = None  # no profile: not in a garage
+    assert await FindingCRUD().in_garage("11111111-1111-1111-1111-111111111111", "x") is False

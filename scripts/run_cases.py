@@ -112,6 +112,9 @@ class MemoryFindings:
     def __init__(self, rows: list[dict]):
         self.rows = rows
 
+    async def in_garage(self, user_id, car_id):
+        return True  # the case's car is the seed's car
+
     async def history(self, user_id, car_id, exclude_session):
         return self.rows
 

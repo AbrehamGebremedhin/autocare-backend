@@ -62,6 +62,14 @@ def test_system_prompt_carries_the_history_rules():
 class FakeFindings:
     def __init__(self, rows=()):
         self.rows, self.applied, self.history_args, self.error = list(rows), [], None, None
+        self.garage: bool | Exception = True  # whether the car is in the owner's garage, or the lookup's failure
+        self.garage_checks = 0
+
+    async def in_garage(self, user_id, car_id):
+        self.garage_checks += 1
+        if isinstance(self.garage, Exception):
+            raise self.garage
+        return self.garage
 
     async def history(self, user_id, car_id, exclude_session):
         self.history_args = (user_id, car_id, exclude_session)
@@ -119,3 +127,27 @@ async def test_the_car_comes_from_the_car_not_the_session_row(fake_llm, fake_sto
     """The eval harness's in-memory session row has no car_id; the history must still be read for the car."""
     await _events({k: v for k, v in session.items() if k != "car_id"}, "ABS light flickers")
     assert fake_findings.history_args[1] == CAR["id"] and BEARING in fake_llm.prompt[-1]["content"][0]["text"]
+
+
+async def test_a_car_still_in_the_garage_reads_and_writes_findings_after_one_garage_check(fake_llm, fake_store, session, fake_findings):
+    fake_llm.facts = [Fact(repair="new rear-left hub fitted", quote="replaced the hub", basis="stated")]
+    out = await _events(session, "I replaced the hub and the ABS light flickers")
+    assert out[-1][0] == "done" and fake_findings.garage_checks == 1
+    assert HUB in fake_llm.prompt[-1]["content"][0]["text"] and len(fake_findings.applied) == 1
+
+
+async def test_a_removed_car_gets_no_history_and_writes_no_findings_but_the_turn_works(fake_llm, fake_store, session, fake_findings):
+    fake_findings.garage = False
+    fake_llm.facts = [Fact(repair="new rear-left hub fitted", quote="replaced the hub", basis="stated")]
+    out = await _events(session, "I replaced the hub and the ABS light flickers")
+    assert [e for e, _ in out][-2:] == ["state", "done"]
+    assert "Car history" not in fake_llm.prompt[-1]["content"][0]["text"] and BEARING not in fake_llm.prompt[-1]["content"][0]["text"]
+    assert fake_findings.history_args is None and fake_findings.applied == []  # neither read nor written
+
+
+async def test_a_failed_garage_lookup_skips_findings_and_the_turn_completes(fake_llm, fake_store, session, fake_findings):
+    fake_findings.garage = RuntimeError("db hiccup")
+    out = await _events(session, "ABS light flickers")
+    assert [e for e, _ in out][-2:] == ["state", "done"]
+    assert "Car history" not in fake_llm.prompt[-1]["content"][0]["text"]
+    assert fake_findings.history_args is None and fake_findings.applied == []

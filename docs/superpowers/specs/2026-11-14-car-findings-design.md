@@ -286,8 +286,9 @@ history. Existing sessions are never written by the backfill.
   the same insert; the partial unique index skips the second insert, and its `supersede` op then points at a row
   that was not inserted, so the transaction fails on the foreign key and that turn's findings are not saved
   (logged, the turn itself succeeds). The next turn plans again against the committed rows. No lock was added.
-- A turn on an old session of a car that has left the garage still reads and writes findings for it (the turn
-  path looks the car up by id, not by garage). Proposed, not done: skip both when the car is not in the garage.
+- A turn checks once, before the history read, that the car is in the owner's garage (`FindingCRUD.in_garage`).
+  A car that has left it, or a failed lookup (logged as a warning), skips both the history read and the
+  findings write for that turn; the turn itself always completes. This costs one query per turn.
 - A backfilled row the owner hard-deletes (rather than retracts) returns on a rerun.
 
 ## Goals

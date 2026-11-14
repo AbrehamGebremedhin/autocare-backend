@@ -8,6 +8,12 @@ _DEDUPE = "(user_id, car_id, kind, norm) WHERE status = 'active'"
 
 
 class FindingCRUD:
+    async def in_garage(self, user_id: str, car_id: str) -> bool:
+        """Is the car in the owner's garage? A turn reads and writes findings only for a car that is."""
+        return await pool.fetchval(
+            "SELECT $2::text = ANY(cars) FROM user_profiles WHERE user_id = $1::uuid", user_id, car_id
+        ) is True
+
     async def for_car(self, user_id: str, car_id: str) -> list[dict]:
         """Every row of this owner's car, any status (the write rules need the retracted and superseded too)."""
         return await pool.fetch(

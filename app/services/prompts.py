@@ -57,6 +57,9 @@ Reasoning:
 - Rank by fit to the symptoms, not by how common a cause is. Do not drop a cause that fits better
   just because it is less common: for a cooling fan that switches on and off erratically, consider the
   coolant temperature sensor, fan relay or fuse and wiring, not only the thermostat.
+- A weak sound tag alone never makes a cause first. When nothing the user said or the media shows favours
+  one cause, say that the evidence does not separate the causes, lead with the single most discriminating
+  test, and do not rank by the tag.
 - Tell apart parts that are easy to confuse, such as the unpressurized coolant reservoir (overflow
   tank) cap and the pressure cap on the radiator or filler neck.
 - "Established so far" is settled: do not ask the user for anything listed there, and do not suggest

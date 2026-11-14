@@ -16,7 +16,7 @@ def test_yaml_loads_and_every_case_has_required_fields():
     for c in cases:
         assert all(f in c for f in run_cases.REQUIRED_FIELDS), c["id"]
         assert c["must_mention"] and c["must_not"] and isinstance(c["expects_citation"], bool)
-        assert c.get("text") or c.get("media"), c["id"]
+        assert c.get("text") or c.get("media") or c.get("seeded_media"), c["id"]
         assert all(m.startswith("tests/fixtures/e2e/") for m in c.get("media") or [])
     assert [c["id"] for c in cases if c["expects_citation"]] == ["overheat-fan-cycling", "reservoir-steam"]
 
@@ -63,7 +63,7 @@ async def test_main_opens_the_pool_for_the_cases_and_closes_it(tmp_path, monkeyp
 
     async def run_case(case):
         seen.append(init.await_count == 1 and not fake_pool.closed)
-        return "reply", {}, None
+        return "reply", {}, None, []
 
     monkeypatch.setattr(run_cases, "run_case", run_case)
     monkeypatch.setattr(run_cases, "load_cases", lambda: [{"id": "t", "car_id": "c", "must_mention": [],
@@ -108,3 +108,103 @@ async def test_memory_findings_serve_the_seed_and_drop_writes():
     store = run_cases.MemoryFindings(rows)
     assert await store.history("u", "c", "s") == rows and await store.for_car("u", "c") == []
     assert await store.apply("u", "c", "s", [("insert", {})]) is None
+
+
+def _case(cid):
+    return next(c for c in run_cases.load_cases() if c["id"] == cid)
+
+
+def test_clarify_cases_are_synthetic_and_need_no_media_files():
+    ids = ["clarify-noise-unrelated-frames", "clarify-clear-text-no-media", "clarify-clear-speech-in-media",
+           "clarify-abs-light-unclear-audio", "clarify-answer-dont-know", "clarify-answer-with-speed"]
+    cases = [_case(i) for i in ids]
+    assert all(not c.get("media") and run_cases.missing_media(c) == [] for c in cases)
+    assert [c["expects_clarify"] for c in cases] == [True, False, False, True, False, False]
+    assert all(n in run_cases.FRAMES for c in cases for n in c.get("frames") or [])
+
+
+def test_a_drawn_frame_is_a_decodable_jpeg_made_at_run_time():
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(run_cases.FRAMES["door-seam"]())) as im:
+        assert im.format == "JPEG" and im.size == (640, 480)
+
+
+def test_seed_row_makes_the_last_assistant_question_the_pending_one():
+    from app.schemas.session import DiagnosisState, Message
+
+    row = run_cases.seed_row(_case("clarify-answer-with-speed"))
+    assert [m["role"] for m in row["messages"]] == ["user", "assistant"] and all(Message.model_validate(m) for m in row["messages"])
+    pending = DiagnosisState.model_validate(row["state"]).pending_clarification
+    assert (pending.message_id, pending.media_message_id, pending.question_id) == ("seed1", "seed0", "moving")
+    assert [o.id for o in pending.options] == ["stationary", "slow", "town", "fast"]
+    assert run_cases.seed_row({"id": "x"})["state"] == {} and run_cases.seed_row({"id": "x"})["messages"] == []
+
+
+def test_checklist_reports_the_clarify_expectations():
+    case = {"must_mention": [], "must_not": [], "must_not_name": ["door seam"], "expects_clarify": True, "max_questions": 1}
+    asked = [{"question": "When?"}]
+    assert run_cases.checklist(case, "When does it happen?", asked) == [
+        "- [x] does not name: door seam", "- [x] asks a clarifying question", "- [x] at most 1 clarifying question(s)"]
+    assert run_cases.checklist(case, "It is the door seam.", []) == [
+        "- [ ] does not name: door seam", "- [ ] asks a clarifying question", "- [x] at most 1 clarifying question(s)"]
+    assert run_cases.checklist({**case, "expects_clarify": False}, "x", [])[1] == "- [x] does not ask a clarifying question"
+
+
+async def test_a_seeded_case_runs_the_real_turn_and_reports_the_clarify_event(fake_llm, monkeypatch):
+    import json
+
+    from app.services import diagnosis, findings
+
+    for obj, name in ((diagnosis, "sessions"), (diagnosis, "media_store"), (diagnosis, "_observe"), (findings, "crud")):
+        monkeypatch.setattr(obj, name, getattr(obj, name))  # run_case replaces these; the fixture puts them back
+    seen = {}
+
+    async def spy(messages):
+        seen["images"] = [b for b in messages[-1]["content"] if b["type"] == "image_url"]
+        seen["text"] = messages[-1]["content"][0]["text"]
+        yield "CLARIFY " + json.dumps({"reason": "frames_unrelated_to_noise", "question_id": "when", "safety_note": "", "seen": "x"})
+
+    monkeypatch.setattr(diagnosis.llm, "stream_reply", spy)
+    reply, state, error, clarify = await run_cases.run_case(_case("clarify-noise-unrelated-frames"))
+    assert error is None and clarify[0]["options"][0] == {"id": "accelerating", "label": "When accelerating"}
+    assert len(seen["images"]) == 1 and "engine knocking (0.25)" in seen["text"] and "## Clarify check" in seen["text"]
+    assert reply.startswith("When does it happen?") and state["pending_clarification"]["question_id"] == "when"
+
+
+async def test_an_answer_case_starts_with_the_question_pending(fake_llm, monkeypatch):
+    from app.services import diagnosis, findings
+
+    for obj, name in ((diagnosis, "sessions"), (diagnosis, "media_store"), (diagnosis, "_observe"), (findings, "crud")):
+        monkeypatch.setattr(obj, name, getattr(obj, name))
+    reply, state, error, clarify = await run_cases.run_case(_case("clarify-answer-with-speed"))
+    prompt = fake_llm.prompt[-1]["content"][0]["text"]
+    assert clarify == [] and state["pending_clarification"] is None and "## Pending clarification" in prompt and "about 90 km/h" in prompt
+
+
+def test_the_first_ranked_cause_check_reads_the_final_state():
+    case = {"must_mention": [], "must_not": [], "top_cause_must_not_name": ["door"]}
+    bad = {"suspected_causes": [{"cause": "Door seal wind noise"}, {"cause": "Wheel bearing"}]}
+    good = {"suspected_causes": [{"cause": "Wheel bearing"}, {"cause": "Door seal wind noise"}]}  # lower down is allowed
+    assert run_cases.checklist(case, "x", [], bad) == ["- [ ] first-ranked cause does not name: door"]
+    assert run_cases.checklist(case, "x", [], good) == ["- [x] first-ranked cause does not name: door"]
+    assert run_cases.checklist(case, "x", [], None) == ["- [x] first-ranked cause does not name: door"]
+    answered = [c for c in run_cases.load_cases() if c.get("top_cause_must_not_name")]
+    assert [c["id"] for c in answered] == ["clarify-answer-dont-know", "clarify-answer-with-speed"]
+
+
+def test_the_ruled_out_check_reads_cause_and_reason_of_the_final_state():
+    case = {"must_mention": [], "must_not": [], "ruled_out_must_not_name": ["door", "seam"]}
+    bad = {"ruled_out": [{"cause": "Body trim", "reason": "the video showed a door seam the user did not name"}]}
+    assert run_cases.checklist(case, "x", [], bad) == ["- [ ] ruled_out does not name: door", "- [ ] ruled_out does not name: seam"]
+    ok = {"ruled_out": [{"cause": "Low coolant", "reason": "level checked by the user"}]}
+    assert run_cases.checklist(case, "x", [], ok) == ["- [x] ruled_out does not name: door", "- [x] ruled_out does not name: seam"]
+    assert run_cases.checklist(case, "x", [], {}) == ["- [x] ruled_out does not name: door", "- [x] ruled_out does not name: seam"]
+
+
+def test_the_answering_cases_carry_the_new_checks():
+    dont_know = next(c for c in run_cases.load_cases() if c["id"] == "clarify-answer-dont-know")
+    assert {"door", "seam", "panel", "trim"} <= set(dont_know["ruled_out_must_not_name"])
+    assert "knock" in dont_know["top_cause_must_not_name"] and "door" in dont_know["top_cause_must_not_name"]

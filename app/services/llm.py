@@ -59,7 +59,7 @@ async def extract_state(conversation: list[dict], previous: DiagnosisState) -> D
             "role": "user",
             "content": json.dumps(
                 {
-                    "previous_state": previous.model_dump(),
+                    "previous_state": previous.model_dump(exclude={"pending_clarification"}),  # the turn's, not the model's
                     "conversation": conversation[-_STATE_HISTORY:],
                 },
                 ensure_ascii=False,

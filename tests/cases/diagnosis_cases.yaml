@@ -93,3 +93,102 @@
   must_mention: ["rear-left", "bearing", "sensor"]
   must_not: *must_not
   expects_citation: false
+
+# Clarify-gate cases. All synthetic: `seeded_media` sends a placeholder file through the real turn, `observations` stands in
+# for hearing (transcript, sound tags, signal numbers) and `frames` names a Pillow drawing for the video frames.
+# `messages` seeds earlier turns; `pending_clarification: true` makes the last one (an assistant question) the pending
+# question. `expects_clarify` says whether a clarify event is wanted; `must_not_name` lists words the reply must not use;
+# `top_cause_must_not_name` lists words the first-ranked cause in the final state must not contain, and
+# `ruled_out_must_not_name` words that must not appear in any ruled_out entry (cause or reason).
+- id: clarify-noise-unrelated-frames
+  car_id: toyota-echo-2001
+  text: There is a noise when I drive. I filmed it.
+  seeded_media: video
+  frames: [door-seam]
+  observations:
+    transcript: ""
+    sounds: [{label: engine knocking, score: 0.25}]
+    signal: {seconds: 8.0, rms_dbfs: -31.0, speech_only: false, top_scores: [0.25, 0.21, 0.08], margin: 0.04}
+  expects_clarify: true
+  must_mention: ["?"]
+  must_not_name: ["panel gap", "door seam", "door panel", "the seam"]
+  must_not: *must_not
+  expects_citation: false
+
+- id: clarify-clear-text-no-media
+  car_id: toyota-echo-2001
+  text: >-
+    There is a grinding noise from the front wheels every time I press the brake pedal, and the car pulls
+    slightly to one side when I stop.
+  expects_clarify: false
+  must_mention: ["brake pad"]
+  must_not: *must_not
+  expects_citation: false
+
+- id: clarify-clear-speech-in-media
+  car_id: toyota-echo-2001
+  seeded_media: audio
+  observations:
+    transcript: >-
+      This is the front left wheel. Every time I brake I hear a grinding noise and the car pulls to the left. It started
+      after I fitted new brake pads last week.
+    sounds: []
+    signal: {seconds: 12.0, rms_dbfs: -27.0, speech_only: true, top_scores: [0.12, 0.1, 0.07], margin: 0.02}
+  expects_clarify: false
+  must_mention: ["brake"]
+  must_not: *must_not
+  expects_citation: false
+
+- id: clarify-abs-light-unclear-audio
+  car_id: toyota-echo-2001
+  text: The ABS light is on and I recorded a noise.
+  seeded_media: audio
+  observations:
+    transcript: ""
+    sounds: []
+    signal: {seconds: 1.4, rms_dbfs: -58.0, speech_only: false, top_scores: [0.09, 0.08, 0.07], margin: 0.01}
+  expects_clarify: true
+  must_mention: ["driving"]
+  must_not: *must_not
+  expects_citation: false
+
+# The two cases below continue the first one: the user sent a clip, the app asked, and this message is the answer.
+- id: clarify-answer-dont-know
+  car_id: toyota-echo-2001
+  text: I don't know
+  messages: &asked_moving
+    - role: user
+      content: There is a noise when I drive. I filmed it.
+      media: [{kind: video, path: seed/0.mp4}]
+      observations:
+        transcript: ""
+        sounds: [{label: engine knocking, score: 0.25}]
+        seen: a close-up of a door seam between two panels
+    - role: assistant
+      content: "Was the car moving when this happened, and how fast?\n1. Parked or stopped\n2. Slowly (under 30 km/h)\n3. Around town (30 to 70 km/h)\n4. Faster (over 70 km/h)\nOr tell me in your own words."
+      clarify:
+        question: Was the car moving when this happened, and how fast?
+        reason: frames_unrelated_to_noise
+        question_id: moving
+        options: [{id: stationary, label: Parked or stopped}, {id: slow, label: Slowly (under 30 km/h)}, {id: town, label: Around town (30 to 70 km/h)}, {id: fast, label: Faster (over 70 km/h)}]
+  pending_clarification: true
+  expects_clarify: false
+  max_questions: 0
+  top_cause_must_not_name: [door, seam, panel, trim, weatherstrip, knock]  # knock: the weak tag alone must not lead
+  ruled_out_must_not_name: [door, seam, panel, trim]
+  must_mention: ["speed"]
+  must_not: *must_not
+  expects_citation: false
+
+- id: clarify-answer-with-speed
+  car_id: toyota-echo-2001
+  text: about 90 km/h
+  messages: *asked_moving
+  pending_clarification: true
+  expects_clarify: false
+  max_questions: 0
+  top_cause_must_not_name: [door, seam, panel, trim, weatherstrip]
+  ruled_out_must_not_name: [door, seam, panel, trim]
+  must_mention: ["90"]
+  must_not: *must_not
+  expects_citation: false

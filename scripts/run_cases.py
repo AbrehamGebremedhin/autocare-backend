@@ -5,12 +5,17 @@ session store, no Storage uploads, and the findings a case's optional `history:`
 written to the database). Checkboxes are pre-marked by case-insensitive substring and meant
 to be confirmed by a person: [x] means satisfied (a must_mention is present, a must_not is absent).
 Media cases are skipped, with a notice, while their files are missing.
+Clarify-gate cases need no real media: `seeded_media` (video|audio) sends a placeholder file through the real turn with
+the case's `observations` (transcript, sounds, signal) standing in for hearing and `frames` (names from FRAMES, drawn
+with Pillow) standing in for video frames; `messages` seeds earlier turns and `pending_clarification: true` makes the
+last seeded assistant question the session's pending one.
 Usage: uv run scripts/run_cases.py [--only id,id] [--out reports/cases-<timestamp>.md]
 """
 import argparse
 import asyncio
 import json
 import sys
+import io
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,13 +26,52 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import yaml  # noqa: E402
 
 from app.db import pool  # noqa: E402
-from app.schemas.session import _norm  # noqa: E402
+from app.schemas.session import DiagnosisState, Message, Observations, PendingClarification, _norm  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES_FILE = ROOT / "tests" / "cases" / "diagnosis_cases.yaml"
 REQUIRED_FIELDS = ("id", "car_id", "must_mention", "must_not", "expects_citation")
 HISTORY_FIELDS = ("kind", "text", "source", "date")  # a case's optional `history:` seeds the car's earlier findings
 CARS = {"toyota-echo-2001": {"id": "toyota-echo-2001", "make": "Toyota", "model": "Echo", "year": 2001}}
+
+
+def _door_seam() -> bytes:
+    """A drawing, not a photo: a door panel with a visible seam and a label. Stands in for frames of an unrelated object."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (640, 480), (176, 180, 188))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((40, 40, 600, 440), outline=(60, 60, 70), width=4)
+    draw.rectangle((318, 40, 326, 440), fill=(40, 40, 46))  # the seam
+    font = ImageFont.load_default(size=26)
+    draw.text((60, 60), "CAR DOOR PANEL", fill=(20, 20, 30), font=font)
+    draw.text((60, 400), "close-up of the seam between two panels", fill=(20, 20, 30), font=font)
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+FRAMES = {"door-seam": _door_seam}  # names a case's `frames:` may use
+
+
+def seed_row(case: dict) -> dict:
+    """The session row a case starts from: its `messages` (earlier turns) and, with `pending_clarification: true`,
+    the last of them (an assistant clarifying question) as the state's pending question."""
+    messages = [
+        Message(
+            id=f"seed{i}", role=m["role"], content=m["content"], created_at="2026-11-14T10:00:00+00:00",
+            media=m.get("media") or [], observations=m.get("observations"), clarify=m.get("clarify"),
+        ).model_dump(mode="json")
+        for i, m in enumerate(case.get("messages") or [])
+    ]
+    state: dict = {}
+    if case.get("pending_clarification"):
+        asked, media_msg = messages[-1], messages[-2]
+        state = DiagnosisState(pending_clarification=PendingClarification(
+            message_id=asked["id"], media_message_id=media_msg["id"], question_id=asked["clarify"]["question_id"],
+            question=asked["clarify"]["question"], options=asked["clarify"]["options"],
+        )).model_dump()
+    return {"id": str(uuid4()), "user_id": "cases", "title": "", "messages": messages, "state": state}
 
 
 def load_cases(path: Path = CASES_FILE) -> list[dict]:
@@ -48,24 +92,39 @@ def missing_media(case: dict, root: Path = ROOT) -> list[str]:
     return [m for m in case.get("media") or [] if not (root / m).is_file()]
 
 
-def checklist(case: dict, reply: str) -> list[str]:
+def checklist(case: dict, reply: str, clarify: list[dict] | None = None, state: dict | None = None) -> list[str]:
     low = reply.lower()
     lines = [f"- [{'x' if s.lower() in low else ' '}] mentions: {s}" for s in case["must_mention"]]
     lines += [f"- [{' ' if s.lower() in low else 'x'}] avoids: {s}" for s in case["must_not"]]
+    lines += [f"- [{' ' if s.lower() in low else 'x'}] does not name: {s}" for s in case.get("must_not_name") or []]
+    causes = (state or {}).get("suspected_causes") or []
+    top = causes[0]["cause"].lower() if causes else ""
+    lines += [f"- [{' ' if s.lower() in top else 'x'}] first-ranked cause does not name: {s}" for s in case.get("top_cause_must_not_name") or []]
+    ruled_out = " ".join(f"{r.get('cause', '')} {r.get('reason', '')}" for r in (state or {}).get("ruled_out") or []).lower()
+    lines += [f"- [{' ' if s.lower() in ruled_out else 'x'}] ruled_out does not name: {s}" for s in case.get("ruled_out_must_not_name") or []]
+    if "expects_clarify" in case:
+        asked = bool(clarify)
+        lines.append(f"- [{'x' if asked == case['expects_clarify'] else ' '}] {'asks' if case['expects_clarify'] else 'does not ask'} a clarifying question")
+    if "max_questions" in case:
+        lines.append(f"- [{'x' if len(clarify or []) <= case['max_questions'] else ' '}] at most {case['max_questions']} clarifying question(s)")
     return lines
 
 
-def render_case(case: dict, reply: str, state: dict | None, error: str | None = None) -> str:
+def render_case(case: dict, reply: str, state: dict | None, error: str | None = None, clarify: list[dict] | None = None) -> str:
     out = [f"## {case['id']}", ""]
     if case.get("text"):
         out += [f"> {case['text']}", ""]
     if case.get("media"):
         out += [f"Media: {', '.join(case['media'])}", ""]
+    if case.get("seeded_media"):
+        out += [f"Seeded {case['seeded_media']} (synthetic): frames {case.get('frames') or []}, observations {json.dumps(case.get('observations'))}", ""]
     out += ["### Reply", "", reply or "(empty)", ""]
+    if clarify:
+        out += ["### Clarify event", "", "```json", json.dumps(clarify, indent=2, ensure_ascii=False), "```", ""]
     if error:
         out += [f"**Error event:** {error}", ""]
     out += ["### Final state", "", "```json", json.dumps(state, indent=2, ensure_ascii=False), "```", ""]
-    out += ["### Checklist", "", *checklist(case, reply)]
+    out += ["### Checklist", "", *checklist(case, reply, clarify, state)]
     if case["expects_citation"]:
         out.append("- [ ] cites a KB passage (confirm by hand)")
     return "\n".join(out) + "\n"
@@ -133,36 +192,52 @@ class NoStore:
         return 0
 
 
-async def run_case(case: dict) -> tuple[str, dict | None, str | None]:
-    """Run one case through the real pipeline; returns (reply, final state, error message)."""
+async def run_case(case: dict) -> tuple[str, dict | None, str | None, list[dict]]:
+    """Run one case through the real pipeline; returns (reply, final state, error message, clarify events)."""
     from starlette.datastructures import UploadFile
 
     from app.services import diagnosis, findings
-    from app.services.media import validate_uploads
+    from app.services.media import Upload, validate_uploads
 
-    row = {"id": str(uuid4()), "user_id": "cases", "title": "", "messages": [], "state": {}}
+    row = seed_row(case)
     diagnosis.sessions, diagnosis.media_store = MemorySessions(row), NoStore()
     findings.crud = MemoryFindings(history_rows(case))
     car = CARS.get(case["car_id"], {"id": case["car_id"]})
     tokens: list[str] = []
     state = error = None
+    clarify: list[dict] = []
+    real_observe = diagnosis._observe
     with tempfile.TemporaryDirectory() as tmp:
         handles = [(ROOT / m).open("rb") for m in case.get("media") or []]
         try:
             files = [UploadFile(file=h, filename=Path(h.name).name) for h in handles]
             uploads = await validate_uploads(files, Path(tmp))
+            if case.get("seeded_media"):  # a placeholder file; the case's frames and observations stand in for the pipeline
+                placeholder = Path(tmp) / "seeded.bin"
+                placeholder.write_bytes(b"synthetic placeholder, never decoded")
+                uploads = [Upload(case["seeded_media"], placeholder, 8.0, True)]
+                frames = [FRAMES[n]() for n in case.get("frames") or []]
+                heard = Observations.model_validate(case["observations"]) if case.get("observations") else None
+
+                async def seeded_observe(_uploads):
+                    return frames, heard
+
+                diagnosis._observe = seeded_observe
             async for event, data in diagnosis.run_turn(dict(row), car, case.get("text"), uploads):
                 print(f"  [{case['id']}] {event}", flush=True)
                 if event == "token":
                     tokens.append(data["text"])
                 elif event == "state":
                     state = data
+                elif event == "clarify":
+                    clarify.append(data)
                 elif event == "error":
                     error = data["message"]
         finally:
+            diagnosis._observe = real_observe
             for h in handles:
                 h.close()
-    return "".join(tokens), state, error
+    return "".join(tokens), state, error, clarify
 
 
 async def main(only: str | None, out: Path | None) -> Path:
@@ -177,8 +252,8 @@ async def main(only: str | None, out: Path | None) -> Path:
                 sections.append(render_skipped(case, missing))
                 continue
             print(f"RUN {case['id']}", flush=True)
-            reply, state, error = await run_case(case)
-            sections.append(render_case(case, reply, state, error))
+            reply, state, error, clarify = await run_case(case)
+            sections.append(render_case(case, reply, state, error, clarify))
     finally:
         await pool.close_pool()
     if out is None:

@@ -189,11 +189,26 @@ async def test_a_short_reply_is_not_lost():
     assert await _sniff(["CLAR"]) == [("text", "CLAR")]
 
 
-async def test_a_bad_line_is_a_normal_reply_and_a_code_never_an_error():
+async def test_a_bad_line_is_a_code_and_the_raw_line_never_comes_out_as_text():
     out = await _sniff(['CLARIFY {"reason": "x", "question_id": "wh'])
-    assert out[0] == ("bad", "bad_json") and out[1][0] == "text" and "question_id" in out[1][1]
+    assert [k for k, _ in out] == ["bad"] and out[0][1][0] == "bad_json" and "question_id" in out[0][1][1]
     out = await _sniff(["CLARIFY ", json.dumps({**LINE, "question_id": "colour"})])
-    assert out[0] == ("bad", "unknown_question")
+    assert [k for k, _ in out] == ["bad"] and out[0][1][0] == "unknown_question"
+
+
+def test_recover_gives_the_bank_question_when_the_line_still_names_one():
+    d = clarify.recover('{"reason": "tags_weak", "question_id": "side", "options": [{"id": "nope"')  # cut off mid-way
+    assert d.question_id == "side" and d.question == clarify.BANK["side"]["question"] and d.reason == "other"
+    assert [o.id for o in d.options] == ["front_left", "front_right", "rear_left", "rear_right"]
+    d = clarify.recover(json.dumps({**LINE, "options": "braking", "safety_note": "Stop driving."}))  # valid json, bad options
+    assert d.question_id == "when" and d.safety_note == "Stop driving." and len(d.options) == 4
+
+
+@pytest.mark.parametrize("line", [
+    '{"question_id": "colour"}', '{"question_id": ["when"]}', '{"question_id": {"a": 1}}', '{"reason": "x"', " no json at all", "",
+])
+def test_recover_gives_nothing_when_no_bank_question_can_be_read(line):
+    assert clarify.recover(line) is None
 
 
 async def test_a_disabled_gate_never_reads_a_sentinel():
@@ -363,4 +378,4 @@ async def test_sniff_survives_a_parser_that_raises_something_unexpected(monkeypa
 
     monkeypatch.setattr(clarify, "parse", boom)
     out = await _sniff(["CLARIFY ", json.dumps(LINE)])
-    assert out[0] == ("bad", "invalid")
+    assert [k for k, _ in out] == ["bad"] and out[0][1][0] == "invalid"

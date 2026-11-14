@@ -221,7 +221,7 @@ def parse(rest: str) -> Decision:
 
 async def sniff(stream: AsyncIterator[str], enabled: bool) -> AsyncIterator[tuple[str, object]]:
     """The reply stream as ("text", str), or when it starts with CLARIFY: ("clarify", Decision), or on a line that does
-    not validate ("bad", code) followed by the model's own text as ("text", ...). Never raises for a bad line."""
+    not validate ("bad", (code, line)). The raw line is never yielded as text. Never raises for a bad line."""
     if not enabled:
         async for token in stream:
             yield "text", token
@@ -257,10 +257,32 @@ async def sniff(stream: AsyncIterator[str], enabled: bool) -> AsyncIterator[tupl
         if decision is not None:
             yield "clarify", decision
         else:
-            yield "bad", code
-            yield "text", rest.lstrip(" :\t\r\n")
+            yield "bad", (code, rest)  # nothing of the line is shown as text: see recover
     elif mode is None and buf:
         yield "text", buf  # a reply shorter than the sentinel
+
+
+_QUESTION_ID = re.compile(r'"question_id"\s*:\s*"([A-Za-z_]+)"')
+
+
+def recover(line: str) -> Decision | None:
+    """A bad line that still names a bank question: that question with the bank's own wording and options (and the
+    model's safety note when the line carried a usable one). None when no bank question can be read from it."""
+    try:
+        start = line.find("{")
+        obj = json.JSONDecoder().raw_decode(line[start:])[0] if start >= 0 else {}
+    except ValueError:
+        obj = {}
+    obj = obj if isinstance(obj, dict) else {}
+    qid = obj.get("question_id")
+    if not isinstance(qid, str):
+        found = _QUESTION_ID.search(line)
+        qid = found.group(1) if found else None
+    bank = BANK.get(qid) if isinstance(qid, str) else None
+    if bank is None:
+        return None
+    options = [ClarifyOption(id=i, label=label) for i, label in bank["options"].items()]
+    return Decision(bank["question"], options, OTHER, qid, _line(obj.get("safety_note"), NOTE_CHARS))
 
 
 # --- the reply the user sees ---------------------------------------------------------------------------------------

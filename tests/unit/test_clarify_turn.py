@@ -3,6 +3,7 @@
 findings it must not write. All offline fakes, synthetic data."""
 import json
 import logging
+import re
 
 import pytest
 
@@ -158,20 +159,75 @@ async def test_a_second_upload_after_an_answered_question_may_ask_again(fake_all
 
 # --- a bad line never fails the turn ----------------------------------------------------------------------------
 
+def _script(monkeypatch, replies):
+    """stream_reply answers with the next reply each call (tokens split on spaces); an Exception in the list is raised."""
+    from app.services import llm
+
+    seen = []
+
+    async def stream_reply(messages):
+        seen.append(messages)
+        reply = replies[len(seen) - 1]
+        if isinstance(reply, Exception):
+            raise reply
+        for token in re.findall(r"\S+\s*", reply):
+            yield token
+
+    monkeypatch.setattr(llm, "stream_reply", stream_reply)
+    return seen
+
+
+def _streamed(events):
+    return "".join(d["text"] for e, d in events if e == "token")
+
+
 @pytest.mark.parametrize("reply,code", [
-    ('CLARIFY {"reason": "tags_weak", "question_id": "wh', "bad_json"),
-    ("CLARIFY " + json.dumps({**LINE, "question_id": "colour"}), "unknown_question"),
+    ('CLARIFY {"reason": "tags_weak", "question_id": "when", "options": [{"id": "braking", "la', "bad_json"),
     ("CLARIFY " + json.dumps({**LINE, "options": [{"id": "braking", "label": "x"}, {"id": "nope", "label": "y"}]}), "unknown_option"),
+    ("CLARIFY " + json.dumps({**LINE, "options": "braking"}), "bad_options"),
 ])
-async def test_a_bad_line_is_a_normal_reply_and_is_logged(fake_all, fake_store, session, car, video_upload, caplog, reply, code):
+async def test_a_bad_line_that_names_a_bank_question_shows_the_bank_question_never_the_json(fake_all, fake_store, session, car, video_upload, caplog, reply, code):
     fake_all.llm.reply = reply
     with caplog.at_level(logging.INFO):
         events = await _run(session, car, NOISE, [video_upload])
-    assert "error" not in _types(events) and "clarify" not in _types(events) and _types(events)[-1] == "done"
-    assert f"bad_line={code}" in caplog.text
+    text = _streamed(events)
+    assert text == "When does it happen?\n1. When accelerating\n2. When braking\n3. When turning\n4. Over bumps\n" + clarify.TAIL
+    assert "{" not in text and "question_id" not in text and "CLARIFY" not in text
+    assert _types(events)[-3:] == ["clarify", "state", "done"] and "error" not in _types(events)
+    assert f"bad_line={code}/bank" in caplog.text
     assistant = fake_store.messages(session["id"])[1]
-    assert assistant["clarify"] is None and assistant["content"] and not assistant["content"].startswith("CLARIFY")
+    assert assistant["clarify"]["question_id"] == "when" and assistant["clarify"]["reason"] == "other"
+    assert DiagnosisState.model_validate(fake_store.rows[session["id"]]["state"]).pending_clarification is not None
+
+
+@pytest.mark.parametrize("reply,code", [
+    ("CLARIFY " + json.dumps({**LINE, "question_id": "colour"}), "unknown_question"),
+    ("CLARIFY " + json.dumps({**LINE, "question_id": ["when"]}), "unknown_question"),
+    ('CLARIFY {"reason": "tags_weak"', "bad_json"),
+])
+async def test_a_bad_line_with_no_bank_question_reruns_the_turn_once_with_the_gate_off(fake_all, fake_store, session, car, video_upload, caplog, monkeypatch, reply, code):
+    seen = _script(monkeypatch, [reply, "A wheel bearing hum fits a noise that follows road speed."])
+    with caplog.at_level(logging.INFO):
+        events = await _run(session, car, NOISE, [video_upload])
+    assert len(seen) == 2 and "## Clarify check" in seen[0][-1]["content"][0]["text"] and "Clarify check" not in seen[1][-1]["content"][0]["text"]
+    assert _streamed(events) == "A wheel bearing hum fits a noise that follows road speed."
+    assert "clarify" not in _types(events) and "error" not in _types(events) and _types(events)[-1] == "done"
+    assert f"bad_line={code}/rerun" in caplog.text
+    assistant = fake_store.messages(session["id"])[1]
+    assert assistant["clarify"] is None and assistant["content"] == _streamed(events)
     assert DiagnosisState.model_validate(fake_store.rows[session["id"]]["state"]).pending_clarification is None
+
+
+@pytest.mark.parametrize("second", [RuntimeError("provider down"), "", "CLARIFY " + json.dumps(LINE), 'CLARIFY {"question_id": "colour"}'])
+async def test_if_the_rerun_also_fails_the_user_gets_the_plain_error_and_no_json(fake_all, fake_store, session, car, video_upload, monkeypatch, second):
+    seen = _script(monkeypatch, ["CLARIFY " + json.dumps({**LINE, "question_id": "colour"}), second])
+    events = await _run(session, car, NOISE, [video_upload])
+    assert len(seen) == 2 and _types(events)[-1] == "error" and "clarify" not in _types(events)
+    [(_, error)] = [x for x in events if x[0] == "error"]
+    assert error["message"] == "The diagnosis service failed, please retry." and error["retry_message_id"]
+    assert "{" not in _streamed(events) and "question_id" not in _streamed(events)
+    user, failed = fake_store.messages(session["id"])
+    assert failed["status"] == "failed" and failed["retry_of"] == user["id"]
 
 
 # --- safety is never withheld -----------------------------------------------------------------------------------

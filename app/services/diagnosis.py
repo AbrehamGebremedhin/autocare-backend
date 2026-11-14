@@ -39,6 +39,10 @@ class _EmptyReply(Exception):
     """The reply stream produced nothing but whitespace."""
 
 
+class _BadReply(Exception):
+    """The retry without the gate still came back as a CLARIFY line."""
+
+
 class _LeaseLost(Exception):
     """The turn's session lease is held by someone else now (or the session is gone)."""
 
@@ -288,17 +292,14 @@ async def _turn(
         if mode == "answering"
         else None
     )
-    prompt = build_messages(
-        car=car,
-        state=previous,
-        history=history,
-        text=text,
-        observations=observations,
-        passages=passages,
-        images=images,
-        findings=earlier,
-        gate=gate,
-    )
+
+    def prompt_for(gate_section):
+        return build_messages(
+            car=car, state=previous, history=history, text=text, observations=observations, passages=passages,
+            images=images, findings=earlier, gate=gate_section,
+        )
+
+    prompt = prompt_for(gate)
     n = settings.HISTORY_MESSAGES
     recent = [history_turn(m) for m in (history[-n:] if n > 0 else [])]
     # What the user reported is read while the reply streams; only the extraction's result is awaited afterwards.
@@ -315,10 +316,22 @@ async def _turn(
                 if kind == "clarify":
                     asking = value
                 elif kind == "bad":
-                    bad_line = value  # the model's text follows as a normal reply
+                    bad_line, line = value  # never shown: the bank question if the line names one, else one plain retry
                 else:
                     parts.append(value)
                     yield "token", {"text": value}
+        if bad_line is not None:
+            asking = clarify.recover(line)
+            bad_line += "/bank" if asking else "/rerun"
+            if asking is None:  # the turn again with the gate off; a second failure is the turn's ordinary error
+                async with aclosing(llm.stream_reply(prompt_for(None))) as again:
+                    async for kind, value in clarify.sniff(again, True):
+                        if _lost(lease):
+                            raise _LeaseLost
+                        if kind != "text":
+                            raise _BadReply
+                        parts.append(value)
+                        yield "token", {"text": value}
         if asking is not None:
             note = clarify.safety_note(asking.safety_note, text, previous)
             reply = clarify.render(asking.question, asking.options, note)

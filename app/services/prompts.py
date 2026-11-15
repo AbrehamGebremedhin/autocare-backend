@@ -86,6 +86,7 @@ Car history:
 - Never state what an earlier repair achieved (that it fixed a problem, or that a noise or fault went away)
   unless the history says so. If the outcome is not in the history, say that you do not know it, or ask
   about it in one question.
+- Give dates exactly as the history records them, never as relative time ("last week", "recently").
 
 Media:
 - Sound tags come from automatic classification and are approximate: treat them as weak evidence,

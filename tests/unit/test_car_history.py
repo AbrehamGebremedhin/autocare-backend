@@ -55,7 +55,8 @@ def test_system_prompt_carries_the_history_rules():
     for phrase in ("not ground truth for the current complaint", "do not assume which is right", "ask the user",
                    "Use the confirmed repairs when you reason", "ABS\n  sensor or tone-ring fault",
                    "Never present a hypothesis from the history as a fact",
-                   "Never state what an earlier repair achieved", "say that you do not know it"):
+                   "Never state what an earlier repair achieved", "say that you do not know it",
+                   'never as relative time ("last week", "recently")'):
         assert phrase in SYSTEM_PROMPT, phrase
     assert "The same goes for the Car history" in SYSTEM_PROMPT
 

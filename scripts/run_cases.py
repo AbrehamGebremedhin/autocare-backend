@@ -14,6 +14,7 @@ Usage: uv run scripts/run_cases.py [--only id,id] [--out reports/cases-<timestam
 import argparse
 import asyncio
 import json
+import re
 import sys
 import io
 import tempfile
@@ -92,10 +93,16 @@ def missing_media(case: dict, root: Path = ROOT) -> list[str]:
     return [m for m in case.get("media") or [] if not (root / m).is_file()]
 
 
+def without_questions(reply: str) -> str:
+    """The reply minus its sentences that end in "?": asking whether something happened is not claiming it did."""
+    return re.sub(r"[^.!?\n]*\?", "", reply)
+
+
 def checklist(case: dict, reply: str, clarify: list[dict] | None = None, state: dict | None = None) -> list[str]:
     low = reply.lower()
+    asserted = without_questions(reply).lower()  # `must_not` patterns are checked against statements only
     lines = [f"- [{'x' if s.lower() in low else ' '}] mentions: {s}" for s in case["must_mention"]]
-    lines += [f"- [{' ' if s.lower() in low else 'x'}] avoids: {s}" for s in case["must_not"]]
+    lines += [f"- [{' ' if s.lower() in asserted else 'x'}] avoids: {s}" for s in case["must_not"]]
     lines += [f"- [{' ' if s.lower() in low else 'x'}] does not name: {s}" for s in case.get("must_not_name") or []]
     causes = (state or {}).get("suspected_causes") or []
     top = causes[0]["cause"].lower() if causes else ""

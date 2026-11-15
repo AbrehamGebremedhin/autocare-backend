@@ -32,6 +32,22 @@ def test_checklist_marks_by_case_insensitive_substring():
     ]
 
 
+HUB_CASE_MUST_NOT = ["went away after", "went away with", "was fixed by", "fixed the noise", "cured the"]
+
+
+def _avoids(reply):
+    case = {"must_mention": [], "must_not": HUB_CASE_MUST_NOT}
+    return [line.startswith("- [x]") for line in run_cases.checklist(case, reply)]
+
+
+def test_a_question_does_not_trip_must_not_but_a_statement_does():
+    asked = "Two questions:\n- Did the noise go away after the hub was fitted? The history does not say."
+    stated = "Good news. The noise went away after the hub was fitted, so look elsewhere."
+    assert _avoids(asked) == [True] * 5
+    assert _avoids(stated) == [False, True, True, True, True]
+    assert run_cases.without_questions("Is it loud? It went away with the hub. Did it fix the noise?") == " It went away with the hub."
+
+
 def test_media_case_is_skipped_when_file_missing(tmp_path):
     case = {"id": "m", "media": ["tests/fixtures/e2e/a.jpg", "tests/fixtures/e2e/b.jpg"]}
     (tmp_path / "tests/fixtures/e2e").mkdir(parents=True)

@@ -85,3 +85,8 @@ async def test_a_run_inserts_each_row_once_and_counts_only_new_ones(fake_pool):
     fake_pool.status = "INSERT 0 0"  # the second run: every row conflicts
     assert await backfill.backfill(dry_run=False) == (5, 0)
     assert [c[0] for c in fake_pool.calls] == ["fetch"] + ["execute"] * 5
+
+
+def test_a_result_without_a_test_makes_no_row():
+    state = {"tests_done": [{"test": "", "result": "rhythmic noise at 20 to 35 km/h"}]}
+    assert backfill.rows_for(session(state=state)) == []  # the row's key is the test, and an empty key is skipped

@@ -54,8 +54,9 @@ def user_proposals(facts: Iterable[Fact], said: str) -> list[Proposal]:
     for f in facts:
         quote = clean(f.quote)
         quoted = bool(_norm(quote)) and _norm(quote) in said_norm
+        test = clean(f.test)  # a result without a test is a symptom, not a test: it makes no row
         for kind, text, key in (
-            ("test_done", clean(f"{f.test}: {f.result}" if f.result else f.test), f.test),
+            ("test_done", clean(f"{test}: {f.result}") if test and f.result else test, f.test),
             ("confirmed_finding", clean(f.finding), ""),
             ("repair_done", clean(f.repair), ""),
         ):

@@ -99,7 +99,7 @@ def test_history_case_is_synthetic_and_seeds_findings_the_prompt_can_render():
     block = render_history(run_cases.history_rows(case))
     assert "2026-11-05 (repair): new rear-left hub fitted" in block and "2026-11-02: rear-left wheel bearing worn" in block
     assert "rear-left" not in case["text"] and "bearing" not in case["text"]  # the check needs the history to pass
-    assert [c["id"] for c in run_cases.load_cases() if c.get("history")] == ["abs-after-new-hub"]
+    assert [c["id"] for c in run_cases.load_cases() if c.get("history")] == ["abs-after-new-hub", "hub-replaced-new-noise"]
 
 
 @pytest.mark.asyncio

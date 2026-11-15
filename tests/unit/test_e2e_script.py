@@ -104,6 +104,16 @@ def test_health_problems_need_database_and_deepseek():
     assert e2e.health_problems({"status": "ok", "database": True, "deepseek": False}) == ["deepseek down"]
 
 
+def test_finding_counts_group_active_rows_by_kind_and_source():
+    rows = [{"kind": "suspected_cause", "source": "model_suggested", "status": "active"}] * 2 + [
+        {"kind": "repair_done", "source": "user_confirmed", "status": "active"},
+        {"kind": "suspected_cause", "source": "model_suggested", "status": "superseded"},
+    ]
+    assert e2e.finding_counts(rows).splitlines() == [
+        "       3  active findings", "       1  repair_done / user_confirmed", "       2  suspected_cause / model_suggested",
+    ]
+
+
 def test_finding_problems_flag_a_new_test_done_row_and_a_bad_text():
     ok = {"id": "a", "text": "spun the hub: rough"}
     assert e2e.finding_problems([ok], {"a"}) == []

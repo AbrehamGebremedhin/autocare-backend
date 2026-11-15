@@ -36,7 +36,18 @@ def test_the_model_path_never_produces_a_user_confirmed_proposal():
     )
     assert {p.source for p in findings.model_proposals(state)} == {MODEL}
     inserted = ops_of([], findings.model_proposals(state), "insert")
-    assert len(inserted) == 3 and all(o[1]["source"] == MODEL and o[1]["evidence_quote"] is None for o in inserted)
+    assert len(inserted) == 2 and all(o[1]["source"] == MODEL and o[1]["evidence_quote"] is None for o in inserted)
+
+
+def test_the_model_cannot_create_a_confirmed_finding():
+    state = DiagnosisState(confirmed_findings=["rear-left bearing is worn"], suspected_causes=[SuspectedCause(cause="Tone ring")])
+    assert {p.kind for p in findings.model_proposals(state)} == {"suspected_cause"}
+    assert findings.model_proposals(DiagnosisState(confirmed_findings=["the hub fixed the noise"])) == []
+
+
+def test_only_the_top_three_suspected_causes_are_stored():
+    state = DiagnosisState(suspected_causes=[SuspectedCause(cause=f"cause {i}") for i in range(6)])
+    assert [p.text for p in findings.model_proposals(state)] == ["cause 0", "cause 1", "cause 2"]
 
 
 def test_a_model_proposal_cannot_promote_or_touch_a_confirmed_row():
@@ -123,6 +134,10 @@ def test_the_model_does_not_bring_back_what_the_owner_retracted_or_newer_evidenc
                                   Proposal("suspected_cause", "Loose wheel nut", MODEL)]) == []
     # the owner saying it again is new evidence
     assert [o[0] for o in plan_writes(existing, [Proposal("suspected_cause", "Tone ring damaged", USER, quote="q")])] == ["insert"]
+
+
+def test_the_suggestion_cap_is_twenty():
+    assert findings.MAX_MODEL_ROWS == 20
 
 
 def test_suggestions_are_capped_oldest_first():

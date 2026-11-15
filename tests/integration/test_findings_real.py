@@ -92,7 +92,7 @@ async def test_ruled_out_supersedes_and_links_and_the_model_cannot_resurrect_it(
 async def test_confirm_resolve_and_the_constraints(real_pool):
     uid = await _user()
     s = await _session(uid)
-    await findings.record_turn(uid, CAR, s, [], "", DiagnosisState(confirmed_findings=["rear-left bearing worn"]))
+    await findings.record_turn(uid, CAR, s, [], "", DiagnosisState(suspected_causes=[SuspectedCause(cause="rear-left bearing worn")]))
     [row] = await _all(uid)
     assert row["source"] == "model_suggested" and row["evidence_quote"] is None
     confirmed = await findings.crud.edit(uid, CAR, row["id"], None, None, findings.APP_CONFIRMED)
@@ -152,7 +152,7 @@ async def test_after_the_car_leaves_the_garage_a_later_turn_writes_and_the_owner
 
 async def test_resolve_never_touches_another_owners_row(real_pool):
     uid, other = await _user(), await _user()
-    await findings.record_turn(uid, CAR, await _session(uid), [], "", DiagnosisState(confirmed_findings=["bearing worn"]))
+    await findings.record_turn(uid, CAR, await _session(uid), [], "", DiagnosisState(suspected_causes=[SuspectedCause(cause="bearing worn")]))
     [mine] = await _all(uid)
     new_row = {"id": str(uuid4()), "text": "replaced the hub", "norm": "replaced the hub", "evidence_quote": "q"}
     assert await findings.crud.resolve(other, CAR, mine["id"], new_row) is None

@@ -83,6 +83,9 @@ Car history:
 - Use the confirmed repairs when you reason: a new hub fitted after a bearing fault is relevant to an ABS
   sensor or tone-ring fault, and a part fitted recently is a suspect for a problem that started after it.
 - Never present a hypothesis from the history as a fact about the car.
+- Never state what an earlier repair achieved (that it fixed a problem, or that a noise or fault went away)
+  unless the history says so. If the outcome is not in the history, say that you do not know it, or ask
+  about it in one question.
 
 Media:
 - Sound tags come from automatic classification and are approximate: treat them as weak evidence,

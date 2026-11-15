@@ -95,7 +95,8 @@
   expects_citation: false
 
 # History case: a repair with no recorded outcome. The user now reports a different noise; the reply must not say what the
-# hub achieved ("went away", "fixed"): the history does not say. Synthetic, from a smoke-test transcript.
+# hub achieved: the history does not say. The patterns are assertions; the bare words "went away" and "fixed" also
+# match a correct "the history does not say whether it went away". Synthetic, from a smoke-test transcript.
 - id: hub-replaced-new-noise
   car_id: toyota-echo-2001
   history:
@@ -103,7 +104,7 @@
     - {kind: repair_done, source: user_confirmed, date: 2026-11-05, text: "fitted a new wheel hub on the left side"}
   text: There is a humming noise from the car at about 60 km/h, a different one from before.
   must_mention: ["60"]
-  must_not: ["went away", "fixed", "check your owner's manual", "refer to your manual", "here's a message"]
+  must_not: ["went away after", "went away with", "was fixed by", "fixed the noise", "cured the", "check your owner's manual", "refer to your manual", "here's a message"]
   expects_citation: false
 
 # Clarify-gate cases. All synthetic: `seeded_media` sends a placeholder file through the real turn, `observations` stands in

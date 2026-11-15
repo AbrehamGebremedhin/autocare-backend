@@ -125,8 +125,9 @@ database; SQL only applies the plan):
    `confirmed_finding`/`repair_done` whose `norm` equals an active `ruled_out` supersedes that. A model
    proposal can supersede only `model_suggested` rows. The model contradicting a `user_confirmed` row leaves
    it alone; the prompt rule tells the next turn to ask the user.
-4. At most 20 active `model_suggested` rows per `(user, car)`; inserting beyond that deletes the oldest
-   one. (The only hard delete outside the user's own request.)
+4. At most 20 active `model_suggested` `suspected_cause` and `ruled_out` rows per `(user, car)`; inserting beyond
+   that deletes the oldest one. Only those two kinds are ever deleted: never a model `confirmed_finding` (legacy
+   rows) or `test_done`, and never a `user_confirmed` row. (The only hard delete outside the user's own request.)
 
 Writes happen in `_turn` after the state is merged and before the `state` event, inside `try/except` that
 logs the exception class and carries on: a findings failure must never fail a turn.
@@ -340,20 +341,21 @@ stored (the cap was 50) and, being under 6,000 characters, all 36 were rendered:
 | model `confirmed_finding` | 10 / 10 | **0 / 0** (not created) |
 | `suspected_cause` | 19 / 19 | at most 3 new per turn; repeats are the same row, so over a six-turn session about 6 to 8 stay |
 | `ruled_out` | 3 / 3 | 3 / 3 (unchanged) |
-| model rows in all | 32 | at most 20 (the cap); about 9 to 11 here |
-| in the block | 36 + 3 headings | about 13 to 15 + 3 headings, all of them rendered |
+| model causes and ruled-out | 22 | at most 20 (the cap); about 9 to 11 here |
+| legacy model `confirmed_finding` | 10 | 0 for a new car; an existing car keeps its 10 until the owner deletes them (never trimmed) |
+| in the block | 36 + 3 headings | about 13 to 15 + 3 headings for a new car; a car that already holds legacy model findings keeps rendering those too |
 
 The two numbers in the last two rows are estimates from the per-turn cap, not a replay: they depend on how often the
 state model re-ranks its causes. The bound is exact: stored model rows never exceed 20, so the block holds at most
 4 + 20 rows here, and the 6,000-character trim is not reached. Rows already stored are not migrated: the first write
-after deploy deletes the oldest model rows, of any kind, until 20 remain.
+after deploy deletes the oldest model causes and ruled-out items until 20 remain; legacy model `confirmed_finding` rows are left alone.
 The owner's rows are never touched by the cap.
 
 Prompt rule added with it: the history says what was done, not what it achieved, so the model must not state an
 earlier repair's outcome (that it fixed something or a noise went away) unless the history says so; it says it does
 not know, or asks in one question. Live case `hub-replaced-new-noise` (a hub fitted, no outcome recorded, a new
-noise at 60 km/h) checks it with `must_not: ["went away", "fixed"]`. The check is a substring match, so a reply that
-says "the history does not say the old noise went away" trips it; the checklist is for a person to confirm.
+noise at 60 km/h) checks it with the assertion patterns "went away after", "went away with", "was fixed by", "fixed the noise" and "cured the".
+(The bare words "went away" and "fixed" also matched a correct "the history does not say whether it went away".)
 
 ## Considered and left out
 

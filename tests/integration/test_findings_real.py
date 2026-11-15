@@ -2,6 +2,7 @@
 and the backfill twice. Runs only with `-m db` and TEST_DATABASE_URL pointing at a throwaway database."""
 import importlib.util
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -148,6 +149,31 @@ async def test_after_the_car_leaves_the_garage_a_later_turn_writes_and_the_owner
     [row] = await findings.crud.listing(uid, CAR, None)  # no garage involved
     assert row["text"] == "Tone ring"
     assert await findings.crud.delete_one(uid, CAR, row["id"]) is True and await findings.crud.listing(uid, CAR, None) == []
+
+
+async def test_the_cap_trims_only_causes_and_never_a_finding_or_a_confirmed_row(real_pool):
+    uid = await _user()
+    s = await _session(uid)
+    old = datetime(2025, 1, 1, tzinfo=timezone.utc)  # older than every cause below, so oldest-first would pick these
+
+    def make(kind, text, source):
+        return {"id": str(uuid4()), "kind": kind, "text": text, "norm": findings._norm(text), "status": "active",
+                "source": source, "evidence_quote": "q" if source == "user_confirmed" else None, "created_at": old}
+
+    kept = [make("confirmed_finding", "legacy model finding", "model_suggested"),
+            make("confirmed_finding", "the bearing was the problem", "user_confirmed"),
+            make("repair_done", "fitted a new hub", "user_confirmed")]
+    await findings.crud.apply(uid, CAR, s, [("insert", row) for row in kept])
+    turns = 10  # three new causes each: 30 in all, ten over the cap
+    for i in range(turns):
+        state = DiagnosisState(suspected_causes=[SuspectedCause(cause=f"cause {i}-{n}") for n in range(3)])
+        await findings.record_turn(uid, CAR, s, [], "", state)
+    rows = await _all(uid)
+    ids = {str(r["id"]) for r in rows}
+    assert {r["id"] for r in kept} <= ids  # the legacy model finding and the owner's rows survive the trim
+    causes = [r for r in rows if r["kind"] == "suspected_cause"]
+    assert len(causes) == findings.MAX_MODEL_ROWS
+    assert {f"cause {turns - 1}-{n}" for n in range(3)} <= {r["text"] for r in causes}  # the newest turn is kept
 
 
 async def test_resolve_never_touches_another_owners_row(real_pool):

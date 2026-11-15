@@ -140,6 +140,23 @@ def test_the_suggestion_cap_is_twenty():
     assert findings.MAX_MODEL_ROWS == 20
 
 
+def test_the_cap_deletes_only_causes_and_ruled_out_never_a_finding_or_a_confirmed_row():
+    old = datetime(2025, 1, 1, tzinfo=timezone.utc)  # older than every cause below: oldest-first would pick these
+    protected = [
+        row("legacy", "confirmed_finding", "bearing is worn", created=old),
+        row("said", "confirmed_finding", "the bearing was the problem", source=USER, created=old),
+        row("did", "repair_done", "fitted a hub", source=USER, created=old),
+        row("cause-user", "suspected_cause", "tone ring", source=USER, created=old),
+        row("model-test", "test_done", "spun the hub", created=old),
+    ]
+    trimmed = [
+        row(f"{i:03}", "ruled_out" if i % 2 else "suspected_cause", f"item {i}", created=datetime(2026, 1, 1 + i, tzinfo=timezone.utc))
+        for i in range(findings.MAX_MODEL_ROWS + 2)
+    ]
+    ops = plan_writes([*protected, *trimmed], [])
+    assert [o for o in ops if o[0] == "delete"] == [("delete", "000"), ("delete", "001")]
+
+
 def test_suggestions_are_capped_oldest_first():
     existing = [row(f"{i:03}", "suspected_cause", f"cause {i}", created=datetime(2026, 1, 1, tzinfo=timezone.utc).replace(day=1 + i % 28, month=1 + i // 28)) for i in range(findings.MAX_MODEL_ROWS)]
     ops = plan_writes(existing, [Proposal("suspected_cause", "a brand new cause", MODEL)])

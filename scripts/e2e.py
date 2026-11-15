@@ -118,6 +118,20 @@ def health_problems(body: dict) -> list[str]:
     return [f"{key} down" for key in ("database", "deepseek") if body.get(key) is not True]
 
 
+def test_done_rows(client: httpx.Client, car_id: str) -> list[dict]:
+    resp = client.get(f"/api/v1/cars/{car_id}/findings")
+    resp.raise_for_status()
+    return [r for r in resp.json() if r.get("kind") == "test_done"]
+
+
+def finding_problems(rows: list[dict], before: set[str]) -> list[str]:
+    """Problems in the test_done rows read after the symptom-only first message; `before` is the ids seen before it.
+    A symptom is not a test: the message must add no test_done row, and no row's text may be empty or start with ':'."""
+    problems = [f"symptom message added test_done row {r.get('id')}" for r in rows if r.get("id") not in before]
+    problems += [f"test_done row {r.get('id')} has a bad text" for r in rows if not (r.get("text") or "").strip() or r["text"].lstrip().startswith(":")]
+    return problems
+
+
 def sign_in(client: httpx.Client, email: str, password: str, register: bool) -> str | None:
     """Access token from login, or from register when login says 401 and `register` is set; None on failure."""
     creds = {"email": email, "password": password}
@@ -169,6 +183,7 @@ def run(base: str, email: str, password: str, media_dir: Path, allow_skip: bool,
             return 1
         session_id = resp.json()["id"]
         try:
+            before = {r["id"] for r in test_done_rows(client, car_id)}
             for label, text, name in MESSAGES:
                 media = media_dir / name if name else None
                 if media and not media.is_file():
@@ -178,6 +193,10 @@ def run(base: str, email: str, password: str, media_dir: Path, allow_skip: bool,
                 result = send_message(client, session_id, label, text, media)
                 print(result.line(), flush=True)
                 failures += not result.ok
+                if label == "text":  # the first message only reports a symptom
+                    problems = finding_problems(test_done_rows(client, car_id), before)
+                    print(f"{'OK  ' if not problems else 'FAIL'} findings: no test_done from the symptom message{' -- ' + '; '.join(problems) if problems else ''}")
+                    failures += bool(problems)
         finally:
             try:
                 status = client.delete(f"/api/v1/sessions/{session_id}").status_code

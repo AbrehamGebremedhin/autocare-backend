@@ -102,3 +102,11 @@ def test_health_problems_need_database_and_deepseek():
     assert e2e.health_problems({"status": "ok", "database": True, "deepseek": True}) == []
     assert e2e.health_problems({"status": "ok", "database": False, "deepseek": True}) == ["database down"]
     assert e2e.health_problems({"status": "ok", "database": True, "deepseek": False}) == ["deepseek down"]
+
+
+def test_finding_problems_flag_a_new_test_done_row_and_a_bad_text():
+    ok = {"id": "a", "text": "spun the hub: rough"}
+    assert e2e.finding_problems([ok], {"a"}) == []
+    assert e2e.finding_problems([ok], set()) == ["symptom message added test_done row a"]
+    assert e2e.finding_problems([{"id": "b", "text": ": rhythmic noise"}], {"b"}) == ["test_done row b has a bad text"]
+    assert e2e.finding_problems([{"id": "c", "text": ""}], {"c"}) == ["test_done row c has a bad text"]

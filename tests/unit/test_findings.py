@@ -84,6 +84,22 @@ def test_a_test_fact_becomes_a_test_row_keyed_by_the_test():
     assert (p.kind, p.text, p.norm) == ("test_done", "spun the hub: rough", "spun the hub")
 
 
+@pytest.mark.parametrize("basis", ["stated", "answered_question"])
+def test_a_symptom_without_a_test_makes_no_row(basis):
+    said = "There is a rhythmic noise from the back at 20 to 35 km/h."
+    symptom = fact(test="", result="rhythmic noise at 20 to 35 km/h", basis=basis, quote="rhythmic noise from the back at 20 to 35 km/h")
+    assert findings.user_proposals([symptom], said) == []
+    assert findings.user_proposals([fact(test="  ", result="loud", quote="loud")], "loud") == []
+
+
+def test_a_test_with_a_result_has_no_stray_colon_and_a_test_without_a_result_is_its_own_text():
+    said = "I spun the hub by hand and it was rough"
+    [both] = findings.user_proposals([fact(test="spun the hub", result="rough", quote="spun the hub by hand")], said)
+    [bare] = findings.user_proposals([fact(test="spun the hub", quote="spun the hub by hand")], said)
+    assert (both.kind, both.text) == ("test_done", "spun the hub: rough") and not both.text.startswith(":")
+    assert (bare.kind, bare.text) == ("test_done", "spun the hub")
+
+
 # --- supersede, never delete -----------------------------------------------------------------------------
 
 def test_ruled_out_supersedes_the_cause_it_names_and_links_it():

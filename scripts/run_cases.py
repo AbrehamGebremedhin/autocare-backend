@@ -31,6 +31,14 @@ from app.schemas.session import DiagnosisState, Message, Observations, PendingCl
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES_FILE = ROOT / "tests" / "cases" / "diagnosis_cases.yaml"
+# `judge: <name>` on a case: one temperature-0 call to the same DeepSeek model with the question below and the reply;
+# the case passes only if the answer is NO. Substring patterns cannot tell "the hub fixed it" from "the history does not say
+# whether it fixed it".
+JUDGES = {
+    "hub_outcome": "Does this reply state or imply that the hub replacement changed the original noise "
+    "(fixed, reduced, removed, or did not change it)? Answer YES or NO.",
+}
+JUDGE_FIXTURES = ROOT / "tests" / "cases" / "judge_fixtures.yaml"
 REQUIRED_FIELDS = ("id", "car_id", "must_mention", "must_not", "expects_citation")
 HISTORY_FIELDS = ("kind", "text", "source", "date")  # a case's optional `history:` seeds the car's earlier findings
 CARS = {"toyota-echo-2001": {"id": "toyota-echo-2001", "make": "Toyota", "model": "Echo", "year": 2001}}
@@ -98,7 +106,44 @@ def without_questions(reply: str) -> str:
     return re.sub(r"[^.!?\n]*\?", "", reply)
 
 
-def checklist(case: dict, reply: str, clarify: list[dict] | None = None, state: dict | None = None) -> list[str]:
+def parse_judge(answer: str) -> bool:
+    """True for YES, False for NO; anything else raises: an unreadable answer must never pass a case."""
+    m = re.match(r"\W*(YES|NO)\b", answer.strip().upper())
+    if not m:
+        raise ValueError(f"judge answered neither YES nor NO: {answer[:80]!r}")
+    return m.group(1) == "YES"
+
+
+JUDGE_VOTES = 3  # a temperature-0 call still flips on borderline text, so a verdict is the majority of three
+
+
+async def judge_votes(name: str, reply: str) -> list[bool]:
+    """The judge's JUDGE_VOTES answers for `reply`, True meaning YES."""
+    from app.core.config import get_settings
+    from app.services.llm import get_client
+
+    async def ask() -> bool:
+        resp = await get_client().chat.completions.create(
+            model=get_settings().DEEPSEEK_MODEL, temperature=0,
+            messages=[{"role": "user", "content": f'{JUDGES[name]}\n\nReply:\n"""\n{reply}\n"""'}],
+        )
+        return parse_judge(resp.choices[0].message.content or "")
+
+    return list(await asyncio.gather(*(ask() for _ in range(JUDGE_VOTES))))
+
+
+def majority(votes: list[bool]) -> bool:
+    return sum(votes) * 2 > len(votes)
+
+
+async def judge(name: str, reply: str) -> bool:
+    """The judge's verdict for `reply`: True means YES (the majority of the votes)."""
+    return majority(await judge_votes(name, reply))
+
+
+def checklist(
+    case: dict, reply: str, clarify: list[dict] | None = None, state: dict | None = None, judged: bool | None = None
+) -> list[str]:
     low = reply.lower()
     asserted = without_questions(reply).lower()  # `must_not` patterns are checked against statements only
     lines = [f"- [{'x' if s.lower() in low else ' '}] mentions: {s}" for s in case["must_mention"]]
@@ -109,6 +154,9 @@ def checklist(case: dict, reply: str, clarify: list[dict] | None = None, state: 
     lines += [f"- [{' ' if s.lower() in top else 'x'}] first-ranked cause does not name: {s}" for s in case.get("top_cause_must_not_name") or []]
     ruled_out = " ".join(f"{r.get('cause', '')} {r.get('reason', '')}" for r in (state or {}).get("ruled_out") or []).lower()
     lines += [f"- [{' ' if s.lower() in ruled_out else 'x'}] ruled_out does not name: {s}" for s in case.get("ruled_out_must_not_name") or []]
+    if case.get("judge"):
+        answer = "not run" if judged is None else "YES" if judged else "NO"
+        lines.append(f"- [{'x' if judged is False else ' '}] judge (lower bound) {case['judge']}: answered {answer} (must be NO)")
     if "expects_clarify" in case:
         asked = bool(clarify)
         lines.append(f"- [{'x' if asked == case['expects_clarify'] else ' '}] {'asks' if case['expects_clarify'] else 'does not ask'} a clarifying question")
@@ -117,7 +165,10 @@ def checklist(case: dict, reply: str, clarify: list[dict] | None = None, state: 
     return lines
 
 
-def render_case(case: dict, reply: str, state: dict | None, error: str | None = None, clarify: list[dict] | None = None) -> str:
+def render_case(
+    case: dict, reply: str, state: dict | None, error: str | None = None, clarify: list[dict] | None = None,
+    judged: bool | None = None,
+) -> str:
     out = [f"## {case['id']}", ""]
     if case.get("text"):
         out += [f"> {case['text']}", ""]
@@ -131,7 +182,7 @@ def render_case(case: dict, reply: str, state: dict | None, error: str | None = 
     if error:
         out += [f"**Error event:** {error}", ""]
     out += ["### Final state", "", "```json", json.dumps(state, indent=2, ensure_ascii=False), "```", ""]
-    out += ["### Checklist", "", *checklist(case, reply, clarify, state)]
+    out += ["### Checklist", "", *checklist(case, reply, clarify, state, judged)]
     if case["expects_citation"]:
         out.append("- [ ] cites a KB passage (confirm by hand)")
     return "\n".join(out) + "\n"
@@ -247,6 +298,23 @@ async def run_case(case: dict) -> tuple[str, dict | None, str | None, list[dict]
     return "".join(tokens), state, error, clarify
 
 
+async def check_judge(name: str = "hub_outcome", rounds: int = 3) -> int:
+    """Run the judge over the fixtures (known NO and known YES replies) `rounds` times; returns the number of wrong answers."""
+    fixtures = yaml.safe_load(JUDGE_FIXTURES.read_text(encoding="utf-8"))
+    wrong = total = 0
+    for rnd in range(1, rounds + 1):
+        for fx in fixtures:
+            votes = await judge_votes(name, fx["reply"])
+            said_yes = majority(votes)
+            right = said_yes == (fx["expected"] == "YES")
+            wrong += not right
+            total += 1
+            shown = "/".join("Y" if v else "N" for v in votes)
+            print(f"round {rnd} {fx['id']:<14} expected {fx['expected']:<3} verdict (lower bound) {'YES' if said_yes else 'NO':<3} votes {shown} {'ok' if right else 'WRONG'}", flush=True)
+    print(f"{total - wrong}/{total} right")
+    return wrong
+
+
 async def main(only: str | None, out: Path | None) -> Path:
     cases = select_cases(load_cases(), only)
     sections = []
@@ -260,7 +328,8 @@ async def main(only: str | None, out: Path | None) -> Path:
                 continue
             print(f"RUN {case['id']}", flush=True)
             reply, state, error, clarify = await run_case(case)
-            sections.append(render_case(case, reply, state, error, clarify))
+            judged = await judge(case["judge"], reply) if case.get("judge") and reply else None
+            sections.append(render_case(case, reply, state, error, clarify, judged))
     finally:
         await pool.close_pool()
     if out is None:
@@ -276,5 +345,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", help="comma-separated case ids")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--check-judge", action="store_true", help="run the judge over tests/cases/judge_fixtures.yaml, 3 rounds")
     args = parser.parse_args()
+    if args.check_judge:
+        sys.exit(1 if asyncio.run(check_judge()) else 0)
     asyncio.run(main(args.only, args.out))

@@ -32,6 +32,52 @@ def test_checklist_marks_by_case_insensitive_substring():
     ]
 
 
+def test_parse_judge_reads_yes_and_no_and_refuses_anything_else():
+    assert run_cases.parse_judge("YES") is True and run_cases.parse_judge("**No.**") is False
+    assert run_cases.parse_judge("  yes, it does") is True
+    for bad in ("", "Maybe", "NOT SURE", "The reply says no"):
+        with pytest.raises(ValueError):
+            run_cases.parse_judge(bad)
+
+
+def test_the_verdict_is_the_majority_and_a_tie_cannot_pass():
+    assert run_cases.majority([True, False, True]) is True and run_cases.majority([False, False, True]) is False
+    assert run_cases.majority([True, False]) is False  # a tie is not YES, but only an odd number of votes is ever taken
+
+
+@pytest.mark.asyncio
+async def test_the_judge_asks_three_times_at_temperature_zero(mocker):
+    calls = []
+
+    async def create(**kw):
+        calls.append(kw)
+        return mocker.Mock(choices=[mocker.Mock(message=mocker.Mock(content="NO"))])
+
+    client = mocker.Mock()
+    client.chat.completions.create = create
+    mocker.patch("app.services.llm.get_client", return_value=client)
+    assert await run_cases.judge("hub_outcome", "a reply") is False
+    assert len(calls) == run_cases.JUDGE_VOTES == 3 and all(c["temperature"] == 0 for c in calls)
+    assert run_cases.JUDGES["hub_outcome"] in calls[0]["messages"][0]["content"] and "a reply" in calls[0]["messages"][0]["content"]
+
+
+def test_a_judge_case_passes_only_on_no_and_labels_the_verdict_a_lower_bound():
+    case = {"must_mention": [], "must_not": [], "judge": "hub_outcome"}
+    no, yes, unrun = (run_cases.checklist(case, "r", judged=j)[0] for j in (False, True, None))
+    assert no.startswith("- [x] judge (lower bound) hub_outcome: answered NO")
+    assert yes.startswith("- [ ] ") and "answered YES" in yes and unrun.startswith("- [ ] ") and "not run" in unrun
+
+
+def test_judge_fixtures_are_four_no_and_six_yes_with_a_reason_on_every_yes():
+    import yaml
+
+    fixtures = yaml.safe_load(run_cases.JUDGE_FIXTURES.read_text(encoding="utf-8"))
+    assert sorted(f["id"] for f in fixtures if f["expected"] == "NO") == ["evalB1", "evalB2", "evalC1", "evalC3"]
+    yes = [f for f in fixtures if f["expected"] == "YES"]
+    assert len(yes) == 6 and all(f.get("reason") for f in yes) and all(f["reply"].strip() for f in fixtures)
+    assert [c["id"] for c in run_cases.load_cases() if c.get("judge")] == ["hub-replaced-new-noise"]
+
+
 HUB_CASE_MUST_NOT = ["went away after", "went away with", "was fixed by", "fixed the noise", "cured the"]
 
 

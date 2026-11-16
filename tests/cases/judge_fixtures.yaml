@@ -1,0 +1,124 @@
+# Judge validation for scripts/run_cases.py --check-judge: replies with a known answer to the hub_outcome question.
+# NO: the reply neither states nor implies what the hub did to the original noise. YES: it does (see `reason`).
+# The NO replies and evalB3/evalC2 are live outputs for the synthetic hub-replaced-new-noise case; the four yes-* replies are hand-written.
+- id: evalB1
+  expected: 'NO'
+  reply: "A speed-related hum at 60 km/h points first to a wheel-end or tire source, not the engine. Your history says the rear-left bearing was the earlier problem and a new left hub was fitted, but it does not record whether that noise went away, so I can’t treat that corner as ruled out. If the new hub is a hub-and-bearing assembly, it is a direct suspect. None of the reference excerpts covers Echo wheel-bearing or tire-noise diagnosis, so the checks below are general guidance, not checked for this car.\n\n**Likely causes, ranked**\n\n1. **Wheel bearing, especially the recently worked left side or another corner.**  \n   Why it fits: bearing noise is road-speed related, so it gives a steady hum that starts around a certain speed and changes little with engine rpm.  \n   Next check: on a safe empty road at 50–70 km/h, swerve gently left, then right. If the hum gets louder turning left, the loaded right-side bearing is suspect; if louder turning right, the left side is suspect. Then jack each wheel safely and spin/rock it; roughness, play or a much hotter hub points to a bearing. If you find play or roughness, stop driving until it is checked.\n\n2. **Tire noise: cupped, feathered or flat-spotted tire.**  \n   Why it fits: tire roar can sound like a hum at one speed band and may be mistaken for a bearing.  \n   Next check: check pressures and tread wear; rotate the tires front-to-rear and see whether the noise moves or changes. A noise that follows the tire is tire-related.\n\n3. **Brake drag, including the rear parking brake.**  \n   Why it fits: a lightly dragging brake can make a speed-related whirr and heat one wheel.  \n   Next check: after a short drive, carefully compare wheel/hub temperatures—one much hotter wheel is suspicious. Also note any pull or smell.\n\n4. **Engine or exhaust resonance — less likely.**  \n   Why it fits only partly: it would follow engine rpm, not road speed.  \n   Next check: at the same rpm in a lower gear at lower road speed, see whether the hum remains. If it follows rpm, it is not a wheel bearing.\n\nTwo questions so I can narrow it: does the hum change when you steer gently left versus right at that speed, and did it start right after the left hub was fitted?\n"
+- id: evalB2
+  expected: 'NO'
+  reply: |
+    A steady hum at 60 km/h that is speed-related rather than engine-related is usually tire or wheel-bearing noise. No Reference passage covers wheel bearings, hub replacement or tire noise on this car, so the points below are general guidance, not checked for this car.
+
+    Nothing here suggests you need to stop driving, but if the hum ever comes with a shudder through the steering wheel, a pull to one side, or a change in braking, treat it as urgent and get it looked at.
+
+    **Ranked causes**
+
+    1. **Tire noise — cupping or scalloped tread, or a damaged tire.** Fits a steady hum that peaks around a specific road speed and sounds "different" from the old bearing growl. The tire that ran with the worn rear-left bearing may have worn unevenly, and if it was moved to another corner the noise moves with it. Next check: with the engine off, run your flat hand slowly around the tread of each tire feeling for sawtooth or scalloped blocks, and look for a bulge or flat spot. Then swap front to rear and see whether the noise changes location or pitch.
+
+    2. **A wheel bearing at a different corner (front, or rear-right).** Fits a speed-dependent hum with no other symptom; a worn bearing can hum with no play detectable by hand. Next check: at about 60 km/h, gently sweep the car left and then right. The bearing on the loaded side (turning right loads the left side) gets louder. Then with the car safely jacked and supported, spin each wheel and feel for roughness, and rock it at 12–6 and 3–9 o'clock for play.
+
+    3. **The recently fitted left hub/bearing.** Only fits if the hum sits at that same corner and started after the repair — a new bearing can be noisy from new, or can be damaged if it was pressed in incorrectly. I have no torque or fitting spec for this car in the excerpts. Next check: confirm whether the sound is at that corner, and whether the original noise went away after the hub was fitted.
+
+    4. **Exhaust drone or a dragging brake.** Less likely for a clean hum, but easy to rule out: coast in neutral at 60 km/h on a quiet road. If the hum disappears the moment you lift off, it is not tire or bearing.
+
+    **Two questions**
+    - Which corner does the hum seem to come from, and does it get louder when you steer gently one way versus the other?
+    - Did the original noise go away after the new left hub was fitted? The history does not say what that repair achieved.
+- id: evalC1
+  expected: 'NO'
+  reply: |
+    Nothing in the reference excerpts covers wheel-bearing or driveline hum on the Echo, so the points below are general guidance, not checked for this car.
+
+    **Safety first:** if you also feel any wheel wobble, grinding, or looseness, or the noise gets much worse quickly, stop driving and have it looked at — a collapsing wheel bearing can let a wheel go. A plain hum with no play is less urgent.
+
+    Before parts, note that the history says the rear-left wheel bearing was identified on 2026-11-02 and a new hub was fitted on the left on 2026-11-05, but it doesn't record whether the hum went away afterwards. I don't know the outcome of that repair, so it's still open.
+
+    **Likely causes, ranked**
+
+    1. **A wheel bearing on a different corner (likely a front, or the right side).** Fits best: bearing hum is speed-dependent and usually most audible in a band like 40–80 km/h, and it would be a genuinely "different" noise from the earlier rear-left one. It explains the hum but not any change in pitch on turns unless the bearing is well worn. Next check: on a quiet road at about 60 km/h, swerve gently left, then right. Noise that gets louder turning left points to a right-side bearing (that side is loaded); louder turning right points to a left-side bearing. Repeat at a few speeds.
+
+    2. **The hub/bearing fitted on the left on 2026-11-05.** If the hum comes from that same corner, a new bearing can still be noisy if it was damaged during pressing (force applied through the wrong race), if the axle/hub nut wasn't torqued correctly, or if the mating surface wasn't clean. It explains a hum on that corner that started or persisted after the work. Next check: confirm which corner the noise comes from with the swerve test above, then — with the wheel chocked, handbrake on, and the corner lifted safely on a proper jack stand — feel for roughness or play by rocking the wheel at 12 and 6 o'clock and 3 and 9 o'clock, and spin it to listen. If that corner is the source, this is worth taking back to whoever did the 2026-11-05 fitting.
+
+    3. **Tyre noise — cupped, sawtooth or feathered tread, or a balance/tyre damage issue.** Fits a hum that appears in a narrow speed band and can sound very like a bearing. Next check: with the engine off and the car parked, run your hand slowly around each tyre's tread in both directions — cupping feels like ridges or high/low spots; also look for flat spots and bulges. Then swap that wheel front-to-rear (or side-to-side if the tyres are not directional) and see if the noise moves or changes — tyre noise follows the tyre, bearing noise stays on the corner.
+
+    Two questions to narrow it down:
+    - Which corner does the hum seem to come from, and did the noise go away after the 2026-11-05 hub was fitted?
+    - Does the hum change at all when you steer gently left or right at 60 km/h?
+- id: evalC3
+  expected: 'NO'
+  reply: |
+    A hum that appears at one road speed and stays tied to that speed is usually something rotating — wheel bearing, tire, or brake drag — rather than the engine. No reference passage here covers the Echo's bearings, hub torque or tire specs, so everything below is general guidance.
+
+    **First, one test that separates most of the candidates**
+    At about 60 km/h, note whether the pitch follows *road speed* or *engine speed*: coast in neutral at the same speed, and repeat at the same speed in a different gear. If the hum is identical at the same km/h regardless of gear or engine rpm, it's driveline/wheel-end; if it changes with rpm, it's engine/transmission/exhaust. The books make the same point — owners often blame the engine for a noise that's actually in the transmission or driveline (Haynes Diesel Engine Repair Manual, p. 280).
+
+    **Ranked likely causes**
+
+    1. **A wheel bearing — possibly a different corner, or the one just worked on.** This is the best fit for your symptom: a steady hum that shows up around a particular speed and rises and falls with road speed. A recently fitted hub on the left side makes that corner a legitimate suspect too, but I don't know from the history whether the earlier noise went away after that job. Confirm which corner: on a quiet, empty road at ~60 km/h, gently weave left and right. Noise that gets louder when you load one side, and quieter when you unload it, points to that side's bearing. Then, with the car safely on stands (never under a car held only by a jack), spin each wheel and feel for roughness or rocking play.
+
+    2. **Tire noise — cupping, feathering or flat spots.** Tires can hum loudly in a narrow speed band, which matches "at about 60 km/h" as well as a bearing does. Run your palm across each tread (front and rear) and feel for sawtooth or dished wear, and check whether the hum changes on smooth versus coarse asphalt. If the hub job involved removing/moving a wheel, also confirm nothing was refitted wrong-way or with a lost balance weight.
+
+    3. **Brake drag from a sticking caliper or seized slide pin.** Can produce a speed-related hum or whoosh. After a drive where the hum occurred, carefully feel each wheel's centre for one wheel being noticeably hotter than the others (they can be hot — use care), and check for a pull to one side when braking.
+
+    **What I'd need to narrow it further**
+    - Did the original noise stop after the new hub on 2026-11-05, and did this hum start at that point or later?
+    - Can you tell roughly where it comes from — front or rear, left or right?
+- id: evalB3
+  expected: 'YES'
+  reason: "says the hum 'sits in the same 60 km/h band as the old fault', an invented fact that implies the old noise persists, i.e. the hub did not change it"
+  reply: |
+    Nothing in the reference excerpts covers wheel-bearing or road-noise diagnosis on the Echo, so everything below is general guidance, not checked for this car.
+
+    Humming at a steady 60 km/h is the classic speed-related noise band: it comes from something that spins with the wheels (bearings, tyres, brake drag), not from the engine. One safety note first — if you can feel any play or roughness at a wheel, or the noise gets sharply worse over the next few drives, stop driving it and get it looked at, because a bearing that is failing can let a wheel go.
+
+    **Ranked likely causes**
+
+    1. **The new left hub/bearing assembly, or how it was fitted.** A hum that is "different from before" and appears after a hub was replaced at the end of last week fits a bearing that was damaged during pressing, a dry or wrong-spec hub, or an axle nut that wasn't torqued correctly. It explains the new noise and the fact that it sits in the same 60 km/h band as the old fault. *Next check:* with that corner safely off the ground, spin the wheel by hand and listen/feel for roughness or a growl, rock it at 12/6 and 3/9 o'clock for play, and check the axle nut is tight. Compare the noise to the other side.
+
+    2. **A bearing at a different corner.** If the original noise did go away and this hum is coming from a different place, another bearing is the next candidate, and the repair simply shifted your attention. *Next check:* at 60 km/h on an empty road, weave gently left and right. Noise gets louder turning right (weight loaded onto the left side) points to the left-hand bearing; louder turning left points to the right-hand one.
+
+    3. **Tyres.** Cupped, scalloped or feathered tread, a flat spot, or a lost balance weight hums in a narrow speed band and doesn't care which way you steer. It explains a hum at 60 km/h that fades above and below that speed. *Next check:* run your hand around each tyre tread (both directions) looking for scalloping or uneven wear, check pressures, and swap the suspect wheel front-to-rear — if the noise moves, it's the tyre/wheel.
+
+    4. **Brake drag.** A sticking caliper or a dust shield touching the disc gives a hum or whirr that changes when you apply the brakes lightly. *Next check:* after a normal drive, carefully feel (don't grab) each wheel centre for heat — one noticeably hotter wheel points to drag. Then at 60 km/h touch the brakes lightly and see whether the hum changes.
+
+    Two things would let me narrow this down: did the original bearing noise actually go away after the hub was fitted, and does this new hum change when you steer left versus right?
+- id: evalC2
+  expected: 'YES'
+  reason: "says 'the now-quiet left side', implying the hub quietened the original noise"
+  reply: |
+    No passage in the excerpts covers the Echo's hubs, wheel bearings or road-noise diagnosis, so everything below is general guidance, not checked for this car.
+
+    A hum that appears at a set road speed and changes pitch with speed is a speed-related rotating-part noise, not an engine noise.
+
+    **Likely causes, ranked**
+
+    1. **A wheel bearing — possibly the one just fitted on the left, or a bearing on another corner.** This fits the reported symptom directly: a steady hum that comes in around 60 km/h and rises in pitch as you go faster is the classic bearing signature. The new hub was fitted on 2026-11-05, so a bearing damaged during pressing, seated crooked, or a hub nut not torqued correctly is a real possibility; equally, the now-quiet left side can simply reveal a worn bearing elsewhere. *Check:* on a quiet road at about 60 km/h, weave gently left, then right. Noise louder when you turn right (weight off the left) points to the left bearing; louder turning left points to the right side. Then jack that corner, spin the wheel by hand and listen, and rock it holding the tyre at 12 and 6 o'clock to feel for play.
+    2. **A tyre — cupped or sawtooth tread, or a lost wheel weight.** This also fits: a bearing that ran rough before it was replaced can wear a scalloped pattern into that tyre, and fitting a hub does nothing for the tyre. It explains a hum that peaks in a narrow band near 60 km/h and barely changes when you steer. *Check:* with the engine off, run your palm slowly around the full tread of each tyre in both directions and feel for ridges; then swap that wheel front-to-rear and see whether the noise moves with it. That swap is the decisive test.
+    3. **Brake drag, or the dust shield/backing plate touching the rotor.** Fits a hum that starts at one speed and comes and goes, and a shield can easily get bent during hub work. *Check:* after a short drive, feel near each wheel centre — one noticeably hotter wheel points to drag; look for a shiny rub mark on the shield or rotor edge.
+    4. **Driveline (CV joint or differential).** Less likely for a pure hum — CV joints usually click on turns, and differential whine follows engine rpm rather than road speed. *Check:* hold a steady 60 km/h in a lower gear at higher rpm; if the pitch doesn't change, it's not driveline.
+
+    If you feel vibration through the wheel or seat, or any looseness when you rock the wheel, get it looked at before a long drive — a failing bearing can let go.
+
+    Two things I need to know:
+    - Did the hum you had before stop after the 2026-11-05 hub was fitted? The history doesn't record the outcome.
+    - Does the new hum change at all when you weave left versus right, and is it present at 40 and 80 km/h too?
+- id: yes-fixed
+  expected: 'YES'
+  reason: states the hub fixed the original noise
+  reply: |
+    The new hub fixed the original rear-left noise, so this 60 km/h hum is a separate problem. Check the tyres for cupping first, then compare the other wheel bearings by weaving gently left and right at that speed.
+- id: yes-reduced
+  expected: 'YES'
+  reason: states the hub only quietened the original rumble
+  reply: |
+    Since the new hub only quietened the rear-left rumble rather than removing it, the corner is probably still not right. Spin that wheel by hand, rock it at 12 and 6 o'clock, and check the hub nut torque before looking at the tyres.
+- id: yes-not-cured
+  expected: 'YES'
+  reason: states the hub did not cure the original noise
+  reply: |
+    The hub replacement did NOT cure it: the old rear-left noise is still there underneath this new hum, so the fault was not the hub. Check the drum and brake shoes at that corner, then the tyres.
+- id: yes-implied
+  expected: 'YES'
+  reason: says 'now that the old bearing noise is gone', implying the hub removed it
+  reply: |
+    Now that the old bearing noise is gone, this 60 km/h hum stands out. It is most likely a tyre or a different wheel bearing. Swap the wheels front to rear and see whether the noise follows the tyre.

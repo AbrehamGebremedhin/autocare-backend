@@ -39,18 +39,6 @@ JUDGES = {
     "(fixed, reduced, removed, or did not change it)? Answer YES or NO.",
 }
 JUDGE_FIXTURES = ROOT / "tests" / "cases" / "judge_fixtures.yaml"
-# Three more judge questions for the hub-replaced-new-noise case. They also see the seeded history block and the final
-# state JSON (JUDGE_SEES), so "a fact not in the history" and "the state treats it as resolved" can be answered.
-JUDGES |= {
-    "hub_q1": "Does the reply or state treat the original noise as resolved, or the repaired corner as excluded or "
-    "probably fine? Answer YES or NO.",
-    "hub_q2": "Does the reply or state say, as a fact, when the new noise began relative to the repair? Answer YES or NO.",
-    "hub_q3": "Does the reply or state assert a fact about the car's history that is not in the history block? "
-    "Answer YES or NO.",
-}
-JUDGE_SEES = {"hub_q1", "hub_q2", "hub_q3"}
-HUB_FIXTURES = ROOT / "tests" / "cases" / "judge_fixtures_hub.yaml"
-HUB_CASE = "hub-replaced-new-noise"
 REQUIRED_FIELDS = ("id", "car_id", "must_mention", "must_not", "expects_citation")
 HISTORY_FIELDS = ("kind", "text", "source", "date")  # a case's optional `history:` seeds the car's earlier findings
 CARS = {"toyota-echo-2001": {"id": "toyota-echo-2001", "make": "Toyota", "model": "Echo", "year": 2001}}
@@ -129,21 +117,7 @@ def parse_judge(answer: str) -> bool:
 JUDGE_VOTES = 3  # a temperature-0 call still flips on borderline text, so a verdict is the majority of three
 
 
-def judge_prompt(name: str, reply: str, history: str | None = None, state: dict | None = None) -> str:
-    """The question, then (for the JUDGE_SEES questions) the history block the reply was written against, the reply and
-    the final state JSON; the older questions get the reply alone."""
-    q = '"""'
-    parts = [JUDGES[name]]
-    if name in JUDGE_SEES:
-        parts.append(f"Car history block (what the assistant was shown):\n{q}\n{history or '(none)'}\n{q}")
-    parts.append(f"Reply:\n{q}\n{reply}\n{q}")
-    if name in JUDGE_SEES:
-        state_json = json.dumps(state, indent=2, ensure_ascii=False) if state is not None else "(none)"
-        parts.append(f"Final state (JSON):\n{q}\n{state_json}\n{q}")
-    return "\n\n".join(parts)
-
-
-async def judge_votes(name: str, reply: str, history: str | None = None, state: dict | None = None) -> list[bool]:
+async def judge_votes(name: str, reply: str) -> list[bool]:
     """The judge's JUDGE_VOTES answers for `reply`, True meaning YES."""
     from app.core.config import get_settings
     from app.services.llm import get_client
@@ -162,9 +136,9 @@ def majority(votes: list[bool]) -> bool:
     return sum(votes) * 2 > len(votes)
 
 
-async def judge(name: str, reply: str, history: str | None = None, state: dict | None = None) -> bool:
+async def judge(name: str, reply: str) -> bool:
     """The judge's verdict for `reply`: True means YES (the majority of the votes)."""
-    return majority(await judge_votes(name, reply, history, state))
+    return majority(await judge_votes(name, reply))
 
 
 def checklist(
@@ -341,45 +315,6 @@ async def check_judge(name: str = "hub_outcome", rounds: int = 3) -> int:
     return wrong
 
 
-def case_history_block(case_id: str = HUB_CASE) -> str:
-    """The Car history block a case's seeded history renders to: what the model (and the judge) sees."""
-    from app.services.findings import render_history
-
-    return render_history(history_rows(next(c for c in load_cases() if c["id"] == case_id)))
-
-
-def hub_fixtures() -> list[dict]:
-    """(id, reply, state, labels) for --check-hub-judges: D1-D10 with all three questions, and the earlier ten outcome
-    fixtures with their current YES/NO labels as the Q1 label (no state: they were reply-only)."""
-    d = yaml.safe_load(HUB_FIXTURES.read_text(encoding="utf-8"))
-    old = yaml.safe_load(JUDGE_FIXTURES.read_text(encoding="utf-8"))
-    return d + [{"id": f["id"], "reply": f["reply"], "state": None, "labels": {"q1": f["expected"]}} for f in old]
-
-
-async def check_hub_judges(rounds: int = 3) -> int:
-    """Run Q1-Q3 over hub_fixtures() `rounds` times, print every verdict; returns the wrong non-borderline verdicts."""
-    history, fixtures = case_history_block(), hub_fixtures()
-    wrong = total = borderline_yes = borderline = 0
-    for rnd in range(1, rounds + 1):
-        jobs = [(fx, q, label) for fx in fixtures for q, label in fx["labels"].items()]
-        results = await asyncio.gather(*(judge_votes(f"hub_{q}", fx["reply"], history, fx["state"]) for fx, q, _ in jobs))
-        for (fx, q, label), votes in zip(jobs, results, strict=True):
-            said_yes = majority(votes)
-            shown = "/".join("Y" if v else "N" for v in votes)
-            verdict = "YES" if said_yes else "NO"
-            if label == "BORDERLINE":
-                borderline += 1
-                borderline_yes += said_yes
-                mark = "borderline (reported, not in the bar)"
-            else:
-                total += 1
-                wrong += verdict != label
-                mark = "ok" if verdict == label else "WRONG"
-            print(f"round {rnd} {fx['id']:<10} {q.upper()} label {label:<10} judge (lower bound) {verdict:<3} votes {shown} {mark}", flush=True)
-    print(f"{total - wrong}/{total} non-borderline right; {borderline} borderline verdicts, {borderline_yes} of them YES")
-    return wrong
-
-
 async def main(only: str | None, out: Path | None) -> Path:
     cases = select_cases(load_cases(), only)
     sections = []
@@ -410,11 +345,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", help="comma-separated case ids")
     parser.add_argument("--out", type=Path)
-    parser.add_argument("--check-hub-judges", action="store_true", help="validate the Q1-Q3 judges on the hub fixtures, 3 rounds")
     parser.add_argument("--check-judge", action="store_true", help="run the judge over tests/cases/judge_fixtures.yaml, 3 rounds")
     args = parser.parse_args()
-    if args.check_hub_judges:
-        sys.exit(1 if asyncio.run(check_hub_judges()) else 0)
     if args.check_judge:
         sys.exit(1 if asyncio.run(check_judge()) else 0)
     asyncio.run(main(args.only, args.out))

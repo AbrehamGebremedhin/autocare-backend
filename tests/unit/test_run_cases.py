@@ -270,36 +270,3 @@ def test_the_answering_cases_carry_the_new_checks():
     dont_know = next(c for c in run_cases.load_cases() if c["id"] == "clarify-answer-dont-know")
     assert {"door", "seam", "panel", "trim"} <= set(dont_know["ruled_out_must_not_name"])
     assert "knock" in dont_know["top_cause_must_not_name"] and "door" in dont_know["top_cause_must_not_name"]
-
-
-# --- the Q1-Q3 hub judges ---------------------------------------------------------------------------------
-
-def test_the_older_judge_prompt_is_the_reply_alone():
-    assert run_cases.judge_prompt("hub_outcome", "R", history="H", state={"a": 1}) == (
-        run_cases.JUDGES["hub_outcome"] + "\n\nReply:\n\"\"\"\nR\n\"\"\""
-    )
-
-
-def test_the_hub_judges_see_the_history_block_the_reply_and_the_state():
-    prompt = run_cases.judge_prompt("hub_q3", "THE REPLY", history="- 2026-11-05 (repair): a new hub", state={"title": "T"})
-    assert prompt.startswith(run_cases.JUDGES["hub_q3"])
-    assert prompt.index("a new hub") < prompt.index("THE REPLY") < prompt.index('"title": "T"')
-    assert "(none)" in run_cases.judge_prompt("hub_q1", "r", history=None, state=None)
-
-
-def test_the_hub_fixtures_carry_the_labels_given_for_them():
-    by_id = {f["id"]: f["labels"] for f in run_cases.hub_fixtures()}
-    for q, yes, borderline in (
-        ("q1", {"D2", "D7"}, {"D1", "D3", "D8"}),
-        ("q2", {"D2", "D5", "D6", "D8", "D9", "D10"}, {"D4"}),
-        ("q3", {"D2", "D6", "D7", "D9"}, {"D1", "D3"}),
-    ):
-        for n in range(1, 11):
-            i = f"D{n}"
-            assert by_id[i][q] == ("BORDERLINE" if i in borderline else "YES" if i in yes else "NO"), (i, q)
-    assert sum("q1" in labels and "q2" not in labels for labels in by_id.values()) == 10  # the earlier ten: Q1 only
-
-
-def test_the_hub_case_history_block_is_the_seeded_history():
-    block = run_cases.case_history_block()
-    assert "2026-11-02" in block and "2026-11-05 (repair): fitted a new wheel hub on the left side" in block

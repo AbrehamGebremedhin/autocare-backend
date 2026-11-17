@@ -117,6 +117,16 @@ def regex_hits(patterns: list[str], reply: str) -> list[str]:
     return [t.strip() for t in sentences if t.strip() and any(re.search(p, t, re.IGNORECASE) for p in patterns)]
 
 
+def state_regex_hits(patterns: list[str], state: dict | None) -> list[str]:
+    """"field: text" for each final-state string (a cause's cause, evidence and next_check, the confirmed_findings, the
+    safety flags' text) that matches any pattern, case-insensitive, quoted text ignored."""
+    state = state or {}
+    fields = [(f"suspected_causes[{i}].{k}", c.get(k) or "") for i, c in enumerate(state.get("suspected_causes") or []) for k in ("cause", "evidence", "next_check")]
+    fields += [(f"confirmed_findings[{i}]", f) for i, f in enumerate(state.get("confirmed_findings") or [])]
+    fields += [(f"safety_flags[{i}].text", f.get("text") or "") for i, f in enumerate(state.get("safety_flags") or [])]
+    return [f"{name}: {text}" for name, text in fields if any(re.search(p, outside_quotes(text), re.IGNORECASE) for p in patterns)]
+
+
 def parse_judge(answer: str) -> bool:
     """True for YES, False for NO; anything else raises: an unreadable answer must never pass a case."""
     m = re.match(r"\W*(YES|NO)\b", answer.strip().upper())
@@ -167,7 +177,11 @@ def checklist(
     lines += [f"- [{' ' if s.lower() in ruled_out else 'x'}] ruled_out does not name: {s}" for s in case.get("ruled_out_must_not_name") or []]
     if case.get("must_not_regex"):
         hits = regex_hits(case["must_not_regex"], reply)
-        lines.append(f"- [{' ' if hits else 'x'}] avoids regex {case['must_not_regex']}: {len(hits)} sentence(s) match")
+        state_hits = state_regex_hits(case["must_not_regex"], state)
+        lines.append(
+            f"- [{' ' if hits or state_hits else 'x'}] avoids regex {case['must_not_regex']}: "
+            f"{len(hits)} reply sentence(s), {len(state_hits)} final-state string(s) match"
+        )
     if case.get("judge"):
         answer = "not run" if judged is None else "YES" if judged else "NO"
         lines.append(f"- [{'x' if judged is False else ' '}] judge (lower bound) {case['judge']}: answered {answer} (must be NO)")

@@ -300,5 +300,36 @@ def test_the_regex_check_passes_dated_and_quoted_text(reply):
 def test_the_checklist_reports_the_regex_check():
     case = {"must_mention": [], "must_not": [], "must_not_regex": HUB_PATTERNS}
     assert "- [ ] avoids regex" in "\n".join(run_cases.checklist(case, "Fitted recently. Also fine."))
-    assert "1 sentence(s) match" in "\n".join(run_cases.checklist(case, "Fitted recently. Also fine."))
+    assert "1 reply sentence(s), 0 final-state string(s) match" in "\n".join(run_cases.checklist(case, "Fitted recently. Also fine."))
     assert "- [x] avoids regex" in "\n".join(run_cases.checklist(case, "Fitted on 2026-11-05."))
+
+
+def _state(**kw):
+    return {"suspected_causes": [{"cause": "Wheel bearing", "evidence": "", "next_check": ""}], "confirmed_findings": [],
+            "safety_flags": [], **kw}
+
+
+@pytest.mark.parametrize("where,state", [
+    ("suspected_causes[0].cause", _state(suspected_causes=[{"cause": "Hub fitted recently", "evidence": "", "next_check": ""}])),
+    ("suspected_causes[0].evidence", _state(suspected_causes=[{"cause": "x", "evidence": "Began just before the repair", "next_check": ""}])),
+    ("suspected_causes[0].next_check", _state(suspected_causes=[{"cause": "x", "evidence": "", "next_check": "Ask about RECENT work"}])),
+    ("confirmed_findings[1]", _state(confirmed_findings=["bearing noisy", "hum days before the hub"])),
+    ("safety_flags[0].text", _state(safety_flags=[{"text": "Hub nut recently disturbed", "severity": "critical"}])),
+])
+def test_the_state_check_scans_every_listed_string(where, state):
+    [hit] = run_cases.state_regex_hits(HUB_PATTERNS, state)
+    assert hit.startswith(where + ": ")
+
+
+def test_the_state_check_ignores_clean_strings_quotes_and_other_fields():
+    clean = _state(suspected_causes=[{"cause": "Bearing", "evidence": 'the history says "fitted recently"', "next_check": "spin it"}],
+                   confirmed_findings=["fitted on 2026-11-05"], ruled_out=[{"cause": "x", "reason": "recently"}])
+    assert run_cases.state_regex_hits(HUB_PATTERNS, clean) == []
+    assert run_cases.state_regex_hits(HUB_PATTERNS, None) == []
+
+
+def test_the_checklist_fails_on_a_state_hit_alone():
+    case = {"must_mention": [], "must_not": [], "must_not_regex": HUB_PATTERNS}
+    bad = _state(confirmed_findings=["hum started just before the hub"])
+    line = [x for x in run_cases.checklist(case, "Fitted on 2026-11-05.", state=bad) if "avoids regex" in x][0]
+    assert line.startswith("- [ ]") and "0 reply sentence(s), 1 final-state string(s) match" in line

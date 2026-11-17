@@ -270,3 +270,35 @@ def test_the_answering_cases_carry_the_new_checks():
     dont_know = next(c for c in run_cases.load_cases() if c["id"] == "clarify-answer-dont-know")
     assert {"door", "seam", "panel", "trim"} <= set(dont_know["ruled_out_must_not_name"])
     assert "knock" in dont_know["top_cause_must_not_name"] and "door" in dont_know["top_cause_must_not_name"]
+
+
+# --- the deterministic relative-time check ----------------------------------------------------------------
+
+HUB_PATTERNS = next(c for c in run_cases.load_cases() if c["id"] == "hub-replaced-new-noise")["must_not_regex"]
+
+
+@pytest.mark.parametrize("reply", [
+    "The hub fitted recently is a suspect.",
+    "A RECENT repair may matter.",
+    "It began days before the repair.",
+    "Just before that job, the hum was there.",
+])
+def test_the_regex_check_flags_relative_time(reply):
+    assert run_cases.regex_hits(HUB_PATTERNS, reply)
+
+
+@pytest.mark.parametrize("reply", [
+    "The hub was fitted on 2026-11-05.",
+    "A recenter tool is not needed.",  # a word boundary, not a substring
+    'The history says "fitted recently" for that job.',  # quoted history text is not the model's wording
+    "It was fitted just after.",
+])
+def test_the_regex_check_passes_dated_and_quoted_text(reply):
+    assert run_cases.regex_hits(HUB_PATTERNS, reply) == []
+
+
+def test_the_checklist_reports_the_regex_check():
+    case = {"must_mention": [], "must_not": [], "must_not_regex": HUB_PATTERNS}
+    assert "- [ ] avoids regex" in "\n".join(run_cases.checklist(case, "Fitted recently. Also fine."))
+    assert "1 sentence(s) match" in "\n".join(run_cases.checklist(case, "Fitted recently. Also fine."))
+    assert "- [x] avoids regex" in "\n".join(run_cases.checklist(case, "Fitted on 2026-11-05."))

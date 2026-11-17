@@ -59,7 +59,7 @@ class FakeFindingStore:
 
     async def retract(self, user_id, car_id, finding_id):
         for r in self._mine(user_id, car_id, finding_id):
-            if r["status"] == "active":
+            if r["status"] in ("active", "retracted"):
                 r["status"] = "retracted"
                 return self._out(r)
 
@@ -147,7 +147,13 @@ def test_retract_keeps_the_row_but_marks_it(client, auth_headers, store, user_id
     row = store.add(user_id, "suspected_cause", "tone ring")
     assert client.post(url(row["id"], "/retract"), headers=auth_headers).json()["status"] == "retracted"
     assert store.rows[0]["status"] == "retracted"
-    assert client.post(url(row["id"], "/retract"), headers=auth_headers).status_code == 404  # already withdrawn
+    again = client.post(url(row["id"], "/retract"), headers=auth_headers)  # idempotent: already withdrawn is still 200
+    assert again.status_code == 200 and again.json()["status"] == "retracted"
+
+
+def test_retracting_a_superseded_row_is_still_404(client, auth_headers, store, user_id):
+    row = store.add(user_id, "suspected_cause", "tone ring", status="superseded")
+    assert client.post(url(row["id"], "/retract"), headers=auth_headers).status_code == 404
 
 
 def test_resolve_adds_a_repair_and_supersedes_the_finding(client, auth_headers, store, user_id):

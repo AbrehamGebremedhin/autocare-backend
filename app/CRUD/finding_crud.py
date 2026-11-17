@@ -85,9 +85,12 @@ class FindingCRUD:
         )
 
     async def retract(self, user_id: str, car_id: str, finding_id: str) -> dict | None:
+        """Active -> retracted. An already retracted row is returned as it is (idempotent, updated_at kept);
+        a superseded row, or one that is not theirs, gives None."""
         return await pool.fetchrow(
-            "UPDATE car_findings SET status = 'retracted', updated_at = now()"
-            f" WHERE user_id = $1::uuid AND car_id = $2 AND id = $3::uuid AND status = 'active' RETURNING {_COLUMNS}",
+            "UPDATE car_findings SET status = 'retracted',"
+            " updated_at = CASE WHEN status = 'retracted' THEN updated_at ELSE now() END"
+            f" WHERE user_id = $1::uuid AND car_id = $2 AND id = $3::uuid AND status IN ('active', 'retracted') RETURNING {_COLUMNS}",
             user_id, car_id, finding_id,
         )
 

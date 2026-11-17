@@ -105,10 +105,11 @@ Two entry points, and the source is fixed by which one is called, never passed i
   `model_suggested` with no quote. The quote is stored as `evidence_quote`. The two-message context is kept,
   so a "yes" can be read against the question. The new `Fact` fields default to `""`; stored
   `Observations.facts` stay valid.
-- `model_proposals(state)`: `source = model_suggested`, always. Maps
-  `suspected_causes` to `suspected_cause`, `ruled_out` to `ruled_out`, `confirmed_findings` to
-  `confirmed_finding` (still a hypothesis to the next session). `tests_done` is not mirrored (user facts
-  already cover it).
+- `model_proposals(state)`: `source = model_suggested`, always. Maps the **top 3** `suspected_causes` (the state
+  lists them most likely first) to `suspected_cause` and `ruled_out` to `ruled_out`. `confirmed_findings` is **not
+  stored**: the model cannot confirm anything, and a `confirmed_finding` comes only from `extract_facts`
+  (`user_proposals`, `user_confirmed`). `tests_done` is not mirrored (user facts already cover it). (Changed
+  2026-11-15: a smoke test stored ten model-written "confirmed findings", one of which was an invented outcome.)
 
 Rules (pure function `plan_writes(existing_rows, proposals) -> actions`, so they are unit-testable without a
 database; SQL only applies the plan):
@@ -124,8 +125,9 @@ database; SQL only applies the plan):
    `confirmed_finding`/`repair_done` whose `norm` equals an active `ruled_out` supersedes that. A model
    proposal can supersede only `model_suggested` rows. The model contradicting a `user_confirmed` row leaves
    it alone; the prompt rule tells the next turn to ask the user.
-4. At most 50 active `model_suggested` rows per `(user, car)`; inserting beyond that deletes the oldest
-   one. (The only hard delete outside the user's own request.)
+4. At most 20 active `model_suggested` `suspected_cause` and `ruled_out` rows per `(user, car)`; inserting beyond
+   that deletes the oldest one. Only those two kinds are ever deleted: never a model `confirmed_finding` (legacy
+   rows) or `test_done`, and never a `user_confirmed` row. (The only hard delete outside the user's own request.)
 
 Writes happen in `_turn` after the state is merged and before the `state` event, inside `try/except` that
 logs the exception class and carries on: a findings failure must never fail a turn.
@@ -218,7 +220,7 @@ Offline, in the existing suite (`uv run pytest`):
 
 - Write rules: the model path cannot create or promote `user_confirmed`; a model proposal cannot touch a
   `user_confirmed` row; user proposal promotes a matching suggestion; supersede links `superseded_by`;
-  a model contradiction of a confirmed row leaves it; the 50-row cap.
+  a model contradiction of a confirmed row leaves it; the 20-row cap, the top-3 causes, and no model `confirmed_finding`.
 - Retrieval: group order, newest first, dates rendered, empty block omitted, current session excluded.
 - Size cap: oversized input drops oldest `model_suggested` first, then ruled-out, then confirmed; result is
   within 6,000 characters.
@@ -325,6 +327,35 @@ there is no eval case and no code for it.
   existing extraction call).
 - Model suggestions read as facts, anywhere: prompt, API response, or backfill.
 - Real session data, emails or VINs in the repo.
+
+## Noise: what the smoke-test session would store and render (2026-11-15)
+
+The smoke-test car ended with 36 rows: 4 `user_confirmed`, 19 `suspected_cause`, 3 `ruled_out` and 10 model
+`confirmed_finding` (assumed all active, the worst case; superseded rows are not rendered). Before, all 36 were
+stored (the cap was 50) and, being under 6,000 characters, all 36 were rendered: 4 under "Confirmed by the owner",
+29 under "Unverified hypotheses" (19 causes and the 10 model findings, which read like facts) and 3 under "Ruled out".
+
+| rows | before: stored / rendered | after: stored / rendered |
+|---|---|---|
+| `user_confirmed` (tests, findings, repairs) | 4 / 4 | 4 / 4 (never capped, never model-written) |
+| model `confirmed_finding` | 10 / 10 | **0 / 0** (not created) |
+| `suspected_cause` | 19 / 19 | at most 3 new per turn; repeats are the same row, so over a six-turn session about 6 to 8 stay |
+| `ruled_out` | 3 / 3 | 3 / 3 (unchanged) |
+| model causes and ruled-out | 22 | at most 20 (the cap); about 9 to 11 here |
+| legacy model `confirmed_finding` | 10 | 0 for a new car; an existing car keeps its 10 until the owner deletes them (never trimmed) |
+| in the block | 36 + 3 headings | about 13 to 15 + 3 headings for a new car; a car that already holds legacy model findings keeps rendering those too |
+
+The two numbers in the last two rows are estimates from the per-turn cap, not a replay: they depend on how often the
+state model re-ranks its causes. The bound is exact: stored model rows never exceed 20, so the block holds at most
+4 + 20 rows here, and the 6,000-character trim is not reached. Rows already stored are not migrated: the first write
+after deploy deletes the oldest model causes and ruled-out items until 20 remain; legacy model `confirmed_finding` rows are left alone.
+The owner's rows are never touched by the cap.
+
+Prompt rule added with it: the history says what was done, not what it achieved, so the model must not state an
+earlier repair's outcome (that it fixed something or a noise went away) unless the history says so; it says it does
+not know, or asks in one question. Live case `hub-replaced-new-noise` (a hub fitted, no outcome recorded, a new
+noise at 60 km/h) checks it with the assertion patterns "went away after", "went away with", "was fixed by", "fixed the noise" and "cured the".
+(The bare words "went away" and "fixed" also matched a correct "the history does not say whether it went away".)
 
 ## Considered and left out
 

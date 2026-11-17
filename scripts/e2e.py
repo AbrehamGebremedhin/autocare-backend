@@ -12,6 +12,7 @@ import json
 import mimetypes
 import sys
 import time
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,6 +125,13 @@ def test_done_rows(client: httpx.Client, car_id: str) -> list[dict]:
     return [r for r in resp.json() if r.get("kind") == "test_done"]
 
 
+def finding_counts(rows: list[dict]) -> str:
+    """One line per (kind, source) with its row count, active rows only: how noisy the car's history is."""
+    counts = Counter((r.get("kind"), r.get("source")) for r in rows if r.get("status") == "active")
+    lines = [f"     {n:>3}  {kind} / {source}" for (kind, source), n in sorted(counts.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1])))]
+    return chr(10).join([f"     {sum(counts.values()):>3}  active findings", *lines])
+
+
 def finding_problems(rows: list[dict], before: set[str]) -> list[str]:
     """Problems in the test_done rows read after the symptom-only first message; `before` is the ids seen before it.
     A symptom is not a test: the message must add no test_done row, and no row's text may be empty or start with ':'."""
@@ -197,6 +205,9 @@ def run(base: str, email: str, password: str, media_dir: Path, allow_skip: bool,
                     problems = finding_problems(test_done_rows(client, car_id), before)
                     print(f"{'OK  ' if not problems else 'FAIL'} findings: no test_done from the symptom message{' -- ' + '; '.join(problems) if problems else ''}")
                     failures += bool(problems)
+            resp = client.get(f"/api/v1/cars/{car_id}/findings")
+            if resp.status_code == 200:
+                print(finding_counts(resp.json()))
         finally:
             try:
                 status = client.delete(f"/api/v1/sessions/{session_id}").status_code

@@ -16,7 +16,9 @@ from app.schemas.session import DiagnosisState, Fact, _norm
 USER = "user_confirmed"
 MODEL = "model_suggested"
 TEXT_CHARS = 300
-MAX_MODEL_ROWS = 50  # active model_suggested rows per (user, car): the oldest go first (T6: nothing grows unbounded)
+MAX_MODEL_ROWS = 20  # active model_suggested rows per (user, car): the oldest go first (T6: nothing grows unbounded)
+_TRIMMED_KINDS = ("suspected_cause", "ruled_out")  # the only kinds the cap deletes
+TOP_CAUSES = 3  # suspected causes stored per turn: the state lists them most likely first
 HISTORY_CHARS = 6000  # about 1,500 tokens at 4 characters each; the provider's tokenizer is not available here
 APP_CONFIRMED = "(confirmed by the owner in the app)"
 # Fact.basis -> the kinds it can confirm. "agreed_diagnosis" confirms nothing; a bare "yes" can confirm what the user
@@ -67,10 +69,10 @@ def user_proposals(facts: Iterable[Fact], said: str) -> list[Proposal]:
 
 
 def model_proposals(state: DiagnosisState) -> list[Proposal]:
-    """The state model's view as hypotheses. Its confirmed_findings stay hypotheses too: it cannot know the user said them."""
-    out = [Proposal("suspected_cause", clean(c.cause), MODEL) for c in state.suspected_causes]
+    """The state model's view as hypotheses: its top causes and what it ruled out. Its confirmed_findings are not stored:
+    the model cannot confirm anything, and what the user confirmed comes from extract_facts (user_proposals)."""
+    out = [Proposal("suspected_cause", clean(c.cause), MODEL) for c in state.suspected_causes[:TOP_CAUSES]]
     out += [Proposal("ruled_out", clean(f"{r.cause} ({r.reason})" if r.reason else r.cause), MODEL, key=r.cause) for r in state.ruled_out]
-    out += [Proposal("confirmed_finding", clean(t), MODEL) for t in state.confirmed_findings]
     return [p for p in out if p.text]
 
 
@@ -83,7 +85,8 @@ def plan_writes(existing: Sequence[Mapping], proposals: Iterable[Proposal], now:
     - A model proposal for something the owner retracted, or that was superseded, is dropped.
     - A new ruled_out supersedes the suspected_cause it names; the owner's new finding or repair supersedes a
       ruled_out it contradicts. A model proposal can supersede only model_suggested rows.
-    - More than MAX_MODEL_ROWS active suggestions: the oldest are deleted.
+    - More than MAX_MODEL_ROWS active suggested causes and ruled-out items: the oldest are deleted. Only those two
+      kinds are ever trimmed: never a model confirmed_finding (legacy rows) and never a user_confirmed row.
     """
     now = now or datetime.now(timezone.utc)
     rows = [dict(r) for r in existing]
@@ -115,7 +118,8 @@ def plan_writes(existing: Sequence[Mapping], proposals: Iterable[Proposal], now:
                 old["status"] = "superseded"
                 ops.append(("supersede", old["id"], row["id"]))
     suggestions = sorted(
-        (r for r in rows if r["status"] == "active" and r["source"] == MODEL), key=lambda r: (r["created_at"], r["id"])
+        (r for r in rows if r["status"] == "active" and r["source"] == MODEL and r["kind"] in _TRIMMED_KINDS),
+        key=lambda r: (r["created_at"], r["id"]),
     )
     ops += [("delete", r["id"]) for r in suggestions[: max(0, len(suggestions) - MAX_MODEL_ROWS)]]
     return ops

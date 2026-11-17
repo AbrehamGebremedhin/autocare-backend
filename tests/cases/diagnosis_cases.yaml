@@ -94,6 +94,20 @@
   must_not: *must_not
   expects_citation: false
 
+# History case: a repair with no recorded outcome. The user now reports a different noise; the reply must not say what the
+# hub achieved: the history does not say. Checked by an LLM judge (JUDGES in scripts/run_cases.py), because substrings
+# match a correct "the history does not say whether it went away". Synthetic history.
+- id: hub-replaced-new-noise
+  car_id: toyota-echo-2001
+  history:
+    - {kind: confirmed_finding, source: user_confirmed, date: 2026-11-02, text: "the rear-left wheel bearing was the problem"}
+    - {kind: repair_done, source: user_confirmed, date: 2026-11-05, text: "fitted a new wheel hub on the left side"}
+  text: There is a humming noise from the car at about 60 km/h, a different one from before.
+  must_mention: ["60"]
+  judge: hub_outcome  # the reply must not state or imply what the hub did to the original noise
+  must_not: *must_not
+  expects_citation: false
+
 # Clarify-gate cases. All synthetic: `seeded_media` sends a placeholder file through the real turn, `observations` stands in
 # for hearing (transcript, sound tags, signal numbers) and `frames` names a Pillow drawing for the video frames.
 # `messages` seeds earlier turns; `pending_clarification: true` makes the last one (an assistant question) the pending

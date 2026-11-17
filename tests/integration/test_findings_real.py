@@ -79,6 +79,32 @@ async def test_a_session_writes_and_the_next_session_reads_it(real_pool):
     assert await findings.crud.delete_all(other, CAR) == 0 and len(await _all(uid)) == 2
 
 
+async def test_retract_is_idempotent_and_the_row_leaves_the_history_block(real_pool):
+    uid, other = await _user(), await _user()
+    s1, s2 = await _session(uid), await _session(uid)
+    state = DiagnosisState(suspected_causes=[SuspectedCause(cause="ABS tone ring damaged")])
+    await findings.record_turn(uid, CAR, s1, [Fact(repair="new rear-left hub fitted", quote="replaced the hub", basis="stated")],
+                               "I replaced the hub", state)
+    rows = {r["kind"]: r for r in await _all(uid)}
+    suggested, confirmed = rows["suspected_cause"], rows["repair_done"]
+    assert confirmed["source"] == "user_confirmed"
+
+    assert await findings.crud.retract(other, CAR, confirmed["id"]) is None  # same car id, not theirs: nothing happens
+    assert (await findings.crud.get(uid, CAR, confirmed["id"]))["status"] == "active"
+
+    for row in (suggested, confirmed):
+        first = await findings.crud.retract(uid, CAR, row["id"])
+        again = await findings.crud.retract(uid, CAR, row["id"])
+        assert first["status"] == again["status"] == "retracted"
+        assert again["updated_at"] == first["updated_at"]  # the second call changes nothing
+    assert await findings.crud.retract(uid, CAR, str(uuid4())) is None
+
+    assert await findings.car_history(uid, CAR, s2) == []
+    assert findings.render_history(await findings.car_history(uid, CAR, s2)) == ""
+    assert sorted(r["status"] for r in await findings.crud.listing(uid, CAR, None)) == ["retracted", "retracted"]
+    assert await findings.crud.listing(uid, CAR, "active") == []
+
+
 async def test_ruled_out_supersedes_and_links_and_the_model_cannot_resurrect_it(real_pool):
     uid = await _user()
     s = await _session(uid)

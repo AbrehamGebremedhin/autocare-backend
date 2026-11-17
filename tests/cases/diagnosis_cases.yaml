@@ -2,6 +2,7 @@
 #   id, car_id, text, must_mention, must_not, expects_citation,
 #   media (optional): paths under tests/fixtures/e2e/. Media cases are skipped while the files are missing.
 #   history (optional): earlier findings for the car, each {kind, text, source, date}: what a previous session stored.
+#   must_not_regex (optional): patterns no sentence of the reply may match (case-insensitive, quoted text ignored).
 # The must_not list is the same for every case, so it is anchored once here.
 - id: overheat-fan-cycling
   car_id: toyota-echo-2001
@@ -105,6 +106,7 @@
   text: There is a humming noise from the car at about 60 km/h, a different one from before.
   must_mention: ["60"]
   judge: hub_outcome  # the reply must not state or imply what the hub did to the original noise
+  must_not_regex: ['\brecent(ly)?\b', 'days before', 'just before']  # case-insensitive, outside quoted text
   must_not: *must_not
   expects_citation: false
 

@@ -106,6 +106,17 @@ def without_questions(reply: str) -> str:
     return re.sub(r"[^.!?\n]*\?", "", reply)
 
 
+def outside_quotes(reply: str) -> str:
+    """The reply minus anything in double quotes: quoted history text is the history's wording, not the model's."""
+    return re.sub(r'"[^"]*"|“[^”]*”', " ", reply)
+
+
+def regex_hits(patterns: list[str], reply: str) -> list[str]:
+    """The sentences of `reply` (quoted text removed) matching any pattern, case-insensitive; a deterministic check, no judge."""
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", outside_quotes(reply))
+    return [t.strip() for t in sentences if t.strip() and any(re.search(p, t, re.IGNORECASE) for p in patterns)]
+
+
 def parse_judge(answer: str) -> bool:
     """True for YES, False for NO; anything else raises: an unreadable answer must never pass a case."""
     m = re.match(r"\W*(YES|NO)\b", answer.strip().upper())
@@ -154,6 +165,9 @@ def checklist(
     lines += [f"- [{' ' if s.lower() in top else 'x'}] first-ranked cause does not name: {s}" for s in case.get("top_cause_must_not_name") or []]
     ruled_out = " ".join(f"{r.get('cause', '')} {r.get('reason', '')}" for r in (state or {}).get("ruled_out") or []).lower()
     lines += [f"- [{' ' if s.lower() in ruled_out else 'x'}] ruled_out does not name: {s}" for s in case.get("ruled_out_must_not_name") or []]
+    if case.get("must_not_regex"):
+        hits = regex_hits(case["must_not_regex"], reply)
+        lines.append(f"- [{' ' if hits else 'x'}] avoids regex {case['must_not_regex']}: {len(hits)} sentence(s) match")
     if case.get("judge"):
         answer = "not run" if judged is None else "YES" if judged else "NO"
         lines.append(f"- [{'x' if judged is False else ' '}] judge (lower bound) {case['judge']}: answered {answer} (must be NO)")

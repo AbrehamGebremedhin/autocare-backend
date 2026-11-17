@@ -55,10 +55,41 @@ def test_system_prompt_carries_the_history_rules():
     for phrase in ("not ground truth for the current complaint", "do not assume which is right", "ask the user",
                    "Use the confirmed repairs when you reason", "ABS\n  sensor or tone-ring fault",
                    "Never present a hypothesis from the history as a fact",
-                   "Never state what an earlier repair achieved", "say that you do not know it",
-                   'never as relative time ("last week", "recently")'):
+                   "Never state what an earlier repair achieved", "say that you do not know it"):
         assert phrase in SYSTEM_PROMPT, phrase
     assert "The same goes for the Car history" in SYSTEM_PROMPT
+
+
+def test_system_prompt_pins_the_onset_outcome_invention_and_date_rules():
+    from app.services.prompts import STATE_PROMPT
+
+    text = " ".join(SYSTEM_PROMPT.split())
+    for phrase in (
+        # onset
+        "Never state or assume when a noise or fault began relative to a repair unless the owner said so; ask.",
+        'Wrong: "a hum that started after that job".',
+        "Right: \"I don't know whether the hum started before or after that job.\"",
+        # the repaired corner
+        'Never describe the repaired corner as fixed, quiet, "already replaced" or "the one you can now hear".',
+        '"A different noise" does not mean a different corner. The repaired corner is unknown, not excluded.',
+        'Wrong: "the now-quiet left side".',
+        # only the history and the message
+        "Use only facts in the history block and the owner's message.",
+        "that parts share an age or mileage, that only one side was done, or how long passed between events.",
+        'Wrong: "the other bearings are as old as the one that failed".',
+        # dates
+        'Do not write "recent", "recently", "days before" or "just before".',
+        '("New" is fine when the history itself says new.)',
+        'Right: "the hub fitted on 2026-11-05".',
+    ):
+        assert phrase in text, phrase
+    assert "fitted recently" not in text  # the old wording invited the very claim the onset rule forbids
+    state = " ".join(STATE_PROMPT.split())
+    for phrase in (
+        "only on a test result, or the owner's own statement that the cause is excluded.",
+        "Replacing, fitting or renewing a part never rules out the old part as the original cause.",
+    ):
+        assert phrase in state, phrase
 
 
 class FakeFindings:
@@ -153,3 +184,15 @@ async def test_a_failed_garage_lookup_skips_findings_and_the_turn_completes(fake
     assert [e for e, _ in out][-2:] == ["state", "done"]
     assert "Car history" not in fake_llm.prompt[-1]["content"][0]["text"]
     assert fake_findings.history_args is None and fake_findings.applied == []
+
+
+def test_state_prompt_limits_evidence_and_findings_to_the_owner_and_the_history():
+    from app.services.prompts import STATE_PROMPT
+
+    state = " ".join(STATE_PROMPT.split())
+    for phrase in (
+        '"evidence" strings and "confirmed_findings" may quote only the owner\'s message or the Car history.',
+        "Write no timeline between a repair and a noise unless the owner stated one, and assume no age or mileage.",
+        'Wrong: evidence "the hum started after the new hub; the other bearings are as old".',
+    ):
+        assert phrase in state, phrase

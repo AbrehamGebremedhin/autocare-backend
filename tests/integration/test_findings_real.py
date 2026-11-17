@@ -90,6 +90,24 @@ async def test_ruled_out_supersedes_and_links_and_the_model_cannot_resurrect_it(
     assert rows["suspected_cause"]["superseded_by"] == rows["ruled_out"]["id"] and rows["ruled_out"]["status"] == "active"
 
 
+async def test_the_model_cannot_rule_out_what_a_confirmed_finding_says_was_the_problem(real_pool):
+    uid = await _user()
+    s = await _session(uid)
+    said = "the rear-left wheel bearing was the original noise source"
+    fact = Fact(finding="Rear-left wheel bearing was the original noise source", quote=said, basis="stated")
+    state = DiagnosisState(ruled_out=[
+        RuledOut(cause="Old rear-left wheel bearing as cause of the original noise", reason="new hub fitted"),  # restates the finding
+        RuledOut(cause="Front-left wheel bearing", reason="spun smooth"),  # a different corner: written
+    ])
+    await findings.record_turn(uid, CAR, s, [fact], said, state)
+    await findings.record_turn(uid, CAR, s, [], "", state)  # the same state again: still nothing new
+    rows = [(r["kind"], r["source"], r["text"]) for r in await _all(uid)]
+    assert sorted(rows) == [
+        ("confirmed_finding", "user_confirmed", "Rear-left wheel bearing was the original noise source"),
+        ("ruled_out", "model_suggested", "Front-left wheel bearing (spun smooth)"),
+    ]
+
+
 async def test_confirm_resolve_and_the_constraints(real_pool):
     uid = await _user()
     s = await _session(uid)

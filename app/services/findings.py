@@ -25,6 +25,14 @@ APP_CONFIRMED = "(confirmed by the owner in the app)"
 # did or saw (a test, a repair) but never a conclusion, which only the user stating it in their own words confirms.
 _CONFIRMS = {"stated": ("test_done", "confirmed_finding", "repair_done"), "answered_question": ("test_done", "repair_done")}
 
+# A ruled_out cause is skipped when an active confirmed finding says the same thing: of the two rows' content words
+# (lower case, "bearings" -> "bearing", stop-words dropped) at least OVERLAP_MIN_SHARED are shared and they are at
+# least OVERLAP_MIN_SHARE of the shorter row's words. 0.8 keeps "front-left wheel bearing" (3 of 4 words shared with
+# "rear-left wheel bearing") apart from it: a different corner is not the same cause.
+OVERLAP_MIN_SHARED = 2
+OVERLAP_MIN_SHARE = 0.8
+_STOP_WORDS = frozenset("a an the of as was is are were be been to in on at for with by from and or not no this that it its".split())
+
 crud = FindingCRUD()
 
 
@@ -76,6 +84,23 @@ def model_proposals(state: DiagnosisState) -> list[Proposal]:
     return [p for p in out if p.text]
 
 
+def content_words(text: str) -> frozenset[str]:
+    return frozenset(w[:-1] if len(w) > 3 and w.endswith("s") else w for w in _norm(text).split() if w not in _STOP_WORDS)
+
+
+def restates_a_finding(cause: str, rows: Iterable[Mapping]) -> bool:
+    """True when `cause` overlaps an active confirmed finding by the rule above (see OVERLAP_*)."""
+    words = content_words(cause)
+    for r in rows:
+        if r["kind"] != "confirmed_finding" or r["status"] != "active":
+            continue
+        other = content_words(r["text"])
+        shared = len(words & other)
+        if shared >= OVERLAP_MIN_SHARED and shared >= OVERLAP_MIN_SHARE * min(len(words), len(other)):
+            return True
+    return False
+
+
 def plan_writes(existing: Sequence[Mapping], proposals: Iterable[Proposal], now: datetime | None = None) -> list[tuple]:
     """The writes for `proposals` against the owner's existing rows (all statuses), as ops for FindingCRUD.apply:
     ("insert", row), ("promote", id, quote), ("supersede", old_id, new_id), ("delete", id).
@@ -85,6 +110,8 @@ def plan_writes(existing: Sequence[Mapping], proposals: Iterable[Proposal], now:
     - A model proposal for something the owner retracted, or that was superseded, is dropped.
     - A new ruled_out supersedes the suspected_cause it names; the owner's new finding or repair supersedes a
       ruled_out it contradicts. A model proposal can supersede only model_suggested rows.
+    - A ruled_out cause that overlaps an active confirmed finding (user_confirmed or a legacy model one) is not written:
+      the model must not exclude what the history says was the problem (restates_a_finding).
     - More than MAX_MODEL_ROWS active suggested causes and ruled-out items: the oldest are deleted. Only those two
       kinds are ever trimmed: never a model confirmed_finding (legacy rows) and never a user_confirmed row.
     """
@@ -101,6 +128,8 @@ def plan_writes(existing: Sequence[Mapping], proposals: Iterable[Proposal], now:
             continue
         if p.source == MODEL and same:
             continue  # retracted by the owner, or superseded by newer evidence
+        if p.kind == "ruled_out" and restates_a_finding(p.key or p.text, rows):
+            continue
         row = {
             "id": str(uuid4()), "kind": p.kind, "text": p.text, "norm": p.norm, "status": "active", "source": p.source,
             "evidence_quote": p.quote or None, "created_at": now,

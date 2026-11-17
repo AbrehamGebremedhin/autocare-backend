@@ -136,6 +136,40 @@ def test_the_model_does_not_bring_back_what_the_owner_retracted_or_newer_evidenc
     assert [o[0] for o in plan_writes(existing, [Proposal("suspected_cause", "Tone ring damaged", USER, quote="q")])] == ["insert"]
 
 
+ORIGINAL = "Rear-left wheel bearing was the original noise source"
+
+
+@pytest.mark.parametrize("source,kind", [(USER, "confirmed_finding"), (MODEL, "confirmed_finding")])
+def test_a_ruled_out_that_restates_an_active_confirmed_finding_is_not_written(source, kind):
+    existing = [row("f", kind, ORIGINAL, source=source)]
+    cause = "Old rear-left wheel bearing as cause of the original noise"
+    assert plan_writes(existing, [Proposal("ruled_out", f"{cause} (new hub fitted)", MODEL, key=cause)]) == []
+
+
+@pytest.mark.parametrize("cause", [
+    "Front-left wheel bearing",  # a different corner shares three of its four words
+    "Loose wheel nut",  # shares one word
+    "Cupped tire tread",
+])
+def test_a_ruled_out_that_is_not_the_finding_is_still_written(cause):
+    ops = plan_writes([row("f", "confirmed_finding", ORIGINAL, source=USER)], [Proposal("ruled_out", cause, MODEL, key=cause)])
+    assert [o[0] for o in ops] == ["insert"]
+
+
+def test_only_an_active_confirmed_finding_blocks_a_ruled_out():
+    cause = "Old rear-left wheel bearing as cause of the original noise"
+    p = [Proposal("ruled_out", cause, MODEL, key=cause)]
+    for blocker in (row("f", "confirmed_finding", ORIGINAL, status="retracted"), row("f", "suspected_cause", ORIGINAL),
+                    row("f", "repair_done", ORIGINAL, source=USER)):
+        assert [o[0] for o in plan_writes([blocker], p)] == ["insert"]
+
+
+def test_a_finding_confirmed_in_the_same_turn_also_blocks_it():
+    cause = "Old rear-left wheel bearing as cause of the original noise"
+    ops = plan_writes([], [Proposal("confirmed_finding", ORIGINAL, USER, quote="q"), Proposal("ruled_out", cause, MODEL, key=cause)])
+    assert [o[0] for o in ops] == ["insert"]
+
+
 def test_the_suggestion_cap_is_twenty():
     assert findings.MAX_MODEL_ROWS == 20
 

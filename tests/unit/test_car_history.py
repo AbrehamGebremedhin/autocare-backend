@@ -184,3 +184,15 @@ async def test_a_failed_garage_lookup_skips_findings_and_the_turn_completes(fake
     assert [e for e, _ in out][-2:] == ["state", "done"]
     assert "Car history" not in fake_llm.prompt[-1]["content"][0]["text"]
     assert fake_findings.history_args is None and fake_findings.applied == []
+
+
+def test_state_prompt_limits_evidence_and_findings_to_the_owner_and_the_history():
+    from app.services.prompts import STATE_PROMPT
+
+    state = " ".join(STATE_PROMPT.split())
+    for phrase in (
+        '"evidence" strings and "confirmed_findings" may quote only the owner\'s message or the Car history.',
+        "Write no timeline between a repair and a noise unless the owner stated one, and assume no age or mileage.",
+        'Wrong: evidence "the hum started after the new hub; the other bearings are as old".',
+    ):
+        assert phrase in state, phrase

@@ -149,6 +149,10 @@ Rules:
   part as the original cause. Wrong: ruled_out "Old rear-left bearing" because a new hub was fitted.
   Right: leave it out until a test or the owner excludes it. An object the user filmed or photographed but did not name
   is unknown: neither a suspected cause nor ruled out.
+- "evidence" strings and "confirmed_findings" may quote only the owner's message or the Car history. Write no
+  timeline between a repair and a noise unless the owner stated one, and assume no age or mileage.
+  Wrong: evidence "the hum started after the new hub; the other bearings are as old". Right: evidence "the owner
+  reports a hum at 60 km/h".
 - The title names the whole session. Keep the previous title; only set one if there is none.
 Keep the language of the conversation."""
 

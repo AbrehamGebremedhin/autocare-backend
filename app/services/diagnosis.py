@@ -12,7 +12,7 @@ import numpy as np
 from app.core.config import get_settings
 from app.CRUD.chat_session_crud import ChatSessionCRUD
 from app.schemas.session import DiagnosisState, MediaRef, Message, Observations, PendingClarification, TestDone, merge_state
-from app.services import clarify, findings, hearing, kb, llm, media
+from app.services import clarify, findings, hearing, kb, llm, media, videos
 from app.services.media import MediaError, Upload
 from app.services.media_store import MediaStore
 from app.services.prompts import build_messages, clean_citations, history_turn, prompt_content
@@ -394,4 +394,11 @@ async def _turn(
     if asking:
         yield "clarify", {"question": asking.question, "options": [o.model_dump() for o in asking.options], "reason": asking.reason}
     yield "state", state.model_dump()
+    try:  # video links: at most once, after the state, never blocking `done` for long, never failing the turn
+        links = await videos.links_for_turn(session["user_id"], car, state, asking is not None)
+    except Exception as exc:
+        await logger.warning(f"video links skipped: {type(exc).__name__}")
+        links = None
+    if links:
+        yield "links", links
     yield "done", {"message_id": assistant["id"]}

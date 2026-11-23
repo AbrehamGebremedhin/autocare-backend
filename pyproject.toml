@@ -66,13 +66,14 @@ addopts = [
     "--disable-warnings",           # Disable pytest warnings
     "--color=yes",                  # Colored output
     "--durations=10",               # Show 10 slowest tests
-    "-m", "not slow and not db",    # Skip real-model and real-database tests unless selected with -m
+    "-m", "not slow and not db and not live",    # Skip real-model, real-database and live-API tests unless selected with -m
 ]
 
 # Markers
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "db: needs a real Postgres in TEST_DATABASE_URL (run with -m db)",
+    "live: calls the real YouTube API, needs YOUTUBE_API_KEY (run with -m live)",
     "asyncio: marks tests that use asyncio",
 ]
 

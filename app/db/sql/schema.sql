@@ -158,4 +158,24 @@ create index if not exists car_findings_owner_idx on car_findings (user_id, car_
 create unique index if not exists car_findings_active_dedupe_idx
     on car_findings (user_id, car_id, kind, norm) where status = 'active';
 
+-- YouTube suggestions (app/services/videos.py). The cache is shared by every user: no user data in it, only
+-- what YouTube returned for a car and a job (video_id, title, channel, duration_seconds, views, verdict, fetched_at).
+create table if not exists video_suggestions (
+    car_key    text not null,
+    job_key    text not null,
+    items      jsonb not null default '[]',
+    fetched_at timestamptz not null default now(),
+    primary key (car_key, job_key)
+);
+
+-- "Not helpful" marks: per owner, car and job; they hide a video for that owner only and never touch the cache.
+create table if not exists video_feedback (
+    user_id    uuid not null references users (id) on delete cascade,
+    car_id     text not null,
+    job_key    text not null,
+    video_id   text not null,
+    created_at timestamptz not null default now(),
+    unique (user_id, car_id, job_key, video_id)
+);
+
 commit;

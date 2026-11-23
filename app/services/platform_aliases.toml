@@ -1,0 +1,5 @@
+# Cars that share a platform, so repair videos for one apply to the others. Key: "<make> <model>", lowercase.
+# Value: the siblings' full names. Every entry must be checked by the maintainer before it is added or kept:
+# a wrong sibling makes the relevance check accept videos for a different car.
+[aliases]
+"toyota platz" = ["Toyota Echo", "Toyota Vitz", "Toyota Yaris"]

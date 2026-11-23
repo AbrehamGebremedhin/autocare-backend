@@ -14,7 +14,7 @@ CHATSESSION_COLUMNS = {"id", "user_id", "car_id", "title", "messages", "state", 
 KB_PASSAGE_COLUMNS = {"source_type", "car_id", "title", "page", "content"}  # kb.ingest_pdf rows and its delete filter
 PROFILE_COLUMNS_WRITTEN = {"user_id", "cars", "preferences", "created_at", "updated_at"}  # user_profile_service
 USER_COLUMNS = {"id", "email", "password_hash", "google_sub", "created_at", "tokens_valid_after"}  # accounts (email+password, Google sign-in)
-TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages", "user_car_details", "car_findings"}
+TABLES = {"users", "user_profiles", "Car", "Chatsession", "kb_passages", "user_car_details", "car_findings", "video_suggestions", "video_feedback"}
 
 _CONSTRAINT_WORDS = {"constraint", "primary", "unique", "check", "foreign", "exclude"}
 _IDENT = r'("[^"]+"|\w+)'

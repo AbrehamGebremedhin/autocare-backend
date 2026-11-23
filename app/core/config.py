@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import List
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     CLOUDFLARE_ACCOUNT_ID: str = ""
     CLOUDFLARE_API_TOKEN: str = ""
     VISUAL_CURATED_DIR: str = "/data/visuals/curated"
+
+    # YouTube video suggestions after a diagnosis answer (app/services/videos.py). Off until the app ships the "links" event.
+    VIDEO_SUGGESTIONS_ENABLED: bool = False
+    YOUTUBE_API_KEY: SecretStr = SecretStr("")  # never log or print it; empty means search-link fallback only
+    VIDEO_MIN_MINUTES: float = 2
+    VIDEO_MAX_MINUTES: float = 120
+    VIDEO_MIN_VIEWS: int = 5000
+    VIDEO_CACHE_DAYS: int = 30  # capped at 30 whatever is set
+    VIDEO_DAILY_SEARCH_CAP: int = 80  # search.list calls per UTC day, counted in memory per process
 
     def get_allowed_origins(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]

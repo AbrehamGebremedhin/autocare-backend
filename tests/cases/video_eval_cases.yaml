@@ -1,0 +1,11 @@
+# Synthetic (car, job) pairs for scripts/eval_videos.py. No real sessions or users.
+- {car: {year: 2001, make: Toyota, model: Platz}, job: "Worn front wheel bearing"}
+- {car: {year: 2001, make: Toyota, model: Platz}, job: "Timing belt replacement"}
+- {car: {year: 2001, make: Toyota, model: Platz}, job: "Clutch replacement"}
+- {car: {year: 2008, make: Honda, model: Civic}, job: "Engine rebuild"}
+- {car: {year: 2015, make: Ford, model: Focus}, job: "Timing chain replacement"}
+- {car: {year: 2012, make: Volkswagen, model: Golf}, job: "Clutch replacement"}
+- {car: {year: 2010, make: Toyota, model: Corolla}, job: "Failed alternator"}
+- {car: {year: 2005, make: Honda, model: Accord}, job: "Worn brake pads and rotors"}
+- {car: {year: 2018, make: Hyundai, model: Elantra}, job: "Faulty ignition coil"}
+- {car: {year: 2014, make: Nissan, model: Altima}, job: "Leaking radiator"}
